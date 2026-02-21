@@ -4,10 +4,35 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
 	"sync"
 
 	"github.com/ytnobody/madflow/internal/agent"
+	"github.com/ytnobody/madflow/internal/chatlog"
 )
+
+// announceStart は各エージェントの作業開始をチャットログに報告する。
+func announceStart(team *Team) {
+	for _, ag := range []*agent.Agent{team.Architect, team.Engineer, team.Reviewer} {
+		line := chatlog.FormatMessage(
+			"PM",
+			ag.ID.String(),
+			fmt.Sprintf("チーム %d の %s として作業を開始します。イシュー: %s", team.ID, ag.ID.Role, team.IssueID),
+		)
+		appendLine(ag.ChatLog.Path(), line)
+	}
+}
+
+// appendLine はチャットログファイルに1行追記する。
+func appendLine(path, line string) {
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		log.Printf("[team] announce: open %s: %v", path, err)
+		return
+	}
+	defer f.Close()
+	fmt.Fprintln(f, line)
+}
 
 // Team represents a task force team (architect + engineer + reviewer).
 type Team struct {
@@ -19,12 +44,16 @@ type Team struct {
 	cancel    context.CancelFunc
 }
 
+// DefaultMaxTeams is the default maximum number of concurrent teams.
+const DefaultMaxTeams = 4
+
 // Manager manages the lifecycle of task force teams.
 type Manager struct {
-	mu      sync.Mutex
-	teams   map[int]*Team
-	nextID  int
-	factory TeamFactory
+	mu       sync.Mutex
+	teams    map[int]*Team
+	nextID   int
+	maxTeams int
+	factory  TeamFactory
 }
 
 // TeamFactory creates agents for a team. Provided by the orchestrator.
@@ -32,17 +61,25 @@ type TeamFactory interface {
 	CreateTeamAgents(teamNum int, issueID string) (architect, engineer, reviewer *agent.Agent, err error)
 }
 
-func NewManager(factory TeamFactory) *Manager {
+func NewManager(factory TeamFactory, maxTeams int) *Manager {
+	if maxTeams <= 0 {
+		maxTeams = DefaultMaxTeams
+	}
 	return &Manager{
-		teams:   make(map[int]*Team),
-		nextID:  1,
-		factory: factory,
+		teams:    make(map[int]*Team),
+		nextID:   1,
+		maxTeams: maxTeams,
+		factory:  factory,
 	}
 }
 
 // Create creates and starts a new team for the given issue.
 func (m *Manager) Create(ctx context.Context, issueID string) (*Team, error) {
 	m.mu.Lock()
+	if len(m.teams) >= m.maxTeams {
+		m.mu.Unlock()
+		return nil, fmt.Errorf("maximum number of concurrent teams reached (%d)", m.maxTeams)
+	}
 	teamNum := m.nextID
 	m.nextID++
 	m.mu.Unlock()
@@ -83,6 +120,8 @@ func (m *Manager) Create(ctx context.Context, issueID string) (*Team, error) {
 			log.Printf("[team-%d] reviewer stopped: %v", teamNum, err)
 		}
 	}()
+
+	announceStart(team)
 
 	log.Printf("[team-%d] created for issue %s", teamNum, issueID)
 	return team, nil

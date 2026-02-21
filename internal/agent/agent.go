@@ -21,7 +21,8 @@ type Agent struct {
 	MemosDir       string
 	ResetInterval  time.Duration
 	SystemPrompt   string
-	OriginalTask   string // The initial task/context for this agent
+	OriginalTask   string    // The initial task/context for this agent
+	Dormancy       *Dormancy // shared dormancy state (optional, nil = no dormancy)
 }
 
 // AgentConfig holds configuration for creating an agent.
@@ -35,7 +36,8 @@ type AgentConfig struct {
 	MemosDir      string
 	ResetInterval time.Duration
 	OriginalTask  string
-	Process       Process // Optional: if nil, a ClaudeProcess is created
+	Process       Process   // Optional: if nil, a ClaudeProcess is created
+	Dormancy      *Dormancy // Optional: shared dormancy state
 }
 
 // NewAgent creates a new agent from configuration.
@@ -59,6 +61,7 @@ func NewAgent(cfg AgentConfig) *Agent {
 		ResetInterval: cfg.ResetInterval,
 		SystemPrompt:  cfg.SystemPrompt,
 		OriginalTask:  cfg.OriginalTask,
+		Dormancy:      cfg.Dormancy,
 	}
 }
 
@@ -78,7 +81,7 @@ func (a *Agent) Run(ctx context.Context) error {
 
 	// Initial prompt to start the agent
 	initialPrompt := a.buildInitialPrompt(memo)
-	if _, err := a.Process.Send(ctx, initialPrompt); err != nil {
+	if _, err := a.send(ctx, initialPrompt); err != nil {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
@@ -112,7 +115,7 @@ func (a *Agent) Run(ctx context.Context) error {
 				msg.Raw,
 			)
 
-			response, err := a.Process.Send(ctx, prompt)
+			response, err := a.send(ctx, prompt)
 			if err != nil {
 				if ctx.Err() != nil {
 					return ctx.Err()
@@ -134,7 +137,7 @@ func (a *Agent) performReset(ctx context.Context, timer *reset.Timer) error {
 	log.Printf("[%s] context reset triggered", recipient)
 
 	// Ask Claude to distill current state
-	distilled, err := a.Process.Send(ctx, reset.DistillPrompt)
+	distilled, err := a.send(ctx, reset.DistillPrompt)
 	if err != nil {
 		return fmt.Errorf("distill failed: %w", err)
 	}
@@ -151,7 +154,7 @@ func (a *Agent) performReset(ctx context.Context, timer *reset.Timer) error {
 	memoContent, _ := os.ReadFile(memoPath)
 	freshPrompt := a.buildInitialPrompt(string(memoContent))
 
-	if _, err := a.Process.Send(ctx, freshPrompt); err != nil {
+	if _, err := a.send(ctx, freshPrompt); err != nil {
 		return fmt.Errorf("fresh start failed: %w", err)
 	}
 
@@ -219,6 +222,29 @@ func parseDistilledMemo(agentID, raw string) reset.WorkMemo {
 	}
 
 	return memo
+}
+
+// send wraps Process.Send with dormancy-aware rate limit handling.
+// If a rate limit error is detected, it enters dormancy and retries after wake.
+func (a *Agent) send(ctx context.Context, prompt string) (string, error) {
+	for {
+		if a.Dormancy != nil {
+			if err := a.Dormancy.Wait(ctx); err != nil {
+				return "", err
+			}
+		}
+
+		resp, err := a.Process.Send(ctx, prompt)
+		if err != nil && a.Dormancy != nil && IsRateLimitError(err) {
+			log.Printf("[%s] rate limit detected, entering dormancy", a.ID.String())
+			a.Dormancy.Enter(ctx, func(pctx context.Context) error {
+				_, perr := a.Process.Send(pctx, "hello")
+				return perr
+			})
+			continue
+		}
+		return resp, err
+	}
 }
 
 func truncate(s string, maxLen int) string {

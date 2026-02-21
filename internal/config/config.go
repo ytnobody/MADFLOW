@@ -27,6 +27,7 @@ type RepoConfig struct {
 
 type AgentConfig struct {
 	ContextResetMinutes int         `toml:"context_reset_minutes"`
+	MaxTeams            int         `toml:"max_teams"`
 	Models              ModelConfig `toml:"models"`
 }
 
@@ -92,6 +93,9 @@ func setDefaults(cfg *Config) {
 	}
 	if cfg.Agent.Models.ReleaseManager == "" {
 		cfg.Agent.Models.ReleaseManager = "claude-haiku-4-5"
+	}
+	if cfg.Agent.MaxTeams == 0 {
+		cfg.Agent.MaxTeams = 4
 	}
 	if cfg.Branches.Main == "" {
 		cfg.Branches.Main = "main"

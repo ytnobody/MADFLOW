@@ -25,10 +25,11 @@ type Orchestrator struct {
 	dataDir   string
 	promptDir string
 
-	store   *issue.Store
-	chatLog *chatlog.ChatLog
-	teams   *team.Manager
-	repos   map[string]*git.Repo // name -> repo
+	store    *issue.Store
+	chatLog  *chatlog.ChatLog
+	teams    *team.Manager
+	repos    map[string]*git.Repo // name -> repo
+	dormancy *agent.Dormancy
 
 	residentAgents []*agent.Agent
 	mu             sync.Mutex
@@ -51,9 +52,10 @@ func New(cfg *config.Config, dataDir, promptDir string) *Orchestrator {
 		store:     issue.NewStore(issuesDir),
 		chatLog:   chatlog.New(chatLogPath),
 		repos:     repos,
+		dormancy:  agent.NewDormancy(),
 	}
 
-	orc.teams = team.NewManager(orc)
+	orc.teams = team.NewManager(orc, cfg.Agent.MaxTeams)
 	return orc
 }
 
@@ -141,6 +143,7 @@ func (o *Orchestrator) startResidentAgents(ctx context.Context, wg *sync.WaitGro
 			ChatLogPath:   o.chatLog.Path(),
 			MemosDir:      filepath.Join(o.dataDir, "memos"),
 			ResetInterval: resetInterval,
+			Dormancy:      o.dormancy,
 		})
 
 		o.mu.Lock()
@@ -334,6 +337,7 @@ func (o *Orchestrator) CreateTeamAgents(teamNum int, issueID string) (architect,
 			MemosDir:      filepath.Join(o.dataDir, "memos"),
 			ResetInterval: resetInterval,
 			OriginalTask:  originalTask,
+			Dormancy:      o.dormancy,
 		})
 	}
 

@@ -92,6 +92,20 @@ func (c *ClaudeProcess) buildArgs(prompt string) []string {
 	return args
 }
 
+// IsRateLimitError checks whether the error indicates a token/rate limit.
+func IsRateLimitError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "rate limit") ||
+		strings.Contains(msg, "token limit") ||
+		strings.Contains(msg, "usage limit") ||
+		strings.Contains(msg, "too many requests") ||
+		strings.Contains(msg, "429") ||
+		strings.Contains(msg, "overloaded")
+}
+
 // filterEnv returns a copy of env with the given key removed.
 func filterEnv(env []string, key string) []string {
 	prefix := key + "="

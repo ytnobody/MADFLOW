@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -75,7 +76,7 @@ func createAndCancel(t *testing.T, mgr *Manager, issueID string) *Team {
 }
 
 func TestNewManager(t *testing.T) {
-	m := NewManager(newMockFactory(t))
+	m := NewManager(newMockFactory(t), 0)
 	if m == nil {
 		t.Fatal("NewManager returned nil")
 	}
@@ -86,7 +87,7 @@ func TestNewManager(t *testing.T) {
 
 func TestCreate(t *testing.T) {
 	factory := newMockFactory(t)
-	m := NewManager(factory)
+	m := NewManager(factory, 0)
 
 	team := createAndCancel(t, m, "issue-001")
 
@@ -103,7 +104,7 @@ func TestCreate(t *testing.T) {
 
 func TestCreateIncrementsID(t *testing.T) {
 	factory := newMockFactory(t)
-	m := NewManager(factory)
+	m := NewManager(factory, 0)
 
 	t1 := createAndCancel(t, m, "issue-001")
 	t2 := createAndCancel(t, m, "issue-002")
@@ -119,7 +120,7 @@ func TestCreateIncrementsID(t *testing.T) {
 func TestCreateFactoryError(t *testing.T) {
 	factory := newMockFactory(t)
 	factory.shouldFail = true
-	m := NewManager(factory)
+	m := NewManager(factory, 0)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -132,7 +133,7 @@ func TestCreateFactoryError(t *testing.T) {
 
 func TestCount(t *testing.T) {
 	factory := newMockFactory(t)
-	m := NewManager(factory)
+	m := NewManager(factory, 0)
 
 	if m.Count() != 0 {
 		t.Errorf("expected 0 teams initially, got %d", m.Count())
@@ -151,7 +152,7 @@ func TestCount(t *testing.T) {
 
 func TestList(t *testing.T) {
 	factory := newMockFactory(t)
-	m := NewManager(factory)
+	m := NewManager(factory, 0)
 
 	// Empty list
 	infos := m.List()
@@ -182,7 +183,7 @@ func TestList(t *testing.T) {
 
 func TestDisband(t *testing.T) {
 	factory := newMockFactory(t)
-	m := NewManager(factory)
+	m := NewManager(factory, 0)
 
 	team := createAndCancel(t, m, "issue-001")
 
@@ -200,7 +201,7 @@ func TestDisband(t *testing.T) {
 }
 
 func TestDisbandNotFound(t *testing.T) {
-	m := NewManager(newMockFactory(t))
+	m := NewManager(newMockFactory(t), 0)
 
 	err := m.Disband(999)
 	if err == nil {
@@ -210,7 +211,7 @@ func TestDisbandNotFound(t *testing.T) {
 
 func TestDisbandByIssue(t *testing.T) {
 	factory := newMockFactory(t)
-	m := NewManager(factory)
+	m := NewManager(factory, 0)
 
 	createAndCancel(t, m, "issue-001")
 	createAndCancel(t, m, "issue-002")
@@ -231,10 +232,104 @@ func TestDisbandByIssue(t *testing.T) {
 }
 
 func TestDisbandByIssueNotFound(t *testing.T) {
-	m := NewManager(newMockFactory(t))
+	m := NewManager(newMockFactory(t), 0)
 
 	err := m.DisbandByIssue("nonexistent")
 	if err == nil {
 		t.Fatal("expected error for non-existent issue, got nil")
+	}
+}
+
+func TestCreateRespectsMaxTeams(t *testing.T) {
+	factory := newMockFactory(t)
+	m := NewManager(factory, 2)
+
+	createAndCancel(t, m, "issue-001")
+	createAndCancel(t, m, "issue-002")
+
+	// 3rd team should fail
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := m.Create(ctx, "issue-003")
+	if err == nil {
+		t.Fatal("expected error when exceeding max teams, got nil")
+	}
+	if !strings.Contains(err.Error(), "maximum") {
+		t.Errorf("expected error to mention 'maximum', got %q", err.Error())
+	}
+
+	// Count should still be 2
+	if m.Count() != 2 {
+		t.Errorf("expected 2 teams, got %d", m.Count())
+	}
+}
+
+func TestCreateAfterDisbandAllowsNew(t *testing.T) {
+	factory := newMockFactory(t)
+	m := NewManager(factory, 2)
+
+	createAndCancel(t, m, "issue-001")
+	t2 := createAndCancel(t, m, "issue-002")
+
+	// Disband one team
+	if err := m.Disband(t2.ID); err != nil {
+		t.Fatalf("Disband failed: %v", err)
+	}
+
+	// Now creating a new team should succeed
+	t3 := createAndCancel(t, m, "issue-003")
+	if t3 == nil {
+		t.Fatal("expected team to be created after disband")
+	}
+	if m.Count() != 2 {
+		t.Errorf("expected 2 teams, got %d", m.Count())
+	}
+}
+
+func TestDefaultMaxTeams(t *testing.T) {
+	factory := newMockFactory(t)
+	m := NewManager(factory, 0) // 0 means use default
+
+	// Should allow up to DefaultMaxTeams (4)
+	for i := 1; i <= DefaultMaxTeams; i++ {
+		createAndCancel(t, m, fmt.Sprintf("issue-%03d", i))
+	}
+	if m.Count() != DefaultMaxTeams {
+		t.Errorf("expected %d teams, got %d", DefaultMaxTeams, m.Count())
+	}
+
+	// Next one should fail
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := m.Create(ctx, "issue-over-limit")
+	if err == nil {
+		t.Fatal("expected error when exceeding default max teams")
+	}
+}
+
+func TestCreateAnnouncesStart(t *testing.T) {
+	factory := newMockFactory(t)
+	m := NewManager(factory, 0)
+
+	team := createAndCancel(t, m, "issue-announce")
+
+	for _, ag := range []*agent.Agent{team.Architect, team.Engineer, team.Reviewer} {
+		msgs, err := ag.ChatLog.Poll("PM")
+		if err != nil {
+			t.Fatalf("Poll failed for %s: %v", ag.ID.String(), err)
+		}
+		if len(msgs) != 1 {
+			t.Errorf("expected 1 announce message for %s, got %d", ag.ID.String(), len(msgs))
+			continue
+		}
+		if msgs[0].Sender != ag.ID.String() {
+			t.Errorf("expected sender %s, got %s", ag.ID.String(), msgs[0].Sender)
+		}
+		if !strings.Contains(msgs[0].Body, "作業を開始します") {
+			t.Errorf("expected announce body to contain '作業を開始します', got %q", msgs[0].Body)
+		}
+		if !strings.Contains(msgs[0].Body, "issue-announce") {
+			t.Errorf("expected announce body to contain issue ID, got %q", msgs[0].Body)
+		}
 	}
 }
