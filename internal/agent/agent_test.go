@@ -39,7 +39,7 @@ NEXT: テストを書く`
 
 func TestParseDistilledMemoFallback(t *testing.T) {
 	raw := "予期しないフォーマットの応答"
-	memo := parseDistilledMemo("pm", raw)
+	memo := parseDistilledMemo("superintendent", raw)
 
 	if memo.CurrentState != raw {
 		t.Errorf("expected fallback to raw, got %s", memo.CurrentState)
@@ -115,8 +115,8 @@ func TestReadySignaledAfterRun(t *testing.T) {
 	os.MkdirAll(memosDir, 0755)
 
 	ag := NewAgent(AgentConfig{
-		ID:            AgentID{Role: RolePM},
-		Role:          RolePM,
+		ID:            AgentID{Role: RoleSuperintendent},
+		Role:          RoleSuperintendent,
 		SystemPrompt:  "test",
 		Model:         "test",
 		ChatLogPath:   logPath,
@@ -159,8 +159,8 @@ func TestReadySignaledOnSendError(t *testing.T) {
 	os.MkdirAll(memosDir, 0755)
 
 	ag := NewAgent(AgentConfig{
-		ID:            AgentID{Role: RolePM},
-		Role:          RolePM,
+		ID:            AgentID{Role: RoleSuperintendent},
+		Role:          RoleSuperintendent,
 		SystemPrompt:  "test",
 		Model:         "test",
 		ChatLogPath:   logPath,

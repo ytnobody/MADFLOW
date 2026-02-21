@@ -21,7 +21,6 @@ type PromptVars struct {
 // promptFileNames maps roles to their prompt template filenames.
 var promptFileNames = map[Role]string{
 	RoleSuperintendent: "superintendent.md",
-	RolePM:             "pm.md",
 	RoleArchitect:      "architect.md",
 	RoleEngineer:       "engineer.md",
 }

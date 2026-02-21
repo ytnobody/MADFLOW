@@ -9,7 +9,6 @@ type Role string
 
 const (
 	RoleSuperintendent  Role = "superintendent"
-	RolePM              Role = "pm"
 	RoleArchitect       Role = "architect"
 	RoleEngineer        Role = "engineer"
 	RoleOrchestrator    Role = "orchestrator"
@@ -46,9 +45,8 @@ type WorkMemo struct {
 
 // AllowedTargets defines communication permissions per role (chain principle).
 var AllowedTargets = map[Role][]Role{
-	RoleSuperintendent: {RolePM},
-	RolePM:             {RoleSuperintendent, RoleArchitect, RoleOrchestrator},
-	RoleArchitect:      {RolePM, RoleEngineer},
+	RoleSuperintendent: {RoleArchitect, RoleOrchestrator},
+	RoleArchitect:      {RoleSuperintendent, RoleEngineer},
 	RoleEngineer:       {RoleArchitect},
 }
 
