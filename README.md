@@ -4,7 +4,7 @@ MADFLOW（Multi-Agent Development Flow）は、複数の AI エージェント�
 
 ## 特徴
 
-- **動的特務チーム型アーキテクチャ**: 監督・PM・アーキテクト・エンジニア・レビュアー・リリースマネージャーの6つのロールが連携
+- **動的特務チーム型アーキテクチャ**: 監督・エンジニア・レビュアー・リリースマネージャーの4つのロールが連携
 - **自律的なタスク管理**: イシューの作成から設計・実装・レビュー・リリースまでを AI エージェントが遂行
 - **コンテキストリセット機能**: AIの性能低下を防ぐ自動リフレッシュ機構
 - **Git/GitHub 統合**: ブランチ戦略・イシュー同期を自動管理
@@ -75,8 +75,6 @@ context_reset_minutes = 8
 
 [agent.models]
 superintendent = "claude-opus-4-6"
-pm = "claude-sonnet-4-6"
-architect = "claude-opus-4-6"
 engineer = "claude-sonnet-4-6"
 reviewer = "claude-sonnet-4-6"
 release_manager = "claude-haiku-4-5"

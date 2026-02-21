@@ -44,9 +44,8 @@ type AgentConfig struct {
 
 type ModelConfig struct {
 	Superintendent string `toml:"superintendent"`
-	PM             string `toml:"pm"`
-	Architect      string `toml:"architect"`
 	Engineer       string `toml:"engineer"`
+	Reviewer       string `toml:"reviewer"`
 }
 
 type BranchConfig struct {
@@ -88,12 +87,6 @@ func setDefaults(cfg *Config) {
 	}
 	if cfg.Agent.Models.Superintendent == "" {
 		cfg.Agent.Models.Superintendent = "claude-opus-4-6"
-	}
-	if cfg.Agent.Models.PM == "" {
-		cfg.Agent.Models.PM = "claude-sonnet-4-6"
-	}
-	if cfg.Agent.Models.Architect == "" {
-		cfg.Agent.Models.Architect = "claude-opus-4-6"
 	}
 	if cfg.Agent.Models.Engineer == "" {
 		cfg.Agent.Models.Engineer = "claude-sonnet-4-6"

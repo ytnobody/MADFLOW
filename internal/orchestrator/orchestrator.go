@@ -150,7 +150,7 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	return ctx.Err()
 }
 
-// startResidentAgents starts the superintendent, PM, and release manager.
+// startResidentAgents starts the superintendent.
 func (o *Orchestrator) startResidentAgents(ctx context.Context, wg *sync.WaitGroup) error {
 	resetInterval := time.Duration(o.cfg.Agent.ContextResetMinutes) * time.Minute
 
@@ -159,7 +159,6 @@ func (o *Orchestrator) startResidentAgents(ctx context.Context, wg *sync.WaitGro
 		model string
 	}{
 		{agent.RoleSuperintendent, o.cfg.Agent.Models.Superintendent},
-		{agent.RolePM, o.cfg.Agent.Models.PM},
 	}
 
 	for _, r := range residents {
@@ -413,17 +412,17 @@ func (o *Orchestrator) runEventWatcher(ctx context.Context) {
 			if comment == nil {
 				return
 			}
-			// Notify superintendent, PM, and the assigned team's architect
+			// Notify superintendent and the assigned team's engineer
 			msg := fmt.Sprintf("New comment on %s by @%s: %s", issueID, comment.Author, comment.Body)
 
 			o.chatLog.Append("superintendent", "orchestrator", msg)
-			o.chatLog.Append("PM", "orchestrator", msg)
 
-			// If the issue is assigned to a team, also notify the team architect
+
+			// If the issue is assigned to a team, also notify the team engineer (who now covers architect responsibilities)
 			iss, err := o.store.Get(issueID)
 			if err == nil && iss.AssignedTeam > 0 {
-				archID := fmt.Sprintf("architect-%d", iss.AssignedTeam)
-				o.chatLog.Append(archID, "orchestrator", msg)
+				engineerID := fmt.Sprintf("engineer-%d", iss.AssignedTeam)
+				o.chatLog.Append(engineerID, "orchestrator", msg)
 			}
 		}
 	}
@@ -472,7 +471,7 @@ func (o *Orchestrator) runGitHubSync(ctx context.Context) {
 }
 
 // CreateTeamAgents implements team.TeamFactory.
-func (o *Orchestrator) CreateTeamAgents(teamNum int, issueID string) (architect, engineer *agent.Agent, err error) {
+func (o *Orchestrator) CreateTeamAgents(teamNum int, issueID string) (engineer *agent.Agent, err error) {
 	resetInterval := time.Duration(o.cfg.Agent.ContextResetMinutes) * time.Minute
 	teamNumStr := fmt.Sprintf("%d", teamNum)
 
@@ -490,11 +489,10 @@ func (o *Orchestrator) CreateTeamAgents(teamNum int, issueID string) (architect,
 		role  agent.Role
 		model string
 	}{
-		{agent.RoleArchitect, o.cfg.Agent.Models.Architect},
 		{agent.RoleEngineer, o.cfg.Agent.Models.Engineer},
 	}
 
-	agents := make([]*agent.Agent, 2)
+	agents := make([]*agent.Agent, 1)
 	for i, r := range roles {
 		vars := agent.PromptVars{
 			AgentID:       fmt.Sprintf("%s-%d", r.role, teamNum),
@@ -508,7 +506,7 @@ func (o *Orchestrator) CreateTeamAgents(teamNum int, issueID string) (architect,
 
 		systemPrompt, err := agent.LoadPrompt(o.promptDir, r.role, vars)
 		if err != nil {
-			return nil, nil, nil, fmt.Errorf("load prompt for %s: %w", r.role, err)
+			return nil, fmt.Errorf("load prompt for %s: %w", r.role, err)
 		}
 
 		// Inject cache manager for Gemini models only
@@ -535,7 +533,7 @@ func (o *Orchestrator) CreateTeamAgents(teamNum int, issueID string) (architect,
 		})
 	}
 
-	return agents[0], agents[1], nil
+	return agents[0], nil
 }
 
 // Teams returns the team manager for external access.

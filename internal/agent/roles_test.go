@@ -8,7 +8,6 @@ func TestAgentIDString(t *testing.T) {
 		want string
 	}{
 		{AgentID{Role: RoleSuperintendent, TeamNum: 0}, "superintendent"},
-		{AgentID{Role: RoleArchitect, TeamNum: 1}, "architect-1"},
 		{AgentID{Role: RoleEngineer, TeamNum: 3}, "engineer-3"},
 	}
 	for _, tt := range tests {
@@ -24,13 +23,9 @@ func TestCanSendTo(t *testing.T) {
 		to   Role
 		want bool
 	}{
-		{RoleSuperintendent, RoleArchitect, true},
+		{RoleSuperintendent, RoleEngineer, true},
 		{RoleSuperintendent, RoleOrchestrator, true},
-		{RoleSuperintendent, RoleEngineer, false},
-		{RoleArchitect, RoleSuperintendent, true},
-		{RoleArchitect, RoleEngineer, true},
-		{RoleEngineer, RoleArchitect, true},
-		{RoleEngineer, RoleSuperintendent, false},
+		{RoleEngineer, RoleSuperintendent, true},
 	}
 	for _, tt := range tests {
 		got := CanSendTo(tt.from, tt.to)

@@ -24,7 +24,7 @@ func TestIssueToTeamCreateFlow(t *testing.T) {
 
 	// Create prompts
 	promptDir := t.TempDir()
-	for _, name := range []string{"superintendent.md", "pm.md", "release_manager.md", "architect.md", "engineer.md", "reviewer.md"} {
+	for _, name := range []string{"superintendent.md", "engineer.md"} {
 		os.WriteFile(filepath.Join(promptDir, name), []byte("# "+name), 0644)
 	}
 
@@ -39,11 +39,7 @@ func TestIssueToTeamCreateFlow(t *testing.T) {
 			ContextResetMinutes: 60,
 			Models: config.ModelConfig{
 				Superintendent: "test",
-				PM:             "test",
-				Architect:      "test",
 				Engineer:       "test",
-				Reviewer:       "test",
-				ReleaseManager: "test",
 			},
 		},
 		Branches: config.BranchConfig{
@@ -68,10 +64,10 @@ func TestIssueToTeamCreateFlow(t *testing.T) {
 		t.Errorf("expected open status, got %s", iss.Status)
 	}
 
-	// Step 2: Simulate PM requesting team creation via orchestrator command
+	// Step 2: Simulate superintendent requesting team creation via orchestrator command
 	ctx := t.Context()
 	msg := chatlog.Message{
-		Sender: "pm",
+		Sender: "superintendent",
 		Body:   "TEAM_CREATE " + iss.ID,
 	}
 	orc.HandleCommandForTest(ctx, msg)
@@ -177,7 +173,7 @@ func TestMultipleIssuesAndTeams(t *testing.T) {
 	os.WriteFile(logPath, nil, 0644)
 
 	promptDir := t.TempDir()
-	for _, name := range []string{"superintendent.md", "pm.md", "release_manager.md", "architect.md", "engineer.md", "reviewer.md"} {
+	for _, name := range []string{"superintendent.md", "engineer.md"} {
 		os.WriteFile(filepath.Join(promptDir, name), []byte("# "+name), 0644)
 	}
 
@@ -189,8 +185,8 @@ func TestMultipleIssuesAndTeams(t *testing.T) {
 		Agent: config.AgentConfig{
 			ContextResetMinutes: 60,
 			Models: config.ModelConfig{
-				Superintendent: "test", PM: "test", Architect: "test",
-				Engineer: "test", Reviewer: "test", ReleaseManager: "test",
+				Superintendent: "test",
+				Engineer:       "test",
 			},
 		},
 		Branches: config.BranchConfig{
@@ -208,8 +204,8 @@ func TestMultipleIssuesAndTeams(t *testing.T) {
 	iss3, _ := store.Create("Issue 3", "Body 3")
 
 	// Create teams for issue 1 and 2
-	orc.HandleCommandForTest(ctx, chatlog.Message{Sender: "pm", Body: "TEAM_CREATE " + iss1.ID})
-	orc.HandleCommandForTest(ctx, chatlog.Message{Sender: "pm", Body: "TEAM_CREATE " + iss2.ID})
+	orc.HandleCommandForTest(ctx, chatlog.Message{Sender: "superintendent", Body: "TEAM_CREATE " + iss1.ID})
+	orc.HandleCommandForTest(ctx, chatlog.Message{Sender: "superintendent", Body: "TEAM_CREATE " + iss2.ID})
 
 	teams := orc.Teams()
 	if teams.Count() != 2 {

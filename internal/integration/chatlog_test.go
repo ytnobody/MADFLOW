@@ -24,76 +24,48 @@ func TestTwoAgentsChatLogCommunication(t *testing.T) {
 	// Create the chatlog file
 	os.WriteFile(logPath, nil, 0644)
 
-	// Create mock processes
-	mockPM := NewMockProcess()
-	mockArch := NewMockProcess()
+	mockEngineer := NewMockProcess()
 
-	// Agent PM
-	agentPM := agent.NewAgent(agent.AgentConfig{
-		ID:            agent.AgentID{Role: agent.RolePM},
-		Role:          agent.RolePM,
-		SystemPrompt:  "You are a PM",
+	// Agent Engineer (team 1)
+	agentEngineer := agent.NewAgent(agent.AgentConfig{
+		ID:            agent.AgentID{Role: agent.RoleEngineer, TeamNum: 1},
+		Role:          agent.RoleEngineer,
+		SystemPrompt:  "You are an engineer",
 		ChatLogPath:   logPath,
 		MemosDir:      memosDir,
 		ResetInterval: time.Hour,
-		Process:       mockPM,
-	})
-
-	// Agent Architect (team 1)
-	agentArch := agent.NewAgent(agent.AgentConfig{
-		ID:            agent.AgentID{Role: agent.RoleArchitect, TeamNum: 1},
-		Role:          agent.RoleArchitect,
-		SystemPrompt:  "You are an architect",
-		ChatLogPath:   logPath,
-		MemosDir:      memosDir,
-		ResetInterval: time.Hour,
-		Process:       mockArch,
+		Process:       mockEngineer,
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	// Start both agents
-	go agentPM.Run(ctx)
-	go agentArch.Run(ctx)
+	go agentEngineer.Run(ctx)
 
-	// Wait for agents to initialize (initial Send + Watch setup)
-	time.Sleep(200 * time.Millisecond)
-
-	// Write a message to PM via chatlog
+	// Write a message to engineer
 	writer := NewChatLogWriter(logPath)
-	writer.Write("pm", "superintendent", "新しいイシューが追加されました: Issue #local-001")
+	writer.Write("engineer-1", "superintendent", "Issue #local-001 の設計と実装を開始してください")
 
-	// Wait for PM to process the message
+	// Wait for engineer to process
 	time.Sleep(800 * time.Millisecond)
 
-	// PM should have received at least 2 calls: initial prompt + the message
-	if mockPM.CallCount() < 2 {
-		t.Errorf("expected PM to receive at least 2 calls, got %d", mockPM.CallCount())
+	// Engineer should have received at least 2 calls: initial + the message
+	if mockEngineer.CallCount() < 2 {
+		t.Errorf("expected engineer to receive at least 2 calls, got %d", mockEngineer.CallCount())
 	}
 
-	// Write a message to architect
-	writer.Write("architect-1", "pm", "Issue #local-001 の設計を開始してください")
-
-	// Wait for architect to process
-	time.Sleep(800 * time.Millisecond)
-
-	// Architect should have received at least 2 calls: initial + the message
-	if mockArch.CallCount() < 2 {
-		t.Errorf("expected architect to receive at least 2 calls, got %d", mockArch.CallCount())
-	}
-
-	// Verify the architect received the right message
-	prompts := mockArch.Prompts()
+	// Verify the engineer received the right message
+	prompts := mockEngineer.Prompts()
 	found := false
 	for _, p := range prompts {
-		if strings.Contains(p, "Issue #local-001 の設計を開始してください") {
+		if strings.Contains(p, "Issue #local-001 の設計と実装を開始してください") {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Error("architect did not receive the expected message")
+		t.Error("engineer did not receive the expected message")
 	}
 
 	cancel()
@@ -119,8 +91,8 @@ func TestChatLogWatchFiltering(t *testing.T) {
 	writer := NewChatLogWriter(logPath)
 
 	// Write messages to different recipients
-	writer.Write("pm", "superintendent", "PM向けメッセージ")
-	writer.Write("engineer-1", "architect-1", "エンジニア向けメッセージ")
+	writer.Write("engineer-1", "superintendent", "エンジニア向けメッセージ (superintendent)")
+	writer.Write("engineer-1", "superintendent", "エンジニア向けメッセージ")
 	writer.Write("reviewer-1", "engineer-1", "レビュアー向けメッセージ")
 
 	// Wait for watch to pick up (needs at least one polling tick of 500ms)
@@ -191,7 +163,7 @@ func TestAgentContextReset(t *testing.T) {
 	time.Sleep(150 * time.Millisecond) // Ensure timer expires
 
 	writer := NewChatLogWriter(logPath)
-	writer.Write("engineer-1", "architect-1", "実装を開始してください")
+	writer.Write("engineer-1", "engineer-1", "実装を開始してください")
 
 	// Wait for reset + message processing
 	time.Sleep(1000 * time.Millisecond)

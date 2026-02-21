@@ -11,8 +11,7 @@ context_reset_minutes = 8
 
 [agent.models]
 superintendent = "claude-sonnet-4-6"
-pm = "claude-haiku-4-5"
-architect = "claude-opus-4-6"
+
 engineer = "claude-sonnet-4-6"
 
 # GitHub Issue 定期同期を使う場合（オプショナル）

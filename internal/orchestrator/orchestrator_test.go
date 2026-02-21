@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -28,8 +27,6 @@ func testConfig(repoPath string) *config.Config {
 			ContextResetMinutes: 8,
 			Models: config.ModelConfig{
 				Superintendent: "claude-opus-4-6",
-				PM:             "claude-sonnet-4-6",
-				Architect:      "claude-opus-4-6",
 				Engineer:       "claude-sonnet-4-6",
 			},
 		},
@@ -110,7 +107,7 @@ func TestHandleCommand(t *testing.T) {
 
 	// Test unknown command doesn't panic
 	msg := chatlog.Message{
-		Sender: "pm",
+		Sender: "superintendent",
 		Body:   "UNKNOWN_CMD",
 	}
 	orc.handleCommand(t.Context(), msg)
@@ -188,27 +185,24 @@ func TestCreateTeamAgents(t *testing.T) {
 
 	orc := New(cfg, dir, promptDir)
 
-	architect, engineer, err := orc.CreateTeamAgents(1, "test-issue-001")
+	engineer, err := orc.CreateTeamAgents(1, "test-issue-001")
 	if err != nil {
 		t.Fatalf("CreateTeamAgents failed: %v", err)
 	}
-	if architect == nil || engineer == nil {
+	if engineer == nil {
 		t.Fatal("one or more agents is nil")
 	}
 
-	// Verify agent IDs
-	if architect.ID.Role != "architect" {
-		t.Errorf("expected architect role, got %s", architect.ID.Role)
-	}
+
 	if engineer.ID.Role != "engineer" {
 		t.Errorf("expected engineer role, got %s", engineer.ID.Role)
 	}
 
 
 	// All agents should have team number 1
-	if architect.ID.TeamNum != 1 {
-		t.Errorf("expected team num 1, got %d", architect.ID.TeamNum)
-	}
+	// if architect.ID.TeamNum != 1 {
+	// 	t.Errorf("expected team num 1, got %d", architect.ID.TeamNum)
+	// }
 }
 
 func TestCreateTeamAgentsWithIssue(t *testing.T) {
@@ -232,15 +226,12 @@ func TestCreateTeamAgentsWithIssue(t *testing.T) {
 		t.Fatalf("Create issue failed: %v", err)
 	}
 
-	architect, engineer, err := orc.CreateTeamAgents(1, iss.ID)
+	_, err = orc.CreateTeamAgents(1, iss.ID)
 	if err != nil {
 		t.Fatalf("CreateTeamAgents failed: %v", err)
 	}
 
-	// Architect should have the issue context as original task
-	if !strings.Contains(architect.OriginalTask, "Test Issue") {
-		t.Errorf("expected original task to contain issue title, got: %s", architect.OriginalTask)
-	}
+
 }
 
 // mockProcess is a test double for agent.Process.
@@ -260,7 +251,7 @@ func newMockTeamFactory(t *testing.T) *mockTeamFactory {
 	return &mockTeamFactory{tmpDir: t.TempDir()}
 }
 
-func (f *mockTeamFactory) CreateTeamAgents(teamNum int, issueID string) (architect, engineer *agent.Agent, err error) {
+func (f *mockTeamFactory) CreateTeamAgents(teamNum int, issueID string) (engineer *agent.Agent, err error) {
 	makeAgent := func(role agent.Role) *agent.Agent {
 		id := agent.AgentID{Role: role, TeamNum: teamNum}
 		logPath := filepath.Join(f.tmpDir, fmt.Sprintf("chatlog-%s-%d.txt", role, teamNum))
@@ -277,8 +268,7 @@ func (f *mockTeamFactory) CreateTeamAgents(teamNum int, issueID string) (archite
 			Process:       &mockProcess{},
 		})
 	}
-	return makeAgent(agent.RoleArchitect),
-		makeAgent(agent.RoleEngineer),
+	return makeAgent(agent.RoleEngineer),
 		nil
 }
 
@@ -361,7 +351,7 @@ func TestCreateTeamAgentsMissingPrompt(t *testing.T) {
 
 	orc := New(cfg, dir, promptDir)
 
-	_, _, err := orc.CreateTeamAgents(1, "test-issue")
+	_, err := orc.CreateTeamAgents(1, "test-issue")
 	if err == nil {
 		t.Fatal("expected error for missing prompt templates")
 	}

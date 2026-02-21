@@ -45,9 +45,6 @@ develop = "develop"
 	if cfg.Agent.ContextResetMinutes != 10 {
 		t.Errorf("expected context_reset_minutes 10, got %d", cfg.Agent.ContextResetMinutes)
 	}
-	if cfg.Agent.Models.PM != "claude-sonnet-4-6" {
-		t.Errorf("expected default PM model, got %s", cfg.Agent.Models.PM)
-	}
 	if cfg.Branches.FeaturePrefix != "feature/issue-" {
 		t.Errorf("expected default feature prefix, got %s", cfg.Branches.FeaturePrefix)
 	}
@@ -78,9 +75,6 @@ path = "."
 	}
 	if cfg.Agent.Models.Superintendent != "claude-opus-4-6" {
 		t.Errorf("expected default superintendent model, got %s", cfg.Agent.Models.Superintendent)
-	}
-	if cfg.Agent.Models.ReleaseManager != "claude-haiku-4-5" {
-		t.Errorf("expected default RM model, got %s", cfg.Agent.Models.ReleaseManager)
 	}
 }
 

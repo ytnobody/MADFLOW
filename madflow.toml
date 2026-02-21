@@ -11,7 +11,6 @@
   [agent.models]
     superintendent = "claude-sonnet-4-6"
 
-    architect = "claude-opus-4-6"
     engineer = "claude-sonnet-4-6"
 
 [branches]

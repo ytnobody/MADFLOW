@@ -16,7 +16,7 @@ const useUsage = `Usage: madflow use <claude|gemini|mixed>
 Switches all agent models in madflow.toml to a specific backend.
   claude: All roles use Claude models (stable, higher cost)
   gemini: All roles use Gemini models (cost-effective)
-  mixed:  Strategic roles (superintendent, PM, architect, RM) use Claude,
+  mixed:  Strategic roles (superintendent, RM) use Claude,
           execution roles (engineer, reviewer) use Gemini (recommended for cost optimization)
 `
 
@@ -32,29 +32,17 @@ func cmdUse() error {
 	case "claude":
 		newModels = config.ModelConfig{
 			Superintendent: "claude-opus-4-6",
-			PM:             "claude-sonnet-4-6",
-			Architect:      "claude-opus-4-6",
 			Engineer:       "claude-sonnet-4-6",
-			Reviewer:       "claude-sonnet-4-6",
-			ReleaseManager: "claude-haiku-4-5",
 		}
 	case "gemini":
 		newModels = config.ModelConfig{
 			Superintendent: "gemini-2.5-pro",
-			PM:             "gemini-2.5-flash",
-			Architect:      "gemini-2.5-pro",
 			Engineer:       "gemini-2.5-flash",
-			Reviewer:       "gemini-2.5-flash",
-			ReleaseManager: "gemini-2.5-flash",
 		}
 	case "mixed":
 		newModels = config.ModelConfig{
 			Superintendent: "claude-sonnet-4-6",
-			PM:             "claude-haiku-4-5",
-			Architect:      "claude-sonnet-4-6",
 			Engineer:       "gemini-2.5-flash",
-			Reviewer:       "gemini-2.5-flash",
-			ReleaseManager: "claude-haiku-4-5",
 		}
 	default:
 		fmt.Fprintf(os.Stderr, "unknown backend: %s\n", backend)

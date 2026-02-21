@@ -14,14 +14,12 @@ import (
 
 // announceStart は各エージェントの作業開始をチャットログに報告する。
 func announceStart(team *Team) {
-	for _, ag := range []*agent.Agent{team.Architect, team.Engineer} {
-		line := chatlog.FormatMessage(
-			"PM",
-			ag.ID.String(),
-			fmt.Sprintf("チーム %d の %s として作業を開始します。イシュー: %s", team.ID, ag.ID.Role, team.IssueID),
-		)
-		appendLine(ag.ChatLog.Path(), line)
-	}
+	line := chatlog.FormatMessage(
+		"",
+		team.Engineer.ID.String(),
+		fmt.Sprintf("チーム %d の %s として作業を開始します。イシュー: %s", team.ID, team.Engineer.ID.Role, team.IssueID),
+	)
+	appendLine(team.Engineer.ChatLog.Path(), line)
 }
 
 // appendLine はチャットログファイルに1行追記する。
@@ -35,11 +33,10 @@ func appendLine(path, line string) {
 	fmt.Fprintln(f, line)
 }
 
-// Team represents a task force team (architect + engineer + reviewer).
+// Team represents a task force team (engineer).
 type Team struct {
 	ID        int
 	IssueID   string
-	Architect *agent.Agent
 	Engineer  *agent.Agent
 	cancel    context.CancelFunc
 }
@@ -58,7 +55,7 @@ type Manager struct {
 
 // TeamFactory creates agents for a team. Provided by the orchestrator.
 type TeamFactory interface {
-	CreateTeamAgents(teamNum int, issueID string) (architect, engineer *agent.Agent, err error)
+	CreateTeamAgents(teamNum int, issueID string) (engineer *agent.Agent, err error)
 }
 
 func NewManager(factory TeamFactory, maxTeams int) *Manager {
@@ -84,7 +81,7 @@ func (m *Manager) Create(ctx context.Context, issueID string) (*Team, error) {
 	m.nextID++
 	m.mu.Unlock()
 
-	architect, engineer, err := m.factory.CreateTeamAgents(teamNum, issueID)
+	engineer, err := m.factory.CreateTeamAgents(teamNum, issueID)
 	if err != nil {
 		return nil, fmt.Errorf("create team agents: %w", err)
 	}
@@ -94,7 +91,6 @@ func (m *Manager) Create(ctx context.Context, issueID string) (*Team, error) {
 	team := &Team{
 		ID:        teamNum,
 		IssueID:   issueID,
-		Architect: architect,
 		Engineer:  engineer,
 		cancel:    cancel,
 	}
@@ -103,36 +99,29 @@ func (m *Manager) Create(ctx context.Context, issueID string) (*Team, error) {
 	m.teams[teamNum] = team
 	m.mu.Unlock()
 
-	// Start all three agents
-	go func() {
-		if err := architect.Run(teamCtx); err != nil && teamCtx.Err() == nil {
-			log.Printf("[team-%d] architect stopped: %v", teamNum, err)
-		}
-	}()
+	// Start the engineer agent
 	go func() {
 		if err := engineer.Run(teamCtx); err != nil && teamCtx.Err() == nil {
 			log.Printf("[team-%d] engineer stopped: %v", teamNum, err)
 		}
 	}()
 
-	// Wait for all agents to complete their initial startup
-	for _, ag := range []*agent.Agent{architect, engineer} {
+	// Wait for the engineer agent to complete initial startup
+	select {
+	case <-engineer.Ready():
+	case <-ctx.Done():
+		// Context cancelled, but engineer should signal Ready very soon.
 		select {
-		case <-ag.Ready():
-		case <-ctx.Done():
-			// Context cancelled, but agents should signal Ready very soon.
-			select {
-			case <-ag.Ready():
-			case <-time.After(30 * time.Second):
-				log.Printf("[team-%d] timed out waiting for agents to be ready", teamNum)
-				return team, nil
-			}
+		case <-engineer.Ready():
+		case <-time.After(30 * time.Second):
+			log.Printf("[team-%d] timed out waiting for engineer to be ready", teamNum)
+			return team, nil
 		}
 	}
 
 	announceStart(team)
 
-	log.Printf("[team-%d] created for issue %s (all agents ready)", teamNum, issueID)
+	log.Printf("[team-%d] created for issue %s (engineer ready)", teamNum, issueID)
 	return team, nil
 }
 
