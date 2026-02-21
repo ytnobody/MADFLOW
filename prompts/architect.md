@@ -34,6 +34,21 @@ git pull
 git checkout -b {{FEATURE_PREFIX}}<イシューID>
 ```
 
+ブランチ作成後、GitHub Issueに設計開始をコメントします（`url` フィールドがある場合のみ）:
+```bash
+gh issue comment <イシュー番号> -R <owner>/<repo> --body "**[設計開始]** by \`{{AGENT_ID}}\`
+
+設計を開始しました。feature ブランチ: {{FEATURE_PREFIX}}<イシューID>"
+```
+
+イシュー番号・owner・repo は、イシューファイルの `url` フィールドから取得します。
+例: `url = "https://api.github.com/repos/ytnobody/MADFLOW/issues/5"` の場合
+- owner: `ytnobody`
+- repo: `MADFLOW`
+- イシュー番号: `5`
+
+`url` フィールドがない場合はコメント投稿をスキップしてください。
+
 ### 2. 設計仕様の記述
 
 イシューファイルの `body` に設計仕様を追記します。以下を含めてください:
@@ -48,6 +63,17 @@ git checkout -b {{FEATURE_PREFIX}}<イシューID>
 ```bash
 sed -i 's/status = "open"/status = "in_progress"/' {{ISSUES_DIR}}/<イシューID>.toml
 ```
+
+### 3.5. イシューへの設計完了コメント
+
+設計仕様の記述が完了したら、GitHub Issueに設計完了をコメントします（`url` フィールドがある場合のみ）:
+```bash
+gh issue comment <イシュー番号> -R <owner>/<repo> --body "**[設計完了]** by \`{{AGENT_ID}}\`
+
+設計仕様をイシューファイルに記述しました。エンジニアに実装を指示します。"
+```
+
+`url` フィールドがない場合はコメント投稿をスキップしてください。
 
 ### 4. エンジニアへの設計完了通知
 
