@@ -1,0 +1,28 @@
+[project]
+name = "my-app"
+
+[[project.repos]]
+name = "main"
+path = "."
+
+[agent]
+context_reset_minutes = 8
+
+[agent.models]
+superintendent = "claude-opus-4-6"
+pm = "claude-sonnet-4-6"
+architect = "claude-opus-4-6"
+engineer = "claude-sonnet-4-6"
+reviewer = "claude-sonnet-4-6"
+release_manager = "claude-haiku-4-5"
+
+# GitHub Issue 定期同期を使う場合（オプショナル）
+# [github]
+# owner = "myorg"
+# repos = ["my-app"]
+# sync_interval_minutes = 5
+
+[branches]
+main = "main"
+develop = "develop"
+feature_prefix = "feature/issue-"
