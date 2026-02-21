@@ -75,14 +75,11 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 
 	var wg sync.WaitGroup
 
-	// Start all teams first so they are watching the chatlog
-	// before resident agents (PM etc.) begin sending messages.
-	o.startAllTeams(ctx)
-
-	// Start resident agents (superintendent, PM, RM)
+	// Start all agents (teams + residents) concurrently
 	if err := o.startResidentAgents(ctx, &wg); err != nil {
 		return fmt.Errorf("start resident agents: %w", err)
 	}
+	o.startAllTeams(ctx)
 
 	// Wait for all resident agents to complete their initial startup
 	if err := o.waitForAgentsReady(ctx); err != nil {
