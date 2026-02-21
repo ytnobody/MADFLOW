@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/ytnobody/madflow/internal/agent"
+	"github.com/ytnobody/madflow/internal/cache"
 	"github.com/ytnobody/madflow/internal/chatlog"
 	"github.com/ytnobody/madflow/internal/config"
 	"github.com/ytnobody/madflow/internal/git"
@@ -25,10 +26,12 @@ type Orchestrator struct {
 	dataDir   string
 	promptDir string
 
-	store   *issue.Store
-	chatLog *chatlog.ChatLog
-	teams   *team.Manager
-	repos   map[string]*git.Repo // name -> repo
+	store        *issue.Store
+	chatLog      *chatlog.ChatLog
+	teams        *team.Manager
+	repos        map[string]*git.Repo // name -> repo
+	dormancy     *agent.Dormancy
+	cacheManager *cache.Manager // nil when cache is disabled
 
 	residentAgents []*agent.Agent
 	mu             sync.Mutex
@@ -51,9 +54,32 @@ func New(cfg *config.Config, dataDir, promptDir string) *Orchestrator {
 		store:     issue.NewStore(issuesDir),
 		chatLog:   chatlog.New(chatLogPath),
 		repos:     repos,
+		dormancy:  agent.NewDormancy(),
 	}
 
-	orc.teams = team.NewManagerWithState(orc, filepath.Join(dataDir, "teams.toml"))
+	orc.teams = team.NewManager(orc, cfg.Agent.MaxTeams)
+
+	// Initialize cache manager if enabled
+	if cfg.Cache != nil && cfg.Cache.Enabled {
+		apiKey := cfg.Cache.GeminiAPIKey
+		if apiKey == "" {
+			apiKey = os.Getenv("GEMINI_API_KEY")
+		}
+		if apiKey != "" {
+			model := cfg.Agent.Models.Engineer
+			cacheDir := filepath.Join(dataDir, "caches")
+			cm, err := cache.NewManager(context.Background(), apiKey, model, cacheDir, cfg.Cache.TTLMinutes)
+			if err != nil {
+				log.Printf("[orchestrator] cache manager init failed: %v", err)
+			} else {
+				orc.cacheManager = cm
+				log.Printf("[orchestrator] cache manager initialized (model=%s, ttl=%dm)", model, cfg.Cache.TTLMinutes)
+			}
+		} else {
+			log.Printf("[orchestrator] cache.enabled=true but GEMINI_API_KEY is not set, cache disabled")
+		}
+	}
+
 	return orc
 }
 
@@ -71,16 +97,17 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 
 	log.Println("[orchestrator] starting")
 
-	// Restore teams from previous run
-	if err := o.teams.Restore(ctx, o); err != nil {
-		log.Printf("[orchestrator] team restore failed: %v", err)
-	}
-
 	var wg sync.WaitGroup
 
-	// Start resident agents (superintendent, PM, RM)
+	// Start all agents (teams + residents) concurrently
 	if err := o.startResidentAgents(ctx, &wg); err != nil {
 		return fmt.Errorf("start resident agents: %w", err)
+	}
+	o.startAllTeams(ctx)
+
+	// Wait for all resident agents to complete their initial startup
+	if err := o.waitForAgentsReady(ctx); err != nil {
+		return fmt.Errorf("wait for agents ready: %w", err)
 	}
 
 	// Start GitHub sync if configured
@@ -99,6 +126,13 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 		}()
 	}
 
+	// Start chatlog cleanup goroutine
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		o.runChatlogCleanup(ctx)
+	}()
+
 	// Watch chatlog for orchestrator commands
 	wg.Add(1)
 	go func() {
@@ -116,7 +150,7 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	return ctx.Err()
 }
 
-// startResidentAgents starts the superintendent, PM, and release manager.
+// startResidentAgents starts the superintendent.
 func (o *Orchestrator) startResidentAgents(ctx context.Context, wg *sync.WaitGroup) error {
 	resetInterval := time.Duration(o.cfg.Agent.ContextResetMinutes) * time.Minute
 
@@ -125,8 +159,6 @@ func (o *Orchestrator) startResidentAgents(ctx context.Context, wg *sync.WaitGro
 		model string
 	}{
 		{agent.RoleSuperintendent, o.cfg.Agent.Models.Superintendent},
-		{agent.RolePM, o.cfg.Agent.Models.PM},
-		{agent.RoleReleaseManager, o.cfg.Agent.Models.ReleaseManager},
 	}
 
 	for _, r := range residents {
@@ -153,6 +185,7 @@ func (o *Orchestrator) startResidentAgents(ctx context.Context, wg *sync.WaitGro
 			ChatLogPath:   o.chatLog.Path(),
 			MemosDir:      filepath.Join(o.dataDir, "memos"),
 			ResetInterval: resetInterval,
+			Dormancy:      o.dormancy,
 		})
 
 		o.mu.Lock()
@@ -167,6 +200,85 @@ func (o *Orchestrator) startResidentAgents(ctx context.Context, wg *sync.WaitGro
 	}
 
 	return nil
+}
+
+// waitForAgentsReady blocks until all resident agents have completed
+// their initial startup (first prompt sent) or ctx is cancelled.
+func (o *Orchestrator) waitForAgentsReady(ctx context.Context) error {
+	o.mu.Lock()
+	agents := make([]*agent.Agent, len(o.residentAgents))
+	copy(agents, o.residentAgents)
+	o.mu.Unlock()
+
+	for _, ag := range agents {
+		select {
+		case <-ag.Ready():
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+
+	log.Println("[orchestrator] all resident agents ready")
+	return nil
+}
+
+// startAllTeams unconditionally creates maxTeams teams at startup in parallel.
+// If open/in-progress issues exist, they are assigned to teams.
+// Remaining slots start as standby teams ready to receive work.
+// Returns after all teams are fully operational.
+func (o *Orchestrator) startAllTeams(ctx context.Context) {
+	maxTeams := o.cfg.Agent.MaxTeams
+	if maxTeams <= 0 {
+		maxTeams = team.DefaultMaxTeams
+	}
+
+	// Collect assignable issues
+	var assignable []*issue.Issue
+	allIssues, err := o.store.List(issue.StatusFilter{})
+	if err != nil {
+		log.Printf("[orchestrator] start teams: list issues: %v", err)
+	} else {
+		for _, iss := range allIssues {
+			if iss.Status == issue.StatusOpen || iss.Status == issue.StatusInProgress {
+				assignable = append(assignable, iss)
+			}
+		}
+	}
+
+	// Launch all teams concurrently
+	var twg sync.WaitGroup
+	for i := 0; i < maxTeams; i++ {
+		idx := i
+		var issueID string
+		if idx < len(assignable) {
+			issueID = assignable[idx].ID
+		}
+
+		twg.Add(1)
+		go func() {
+			defer twg.Done()
+
+			t, err := o.teams.Create(ctx, issueID)
+			if err != nil {
+				log.Printf("[orchestrator] start teams: team %d: %v", idx+1, err)
+				return
+			}
+
+			if idx < len(assignable) {
+				o.mu.Lock()
+				assignable[idx].AssignedTeam = t.ID
+				assignable[idx].Status = issue.StatusInProgress
+				o.store.Update(assignable[idx])
+				o.mu.Unlock()
+				log.Printf("[orchestrator] started team %d for issue %s", t.ID, issueID)
+			} else {
+				log.Printf("[orchestrator] started team %d (standby)", t.ID)
+			}
+		}()
+	}
+	twg.Wait()
+
+	log.Printf("[orchestrator] started %d teams", o.teams.Count())
 }
 
 // runAgentWithRestart runs an agent and restarts it if it exits unexpectedly.
@@ -300,17 +412,17 @@ func (o *Orchestrator) runEventWatcher(ctx context.Context) {
 			if comment == nil {
 				return
 			}
-			// Notify superintendent, PM, and the assigned team's architect
+			// Notify superintendent and the assigned team's engineer
 			msg := fmt.Sprintf("New comment on %s by @%s: %s", issueID, comment.Author, comment.Body)
 
 			o.chatLog.Append("superintendent", "orchestrator", msg)
-			o.chatLog.Append("PM", "orchestrator", msg)
 
-			// If the issue is assigned to a team, also notify the team architect
+
+			// If the issue is assigned to a team, also notify the team engineer
 			iss, err := o.store.Get(issueID)
 			if err == nil && iss.AssignedTeam > 0 {
-				archID := fmt.Sprintf("architect-%d", iss.AssignedTeam)
-				o.chatLog.Append(archID, "orchestrator", msg)
+				engineerID := fmt.Sprintf("engineer-%d", iss.AssignedTeam)
+				o.chatLog.Append(engineerID, "orchestrator", msg)
 			}
 		}
 	}
@@ -318,6 +430,33 @@ func (o *Orchestrator) runEventWatcher(ctx context.Context) {
 	watcher := github.NewEventWatcher(o.store, gh.Owner, gh.Repos, interval, callback)
 	if err := watcher.Run(ctx); err != nil && ctx.Err() == nil {
 		log.Printf("[orchestrator] event watcher stopped: %v", err)
+	}
+}
+
+// runChatlogCleanup periodically truncates old chatlog entries.
+func (o *Orchestrator) runChatlogCleanup(ctx context.Context) {
+	maxLines := o.cfg.Agent.ChatlogMaxLines
+	if maxLines <= 0 {
+		maxLines = 500
+	}
+
+	interval := time.Duration(o.cfg.Agent.ContextResetMinutes) * time.Minute
+	if interval <= 0 {
+		interval = 8 * time.Minute
+	}
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := o.chatLog.Truncate(maxLines); err != nil {
+				log.Printf("[orchestrator] chatlog cleanup failed: %v", err)
+			}
+		}
 	}
 }
 
@@ -331,47 +470,8 @@ func (o *Orchestrator) runGitHubSync(ctx context.Context) {
 	}
 }
 
-// PrepareWorktree implements team.WorktreeProvider.
-func (o *Orchestrator) PrepareWorktree(teamNum int, issueID string) (string, error) {
-	repo := o.firstRepo()
-	if repo == nil {
-		return "", fmt.Errorf("no repository configured")
-	}
-
-	wtPath := filepath.Join(o.dataDir, "worktrees", fmt.Sprintf("team-%d", teamNum))
-
-	// If directory already exists (crash recovery), reuse it
-	if info, err := os.Stat(wtPath); err == nil && info.IsDir() {
-		log.Printf("[orchestrator] reusing existing worktree at %s", wtPath)
-		return wtPath, nil
-	}
-
-	branch := o.cfg.Branches.FeaturePrefix + issueID
-	base := o.cfg.Branches.Develop
-
-	if err := repo.AddWorktree(wtPath, branch, base); err != nil {
-		return "", fmt.Errorf("add worktree: %w", err)
-	}
-
-	log.Printf("[orchestrator] created worktree at %s (branch %s)", wtPath, branch)
-	return wtPath, nil
-}
-
-// CleanupWorktree implements team.WorktreeProvider.
-func (o *Orchestrator) CleanupWorktree(workDir string) error {
-	repo := o.firstRepo()
-	if repo != nil {
-		if err := repo.RemoveWorktree(workDir); err != nil {
-			log.Printf("[orchestrator] git worktree remove failed, falling back to os.RemoveAll: %v", err)
-			return os.RemoveAll(workDir)
-		}
-		return nil
-	}
-	return os.RemoveAll(workDir)
-}
-
 // CreateTeamAgents implements team.TeamFactory.
-func (o *Orchestrator) CreateTeamAgents(teamNum int, issueID string, workDir string) (architect, engineer, reviewer *agent.Agent, err error) {
+func (o *Orchestrator) CreateTeamAgents(teamNum int, issueID string) (engineer *agent.Agent, err error) {
 	resetInterval := time.Duration(o.cfg.Agent.ContextResetMinutes) * time.Minute
 	teamNumStr := fmt.Sprintf("%d", teamNum)
 
@@ -389,18 +489,10 @@ func (o *Orchestrator) CreateTeamAgents(teamNum int, issueID string, workDir str
 		role  agent.Role
 		model string
 	}{
-		{agent.RoleArchitect, o.cfg.Agent.Models.Architect},
 		{agent.RoleEngineer, o.cfg.Agent.Models.Engineer},
-		{agent.RoleReviewer, o.cfg.Agent.Models.Reviewer},
 	}
 
-	// Determine the effective working directory
-	effectiveWorkDir := workDir
-	if effectiveWorkDir == "" {
-		effectiveWorkDir = o.firstRepoPath()
-	}
-
-	agents := make([]*agent.Agent, 3)
+	agents := make([]*agent.Agent, 1)
 	for i, r := range roles {
 		vars := agent.PromptVars{
 			AgentID:       fmt.Sprintf("%s-%d", r.role, teamNum),
@@ -410,12 +502,19 @@ func (o *Orchestrator) CreateTeamAgents(teamNum int, issueID string, workDir str
 			MainBranch:    o.cfg.Branches.Main,
 			FeaturePrefix: o.cfg.Branches.FeaturePrefix,
 			TeamNum:       teamNumStr,
-			RepoPath:      effectiveWorkDir,
 		}
 
 		systemPrompt, err := agent.LoadPrompt(o.promptDir, r.role, vars)
 		if err != nil {
-			return nil, nil, nil, fmt.Errorf("load prompt for %s: %w", r.role, err)
+			return nil, fmt.Errorf("load prompt for %s: %w", r.role, err)
+		}
+
+		// Inject cache manager for Gemini models only
+		var agentCacheManager *cache.Manager
+		var agentIssueID string
+		if o.cacheManager != nil && strings.HasPrefix(r.model, "gemini-") {
+			agentCacheManager = o.cacheManager
+			agentIssueID = issueID
 		}
 
 		agents[i] = agent.NewAgent(agent.AgentConfig{
@@ -423,15 +522,18 @@ func (o *Orchestrator) CreateTeamAgents(teamNum int, issueID string, workDir str
 			Role:          r.role,
 			SystemPrompt:  systemPrompt,
 			Model:         r.model,
-			WorkDir:       effectiveWorkDir,
+			WorkDir:       o.firstRepoPath(),
 			ChatLogPath:   o.chatLog.Path(),
 			MemosDir:      filepath.Join(o.dataDir, "memos"),
 			ResetInterval: resetInterval,
 			OriginalTask:  originalTask,
+			Dormancy:      o.dormancy,
+			CacheManager:  agentCacheManager,
+			IssueID:       agentIssueID,
 		})
 	}
 
-	return agents[0], agents[1], agents[2], nil
+	return agents[0], nil
 }
 
 // Teams returns the team manager for external access.
@@ -454,27 +556,9 @@ func (o *Orchestrator) HandleCommandForTest(ctx context.Context, msg chatlog.Mes
 	o.handleCommand(ctx, msg)
 }
 
-// IsFinished implements team.IssueChecker.
-// Returns true if the issue is resolved or closed.
-func (o *Orchestrator) IsFinished(issueID string) bool {
-	iss, err := o.store.Get(issueID)
-	if err != nil {
-		return false // can't determine, assume not finished
-	}
-	return iss.Status == issue.StatusResolved || iss.Status == issue.StatusClosed
-}
-
 func (o *Orchestrator) firstRepoPath() string {
 	if len(o.cfg.Project.Repos) > 0 {
 		return o.cfg.Project.Repos[0].Path
 	}
 	return "."
-}
-
-func (o *Orchestrator) firstRepo() *git.Repo {
-	if len(o.cfg.Project.Repos) > 0 {
-		name := o.cfg.Project.Repos[0].Name
-		return o.repos[name]
-	}
-	return nil
 }

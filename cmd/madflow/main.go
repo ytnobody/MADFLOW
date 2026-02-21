@@ -33,17 +33,16 @@ Commands:
   issue close <id>          Close an issue
   release                   Merge develop into main
   sync                      Sync GitHub issues manually
+  use <claude|gemini>       Switch all models to a specific backend
 `
 
 // ANSI color codes for role-based coloring.
 var roleColors = map[string]string{
-	"superintendent": "\033[31m", // red
-	"pm":             "\033[34m", // blue
-	"architect":      "\033[32m", // green
-	"engineer":       "\033[33m", // yellow
-	"reviewer":       "\033[35m", // magenta
+	"superintendent":  "\033[31m", // red
+	"engineer":        "\033[33m", // yellow
+	"reviewer":        "\033[35m", // magenta
 	"release_manager": "\033[36m", // cyan
-	"orchestrator":   "\033[37m", // white
+	"orchestrator":    "\033[37m", // white
 }
 
 const colorReset = "\033[0m"
@@ -72,6 +71,8 @@ func main() {
 		err = cmdRelease()
 	case "sync":
 		err = cmdSync()
+	case "use":
+		err = cmdUse()
 	case "help", "--help", "-h":
 		fmt.Print(usage)
 		return
@@ -144,8 +145,6 @@ context_reset_minutes = 8
 
 [agent.models]
 superintendent = "claude-opus-4-6"
-pm = "claude-sonnet-4-6"
-architect = "claude-opus-4-6"
 engineer = "claude-sonnet-4-6"
 reviewer = "claude-sonnet-4-6"
 release_manager = "claude-haiku-4-5"
@@ -456,32 +455,16 @@ func cmdSync() error {
 
 // loadProjectConfig detects the project and loads its config.
 func loadProjectConfig() (*config.Config, *project.Project, error) {
-	proj, err := project.Detect()
+	configPath, err := findConfigPath()
 	if err != nil {
 		return nil, nil, err
 	}
 
-	// Find config file
-	configPath := ""
-	for _, p := range proj.Paths {
-		cp := filepath.Join(p, "madflow.toml")
-		if _, err := os.Stat(cp); err == nil {
-			configPath = cp
-			break
-		}
+	proj, err := project.Detect()
+	if err != nil {
+		return nil, nil, err
 	}
-	if configPath == "" {
-		// Try cwd
-		cwd, _ := os.Getwd()
-		cp := filepath.Join(cwd, "madflow.toml")
-		if _, err := os.Stat(cp); err == nil {
-			configPath = cp
-		}
-	}
-	if configPath == "" {
-		return nil, nil, fmt.Errorf("madflow.toml not found")
-	}
-
+	
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		return nil, nil, err

@@ -89,27 +89,42 @@ func (r *Repo) Pull() error {
 	return err
 }
 
-// AddWorktree creates a worktree at wtPath with a new branch from base.
-// If the branch already exists, attaches it instead.
-func (r *Repo) AddWorktree(wtPath, branch, base string) error {
-	_, err := r.run("worktree", "add", wtPath, "-b", branch, base)
-	if err != nil {
-		// Branch may already exist; try without -b
-		_, err2 := r.run("worktree", "add", wtPath, branch)
-		if err2 != nil {
-			return fmt.Errorf("add worktree %s: %w", wtPath, err2)
-		}
+// EnsureBranch ensures the given branch exists.
+// If it doesn't exist, it creates it from baseBranch.
+func (r *Repo) EnsureBranch(name, base string) error {
+	if r.BranchExists(name) {
+		return nil
+	}
+	if _, err := r.run("branch", name, base); err != nil {
+		return fmt.Errorf("create branch %s from %s: %w", name, base, err)
 	}
 	return nil
 }
 
-// RemoveWorktree removes the worktree at wtPath (--force).
-func (r *Repo) RemoveWorktree(wtPath string) error {
-	_, err := r.run("worktree", "remove", "--force", wtPath)
-	if err != nil {
-		return fmt.Errorf("remove worktree %s: %w", wtPath, err)
+// AddWorktree creates a new git worktree at the given path with a new branch
+// based on the specified base branch.
+func (r *Repo) AddWorktree(path, newBranch, baseBranch string) error {
+	if _, err := r.run("worktree", "add", "-b", newBranch, path, baseBranch); err != nil {
+		return fmt.Errorf("add worktree at %s: %w", path, err)
 	}
 	return nil
+}
+
+// RemoveWorktree removes a git worktree.
+func (r *Repo) RemoveWorktree(path string) error {
+	if _, err := r.run("worktree", "remove", path, "--force"); err != nil {
+		return fmt.Errorf("remove worktree %s: %w", path, err)
+	}
+	return nil
+}
+
+// PrepareWorktree ensures the develop branch exists (creating from main if needed)
+// and creates a worktree with a new feature branch based on develop.
+func (r *Repo) PrepareWorktree(path, featureBranch, developBranch, mainBranch string) error {
+	if err := r.EnsureBranch(developBranch, mainBranch); err != nil {
+		return fmt.Errorf("ensure develop branch: %w", err)
+	}
+	return r.AddWorktree(path, featureBranch, developBranch)
 }
 
 func (r *Repo) run(args ...string) (string, error) {

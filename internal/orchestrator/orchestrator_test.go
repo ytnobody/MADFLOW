@@ -1,13 +1,18 @@
 package orchestrator
 
 import (
+	"context"
+	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
+	"time"
 
+	"github.com/ytnobody/madflow/internal/agent"
 	"github.com/ytnobody/madflow/internal/chatlog"
 	"github.com/ytnobody/madflow/internal/config"
+	"github.com/ytnobody/madflow/internal/issue"
+	"github.com/ytnobody/madflow/internal/team"
 )
 
 func testConfig(repoPath string) *config.Config {
@@ -22,11 +27,7 @@ func testConfig(repoPath string) *config.Config {
 			ContextResetMinutes: 8,
 			Models: config.ModelConfig{
 				Superintendent: "claude-opus-4-6",
-				PM:             "claude-sonnet-4-6",
-				Architect:      "claude-opus-4-6",
 				Engineer:       "claude-sonnet-4-6",
-				Reviewer:       "claude-sonnet-4-6",
-				ReleaseManager: "claude-haiku-4-5",
 			},
 		},
 		Branches: config.BranchConfig{
@@ -106,7 +107,7 @@ func TestHandleCommand(t *testing.T) {
 
 	// Test unknown command doesn't panic
 	msg := chatlog.Message{
-		Sender: "pm",
+		Sender: "superintendent",
 		Body:   "UNKNOWN_CMD",
 	}
 	orc.handleCommand(t.Context(), msg)
@@ -177,36 +178,31 @@ func TestCreateTeamAgents(t *testing.T) {
 
 	// Create prompt templates
 	promptDir := t.TempDir()
-	for _, name := range []string{"architect.md", "engineer.md", "reviewer.md"} {
+	for _, name := range []string{"architect.md", "engineer.md"} {
 		content := "# " + name + "\nAgent: {{AGENT_ID}} Team: {{TEAM_NUM}}"
 		os.WriteFile(filepath.Join(promptDir, name), []byte(content), 0644)
 	}
 
 	orc := New(cfg, dir, promptDir)
 
-	architect, engineer, reviewer, err := orc.CreateTeamAgents(1, "test-issue-001", "")
+	engineer, err := orc.CreateTeamAgents(1, "test-issue-001")
 	if err != nil {
 		t.Fatalf("CreateTeamAgents failed: %v", err)
 	}
-	if architect == nil || engineer == nil || reviewer == nil {
+	if engineer == nil {
 		t.Fatal("one or more agents is nil")
 	}
 
-	// Verify agent IDs
-	if architect.ID.Role != "architect" {
-		t.Errorf("expected architect role, got %s", architect.ID.Role)
-	}
+
 	if engineer.ID.Role != "engineer" {
 		t.Errorf("expected engineer role, got %s", engineer.ID.Role)
 	}
-	if reviewer.ID.Role != "reviewer" {
-		t.Errorf("expected reviewer role, got %s", reviewer.ID.Role)
-	}
+
 
 	// All agents should have team number 1
-	if architect.ID.TeamNum != 1 {
-		t.Errorf("expected team num 1, got %d", architect.ID.TeamNum)
-	}
+	// if architect.ID.TeamNum != 1 {
+	// 	t.Errorf("expected team num 1, got %d", architect.ID.TeamNum)
+	// }
 }
 
 func TestCreateTeamAgentsWithIssue(t *testing.T) {
@@ -217,7 +213,7 @@ func TestCreateTeamAgentsWithIssue(t *testing.T) {
 
 	// Create prompt templates
 	promptDir := t.TempDir()
-	for _, name := range []string{"architect.md", "engineer.md", "reviewer.md"} {
+	for _, name := range []string{"architect.md", "engineer.md"} {
 		content := "# " + name
 		os.WriteFile(filepath.Join(promptDir, name), []byte(content), 0644)
 	}
@@ -230,14 +226,117 @@ func TestCreateTeamAgentsWithIssue(t *testing.T) {
 		t.Fatalf("Create issue failed: %v", err)
 	}
 
-	architect, _, _, err := orc.CreateTeamAgents(1, iss.ID, "")
+	_, err = orc.CreateTeamAgents(1, iss.ID)
 	if err != nil {
 		t.Fatalf("CreateTeamAgents failed: %v", err)
 	}
 
-	// Architect should have the issue context as original task
-	if !strings.Contains(architect.OriginalTask, "Test Issue") {
-		t.Errorf("expected original task to contain issue title, got: %s", architect.OriginalTask)
+
+}
+
+// mockProcess is a test double for agent.Process.
+type mockProcess struct{}
+
+func (m *mockProcess) Send(_ context.Context, _ string) (string, error) {
+	return "ok", nil
+}
+
+// mockTeamFactory creates agents with mock processes for testing.
+type mockTeamFactory struct {
+	tmpDir string
+}
+
+func newMockTeamFactory(t *testing.T) *mockTeamFactory {
+	t.Helper()
+	return &mockTeamFactory{tmpDir: t.TempDir()}
+}
+
+func (f *mockTeamFactory) CreateTeamAgents(teamNum int, issueID string) (engineer *agent.Agent, err error) {
+	makeAgent := func(role agent.Role) *agent.Agent {
+		id := agent.AgentID{Role: role, TeamNum: teamNum}
+		logPath := filepath.Join(f.tmpDir, fmt.Sprintf("chatlog-%s-%d.txt", role, teamNum))
+		os.WriteFile(logPath, nil, 0644)
+		return agent.NewAgent(agent.AgentConfig{
+			ID:            id,
+			Role:          role,
+			SystemPrompt:  "test",
+			Model:         "test",
+			ChatLogPath:   logPath,
+			MemosDir:      f.tmpDir,
+			ResetInterval: time.Hour,
+			OriginalTask:  issueID,
+			Process:       &mockProcess{},
+		})
+	}
+	return makeAgent(agent.RoleEngineer),
+		nil
+}
+
+func TestStartAllTeamsCreatesMaxTeamsUnconditionally(t *testing.T) {
+	dir := t.TempDir()
+	cfg := testConfig(dir)
+	cfg.Agent.MaxTeams = 3
+	os.MkdirAll(filepath.Join(dir, "issues"), 0755)
+	os.WriteFile(filepath.Join(dir, "chatlog.txt"), nil, 0644)
+
+	orc := New(cfg, dir, t.TempDir())
+	orc.teams = team.NewManager(newMockTeamFactory(t), 3)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// No issues exist — should still create 3 standby teams
+	orc.startAllTeams(ctx)
+
+	if orc.Teams().Count() != 3 {
+		t.Errorf("expected 3 standby teams, got %d", orc.Teams().Count())
+	}
+}
+
+func TestStartAllTeamsAssignsIssues(t *testing.T) {
+	dir := t.TempDir()
+	cfg := testConfig(dir)
+	cfg.Agent.MaxTeams = 4
+	os.MkdirAll(filepath.Join(dir, "issues"), 0755)
+	os.WriteFile(filepath.Join(dir, "chatlog.txt"), nil, 0644)
+
+	orc := New(cfg, dir, t.TempDir())
+	orc.teams = team.NewManager(newMockTeamFactory(t), 4)
+
+	// Create: 1 open, 1 in_progress, 1 resolved, 1 closed
+	statuses := []issue.Status{issue.StatusOpen, issue.StatusInProgress, issue.StatusResolved, issue.StatusClosed}
+	for i, s := range statuses {
+		iss, err := orc.Store().Create(fmt.Sprintf("Task %d", i), "body")
+		if err != nil {
+			t.Fatalf("create issue: %v", err)
+		}
+		iss.Status = s
+		orc.Store().Update(iss)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	orc.startAllTeams(ctx)
+
+	// All 4 teams created (2 with issues + 2 standby)
+	if orc.Teams().Count() != 4 {
+		t.Errorf("expected 4 teams, got %d", orc.Teams().Count())
+	}
+
+	// Open and in_progress issues should be assigned
+	issues, _ := orc.Store().List(issue.StatusFilter{})
+	for _, iss := range issues {
+		switch iss.Status {
+		case issue.StatusInProgress:
+			if iss.AssignedTeam == 0 {
+				t.Errorf("in_progress issue %s should have assigned team", iss.ID)
+			}
+		case issue.StatusResolved, issue.StatusClosed:
+			if iss.AssignedTeam != 0 {
+				t.Errorf("%s issue %s should not have assigned team", iss.Status, iss.ID)
+			}
+		}
 	}
 }
 
@@ -252,7 +351,7 @@ func TestCreateTeamAgentsMissingPrompt(t *testing.T) {
 
 	orc := New(cfg, dir, promptDir)
 
-	_, _, _, err := orc.CreateTeamAgents(1, "test-issue", "")
+	_, err := orc.CreateTeamAgents(1, "test-issue")
 	if err == nil {
 		t.Fatal("expected error for missing prompt templates")
 	}

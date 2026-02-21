@@ -45,9 +45,6 @@ develop = "develop"
 	if cfg.Agent.ContextResetMinutes != 10 {
 		t.Errorf("expected context_reset_minutes 10, got %d", cfg.Agent.ContextResetMinutes)
 	}
-	if cfg.Agent.Models.PM != "claude-sonnet-4-6" {
-		t.Errorf("expected default PM model, got %s", cfg.Agent.Models.PM)
-	}
 	if cfg.Branches.FeaturePrefix != "feature/issue-" {
 		t.Errorf("expected default feature prefix, got %s", cfg.Branches.FeaturePrefix)
 	}
@@ -78,9 +75,6 @@ path = "."
 	}
 	if cfg.Agent.Models.Superintendent != "claude-opus-4-6" {
 		t.Errorf("expected default superintendent model, got %s", cfg.Agent.Models.Superintendent)
-	}
-	if cfg.Agent.Models.ReleaseManager != "claude-haiku-4-5" {
-		t.Errorf("expected default RM model, got %s", cfg.Agent.Models.ReleaseManager)
 	}
 }
 
@@ -204,5 +198,58 @@ sync_interval_minutes = 10
 	}
 	if cfg.GitHub.SyncIntervalMinutes != 10 {
 		t.Errorf("expected sync_interval_minutes 10, got %d", cfg.GitHub.SyncIntervalMinutes)
+	}
+}
+
+func TestChatlogMaxLinesDefault(t *testing.T) {
+	content := `
+[project]
+name = "test-app"
+
+[[project.repos]]
+name = "main"
+path = "."
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "madflow.toml")
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if cfg.Agent.ChatlogMaxLines != 500 {
+		t.Errorf("expected default chatlog_max_lines 500, got %d", cfg.Agent.ChatlogMaxLines)
+	}
+}
+
+func TestChatlogMaxLinesCustom(t *testing.T) {
+	content := `
+[project]
+name = "test-app"
+
+[[project.repos]]
+name = "main"
+path = "."
+
+[agent]
+chatlog_max_lines = 1000
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "madflow.toml")
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if cfg.Agent.ChatlogMaxLines != 1000 {
+		t.Errorf("expected chatlog_max_lines 1000, got %d", cfg.Agent.ChatlogMaxLines)
 	}
 }

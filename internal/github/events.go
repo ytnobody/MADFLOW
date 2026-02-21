@@ -1,11 +1,13 @@
 package github
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"log"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -14,6 +16,8 @@ import (
 )
 
 const maxSeenEvents = 1000
+const maxRetries = 2
+const retryDelay = 5 * time.Second
 
 // EventType represents the type of a GitHub event.
 type EventType string
@@ -43,9 +47,9 @@ type ghEventPayloadIssue struct {
 
 // ghEventPayloadComment is the payload for IssueCommentEvent.
 type ghEventPayloadComment struct {
-	Action  string          `json:"action"`
-	Issue   ghIssue         `json:"issue"`
-	Comment ghEventComment  `json:"comment"`
+	Action  string         `json:"action"`
+	Issue   ghIssue        `json:"issue"`
+	Comment ghEventComment `json:"comment"`
 }
 
 // ghEventComment represents a comment within the Events API payload.
@@ -111,20 +115,30 @@ func (w *EventWatcher) Run(ctx context.Context) error {
 	}
 }
 
-// pollRepo fetches events for a single repo, returns updated ETag.
+// pollRepo fetches events for a single repo with retry, returns updated ETag.
 func (w *EventWatcher) pollRepo(repo, etag string) string {
-	events, newETag, err := w.fetchEvents(repo, etag)
-	if err != nil {
-		log.Printf("[event-watcher] fetch %s/%s events failed: %v", w.owner, repo, err)
-		return etag
+	var lastErr error
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if attempt > 0 {
+			log.Printf("[event-watcher] retry %d/%d for %s/%s", attempt, maxRetries, w.owner, repo)
+			time.Sleep(retryDelay * time.Duration(attempt))
+		}
+
+		events, newETag, err := w.fetchEvents(repo, etag)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		// Success
+		for i := len(events) - 1; i >= 0; i-- {
+			w.processEvent(repo, events[i])
+		}
+		return newETag
 	}
 
-	// Process events in reverse order (oldest first)
-	for i := len(events) - 1; i >= 0; i-- {
-		w.processEvent(repo, events[i])
-	}
-
-	return newETag
+	log.Printf("[event-watcher] fetch %s/%s events failed after %d attempts: %v", w.owner, repo, maxRetries+1, lastErr)
+	return etag
 }
 
 // fetchEvents calls the GitHub Events API via gh CLI.
@@ -138,43 +152,91 @@ func (w *EventWatcher) fetchEvents(repo, etag string) ([]ghEvent, string, error)
 	}
 
 	cmd := exec.Command("gh", args...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
 	out, err := cmd.Output()
+
 	if err != nil {
-		// 304 Not Modified comes back as an exit error with empty output
-		if len(out) == 0 {
+		// Check if it's a 304 Not Modified
+		// gh api exits with code 0 for 304 when using --include,
+		// but some versions may exit with non-zero.
+		// Better heuristic: check stderr for clues
+		stderrStr := strings.TrimSpace(stderr.String())
+
+		if len(out) == 0 && stderrStr == "" {
+			// Likely 304 Not Modified (no output at all)
 			return nil, etag, nil
 		}
-		return nil, etag, fmt.Errorf("gh api events for %s/%s: %w", w.owner, repo, err)
+
+		// If there IS output despite the error, try to parse status code
+		if len(out) > 0 {
+			statusCode, newETag, _ := ParseGHResponseWithStatus(string(out))
+			if statusCode == 304 {
+				if newETag != "" {
+					return nil, newETag, nil
+				}
+				return nil, etag, nil
+			}
+		}
+
+		// Real error
+		errMsg := fmt.Sprintf("gh api events for %s/%s: %v", w.owner, repo, err)
+		if stderrStr != "" {
+			errMsg += " (stderr: " + stderrStr + ")"
+		}
+		return nil, etag, fmt.Errorf("%s", errMsg)
 	}
 
-	newETag, body := ParseGHResponse(string(out))
+	// Command succeeded (exit 0)
+	statusCode, newETag, body := ParseGHResponseWithStatus(string(out))
 	if newETag == "" {
 		newETag = etag
+	}
+
+	// Handle non-200 status codes
+	if statusCode == 304 {
+		return nil, newETag, nil
+	}
+	if statusCode >= 400 {
+		log.Printf("[event-watcher] HTTP %d for %s/%s, body: %.200s", statusCode, w.owner, repo, body)
+		return nil, newETag, fmt.Errorf("HTTP %d from GitHub API for %s/%s", statusCode, w.owner, repo)
 	}
 
 	if body == "" {
 		return nil, newETag, nil
 	}
 
+	// Validate body looks like JSON before parsing
+	if !strings.HasPrefix(body, "[") && !strings.HasPrefix(body, "{") {
+		return nil, newETag, fmt.Errorf("unexpected response body (not JSON): %.100s", body)
+	}
+
 	var events []ghEvent
 	if err := json.Unmarshal([]byte(body), &events); err != nil {
-		return nil, newETag, fmt.Errorf("parse events: %w", err)
+		return nil, newETag, fmt.Errorf("parse events: %w (body prefix: %.100s)", err, body)
 	}
 
 	return events, newETag, nil
 }
 
-// ParseGHResponse splits the --include output into ETag header and JSON body.
-func ParseGHResponse(raw string) (etag, body string) {
-	// Normalize \r\n to \n for consistent parsing
+// ParseGHResponseWithStatus splits the --include output into status code, ETag header, and JSON body.
+// Returns HTTP status code (e.g. 200, 304, 403), ETag, and body.
+func ParseGHResponseWithStatus(raw string) (statusCode int, etag, body string) {
 	normalized := strings.ReplaceAll(raw, "\r\n", "\n")
-
-	// gh --include prepends HTTP headers separated by a blank line from the body
 	parts := strings.SplitN(normalized, "\n\n", 2)
+
 	if len(parts) == 2 {
+		headerSection := parts[0]
 		body = strings.TrimSpace(parts[1])
-		// Extract ETag from headers
-		for _, line := range strings.Split(parts[0], "\n") {
+
+		// Parse status code from first line: "HTTP/2.0 200 OK"
+		lines := strings.Split(headerSection, "\n")
+		if len(lines) > 0 {
+			statusCode = parseHTTPStatusCode(lines[0])
+		}
+
+		// Extract ETag
+		for _, line := range lines {
 			trimmed := strings.TrimSpace(line)
 			if strings.HasPrefix(strings.ToLower(trimmed), "etag:") {
 				etag = strings.TrimSpace(trimmed[5:])
@@ -182,9 +244,41 @@ func ParseGHResponse(raw string) (etag, body string) {
 			}
 		}
 	} else {
-		// No headers, entire output is body
-		body = strings.TrimSpace(normalized)
+		// No header-body separator found
+		// Check if the output starts with "HTTP/" (headers only, no body)
+		trimmed := strings.TrimSpace(normalized)
+		if strings.HasPrefix(trimmed, "HTTP/") {
+			lines := strings.Split(trimmed, "\n")
+			if len(lines) > 0 {
+				statusCode = parseHTTPStatusCode(lines[0])
+			}
+			// No body
+			body = ""
+		} else {
+			// Raw JSON (no headers)
+			body = trimmed
+		}
 	}
+	return statusCode, etag, body
+}
+
+// parseHTTPStatusCode extracts the HTTP status code from a status line.
+// e.g. "HTTP/2.0 200 OK" or "HTTP/1.1 403 Forbidden"
+func parseHTTPStatusCode(statusLine string) int {
+	parts := strings.Fields(statusLine)
+	if len(parts) >= 2 {
+		code, err := strconv.Atoi(parts[1])
+		if err == nil {
+			return code
+		}
+	}
+	return 0
+}
+
+// ParseGHResponse splits the --include output into ETag header and JSON body.
+// Deprecated: Use ParseGHResponseWithStatus for full status code support.
+func ParseGHResponse(raw string) (etag, body string) {
+	_, etag, body = ParseGHResponseWithStatus(raw)
 	return etag, body
 }
 

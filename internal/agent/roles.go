@@ -9,17 +9,14 @@ type Role string
 
 const (
 	RoleSuperintendent  Role = "superintendent"
-	RolePM              Role = "pm"
-	RoleArchitect       Role = "architect"
+
 	RoleEngineer        Role = "engineer"
-	RoleReviewer        Role = "reviewer"
-	RoleReleaseManager  Role = "release_manager"
 	RoleOrchestrator    Role = "orchestrator"
 )
 
 type AgentID struct {
 	Role     Role
-	TeamNum  int // 0 for non-team agents (superintendent, pm, rm)
+	TeamNum  int // 0 for non-team agents (superintendent, rm)
 }
 
 func (id AgentID) String() string {
@@ -48,12 +45,9 @@ type WorkMemo struct {
 
 // AllowedTargets defines communication permissions per role (chain principle).
 var AllowedTargets = map[Role][]Role{
-	RoleSuperintendent: {RolePM},
-	RolePM:             {RoleSuperintendent, RoleArchitect, RoleOrchestrator},
-	RoleArchitect:      {RolePM, RoleEngineer},
-	RoleEngineer:       {RoleArchitect, RoleReviewer},
-	RoleReviewer:       {RoleEngineer, RoleReleaseManager},
-	RoleReleaseManager: {RoleReviewer},
+	RoleSuperintendent: {RoleEngineer, RoleOrchestrator},
+
+	RoleEngineer:       {RoleSuperintendent}, // Engineer can send to Superintendent
 }
 
 func CanSendTo(from, to Role) bool {

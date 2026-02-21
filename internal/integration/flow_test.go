@@ -11,23 +11,10 @@ import (
 	"github.com/ytnobody/madflow/internal/orchestrator"
 )
 
-// initGitRepoWithDevelop initializes a git repo and creates a develop branch.
-func initGitRepoWithDevelop(t *testing.T, dir string) {
-	t.Helper()
-	initGitRepo(t, dir)
-	run(t, dir, "git", "checkout", "-b", "develop")
-}
-
 // TestIssueToTeamCreateFlow tests the flow from issue creation
 // to team creation via orchestrator command handling.
 func TestIssueToTeamCreateFlow(t *testing.T) {
 	dir := t.TempDir()
-
-	// Set up a git repo so worktree operations succeed
-	repoDir := filepath.Join(dir, "repo")
-	os.MkdirAll(repoDir, 0755)
-	initGitRepoWithDevelop(t, repoDir)
-
 	issuesDir := filepath.Join(dir, "issues")
 	memosDir := filepath.Join(dir, "memos")
 	logPath := filepath.Join(dir, "chatlog.txt")
@@ -37,7 +24,7 @@ func TestIssueToTeamCreateFlow(t *testing.T) {
 
 	// Create prompts
 	promptDir := t.TempDir()
-	for _, name := range []string{"superintendent.md", "pm.md", "release_manager.md", "architect.md", "engineer.md", "reviewer.md"} {
+	for _, name := range []string{"superintendent.md", "engineer.md"} {
 		os.WriteFile(filepath.Join(promptDir, name), []byte("# "+name), 0644)
 	}
 
@@ -45,18 +32,14 @@ func TestIssueToTeamCreateFlow(t *testing.T) {
 		Project: config.ProjectConfig{
 			Name: "test",
 			Repos: []config.RepoConfig{
-				{Name: "main", Path: repoDir},
+				{Name: "main", Path: dir},
 			},
 		},
 		Agent: config.AgentConfig{
 			ContextResetMinutes: 60,
 			Models: config.ModelConfig{
 				Superintendent: "test",
-				PM:             "test",
-				Architect:      "test",
 				Engineer:       "test",
-				Reviewer:       "test",
-				ReleaseManager: "test",
 			},
 		},
 		Branches: config.BranchConfig{
@@ -81,10 +64,10 @@ func TestIssueToTeamCreateFlow(t *testing.T) {
 		t.Errorf("expected open status, got %s", iss.Status)
 	}
 
-	// Step 2: Simulate PM requesting team creation via orchestrator command
+	// Step 2: Simulate superintendent requesting team creation via orchestrator command
 	ctx := t.Context()
 	msg := chatlog.Message{
-		Sender: "pm",
+		Sender: "superintendent",
 		Body:   "TEAM_CREATE " + iss.ID,
 	}
 	orc.HandleCommandForTest(ctx, msg)
@@ -182,12 +165,6 @@ func TestIssueLifecycle(t *testing.T) {
 // TestMultipleIssuesAndTeams tests managing multiple issues with separate teams.
 func TestMultipleIssuesAndTeams(t *testing.T) {
 	dir := t.TempDir()
-
-	// Set up a git repo so worktree operations succeed
-	repoDir := filepath.Join(dir, "repo")
-	os.MkdirAll(repoDir, 0755)
-	initGitRepoWithDevelop(t, repoDir)
-
 	issuesDir := filepath.Join(dir, "issues")
 	memosDir := filepath.Join(dir, "memos")
 	logPath := filepath.Join(dir, "chatlog.txt")
@@ -196,20 +173,20 @@ func TestMultipleIssuesAndTeams(t *testing.T) {
 	os.WriteFile(logPath, nil, 0644)
 
 	promptDir := t.TempDir()
-	for _, name := range []string{"superintendent.md", "pm.md", "release_manager.md", "architect.md", "engineer.md", "reviewer.md"} {
+	for _, name := range []string{"superintendent.md", "engineer.md"} {
 		os.WriteFile(filepath.Join(promptDir, name), []byte("# "+name), 0644)
 	}
 
 	cfg := &config.Config{
 		Project: config.ProjectConfig{
 			Name:  "test",
-			Repos: []config.RepoConfig{{Name: "main", Path: repoDir}},
+			Repos: []config.RepoConfig{{Name: "main", Path: dir}},
 		},
 		Agent: config.AgentConfig{
 			ContextResetMinutes: 60,
 			Models: config.ModelConfig{
-				Superintendent: "test", PM: "test", Architect: "test",
-				Engineer: "test", Reviewer: "test", ReleaseManager: "test",
+				Superintendent: "test",
+				Engineer:       "test",
 			},
 		},
 		Branches: config.BranchConfig{
@@ -227,8 +204,8 @@ func TestMultipleIssuesAndTeams(t *testing.T) {
 	iss3, _ := store.Create("Issue 3", "Body 3")
 
 	// Create teams for issue 1 and 2
-	orc.HandleCommandForTest(ctx, chatlog.Message{Sender: "pm", Body: "TEAM_CREATE " + iss1.ID})
-	orc.HandleCommandForTest(ctx, chatlog.Message{Sender: "pm", Body: "TEAM_CREATE " + iss2.ID})
+	orc.HandleCommandForTest(ctx, chatlog.Message{Sender: "superintendent", Body: "TEAM_CREATE " + iss1.ID})
+	orc.HandleCommandForTest(ctx, chatlog.Message{Sender: "superintendent", Body: "TEAM_CREATE " + iss2.ID})
 
 	teams := orc.Teams()
 	if teams.Count() != 2 {

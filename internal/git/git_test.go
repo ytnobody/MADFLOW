@@ -250,7 +250,7 @@ func TestMerge(t *testing.T) {
 	}
 }
 
-func TestAddWorktree(t *testing.T) {
+func TestEnsureBranchCreatesWhenMissing(t *testing.T) {
 	repo := initTestRepo(t)
 
 	baseBranch, err := repo.CurrentBranch()
@@ -258,92 +258,143 @@ func TestAddWorktree(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	wtPath := filepath.Join(t.TempDir(), "wt1")
-	err = repo.AddWorktree(wtPath, "feature-wt", baseBranch)
+	// develop doesn't exist yet
+	if repo.BranchExists("develop") {
+		t.Fatal("develop should not exist yet")
+	}
+
+	// EnsureBranch should create it
+	if err := repo.EnsureBranch("develop", baseBranch); err != nil {
+		t.Fatalf("EnsureBranch failed: %v", err)
+	}
+
+	if !repo.BranchExists("develop") {
+		t.Error("expected develop to exist after EnsureBranch")
+	}
+}
+
+func TestEnsureBranchNoopWhenExists(t *testing.T) {
+	repo := initTestRepo(t)
+
+	baseBranch, err := repo.CurrentBranch()
 	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Create develop manually
+	if err := repo.CreateBranch("develop", baseBranch); err != nil {
+		t.Fatal(err)
+	}
+	repo.Checkout(baseBranch)
+
+	// EnsureBranch should be a noop
+	if err := repo.EnsureBranch("develop", baseBranch); err != nil {
+		t.Fatalf("EnsureBranch should succeed when branch exists: %v", err)
+	}
+}
+
+func TestAddAndRemoveWorktree(t *testing.T) {
+	repo := initTestRepo(t)
+
+	baseBranch, err := repo.CurrentBranch()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wtDir := filepath.Join(t.TempDir(), "wt-test")
+
+	if err := repo.AddWorktree(wtDir, "feature-wt", baseBranch); err != nil {
 		t.Fatalf("AddWorktree failed: %v", err)
 	}
 
-	// Verify the worktree directory exists
-	if _, err := os.Stat(wtPath); os.IsNotExist(err) {
+	// The worktree directory should exist
+	if _, err := os.Stat(wtDir); os.IsNotExist(err) {
 		t.Error("expected worktree directory to exist")
 	}
 
-	// Verify the branch in the worktree
-	wtRepo := NewRepo(wtPath)
-	branch, err := wtRepo.CurrentBranch()
-	if err != nil {
-		t.Fatalf("get worktree branch: %v", err)
-	}
-	if branch != "feature-wt" {
-		t.Errorf("expected branch feature-wt, got %s", branch)
-	}
-}
-
-func TestAddWorktreeExistingBranch(t *testing.T) {
-	repo := initTestRepo(t)
-
-	baseBranch, err := repo.CurrentBranch()
-	if err != nil {
-		t.Fatal(err)
+	// The feature branch should exist
+	if !repo.BranchExists("feature-wt") {
+		t.Error("expected feature-wt branch to exist")
 	}
 
-	// Create a branch first
-	err = repo.CreateBranch("existing-branch", baseBranch)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Switch back to base so the branch is not checked out
-	err = repo.Checkout(baseBranch)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	wtPath := filepath.Join(t.TempDir(), "wt2")
-	err = repo.AddWorktree(wtPath, "existing-branch", baseBranch)
-	if err != nil {
-		t.Fatalf("AddWorktree with existing branch failed: %v", err)
-	}
-
-	// Verify the worktree is on the existing branch
-	wtRepo := NewRepo(wtPath)
-	branch, err := wtRepo.CurrentBranch()
-	if err != nil {
-		t.Fatalf("get worktree branch: %v", err)
-	}
-	if branch != "existing-branch" {
-		t.Errorf("expected branch existing-branch, got %s", branch)
-	}
-}
-
-func TestRemoveWorktree(t *testing.T) {
-	repo := initTestRepo(t)
-
-	baseBranch, err := repo.CurrentBranch()
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	wtPath := filepath.Join(t.TempDir(), "wt-remove")
-	err = repo.AddWorktree(wtPath, "feature-remove", baseBranch)
-	if err != nil {
-		t.Fatalf("AddWorktree failed: %v", err)
-	}
-
-	// Verify directory exists
-	if _, err := os.Stat(wtPath); os.IsNotExist(err) {
-		t.Fatal("expected worktree directory to exist before remove")
-	}
-
-	err = repo.RemoveWorktree(wtPath)
-	if err != nil {
+	// Remove the worktree
+	if err := repo.RemoveWorktree(wtDir); err != nil {
 		t.Fatalf("RemoveWorktree failed: %v", err)
 	}
 
-	// Verify directory is removed
-	if _, err := os.Stat(wtPath); !os.IsNotExist(err) {
+	if _, err := os.Stat(wtDir); !os.IsNotExist(err) {
 		t.Error("expected worktree directory to be removed")
 	}
+}
+
+func TestPrepareWorktreeCreatesDevelopFromMain(t *testing.T) {
+	repo := initTestRepo(t)
+
+	baseBranch, err := repo.CurrentBranch()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// develop does not exist yet
+	if repo.BranchExists("develop") {
+		t.Fatal("develop should not exist initially")
+	}
+
+	wtDir := filepath.Join(t.TempDir(), "wt-prepare")
+	if err := repo.PrepareWorktree(wtDir, "feature-issue-1", "develop", baseBranch); err != nil {
+		t.Fatalf("PrepareWorktree failed: %v", err)
+	}
+
+	// develop should now exist
+	if !repo.BranchExists("develop") {
+		t.Error("expected develop branch to be created")
+	}
+
+	// feature branch should exist and worktree directory should exist
+	if !repo.BranchExists("feature-issue-1") {
+		t.Error("expected feature-issue-1 branch to exist")
+	}
+	if _, err := os.Stat(wtDir); os.IsNotExist(err) {
+		t.Error("expected worktree directory to exist")
+	}
+
+	// Cleanup
+	repo.RemoveWorktree(wtDir)
+}
+
+func TestPrepareWorktreeUseExistingDevelop(t *testing.T) {
+	repo := initTestRepo(t)
+
+	baseBranch, err := repo.CurrentBranch()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Create develop with an extra commit
+	if err := repo.CreateBranch("develop", baseBranch); err != nil {
+		t.Fatal(err)
+	}
+	devFile := filepath.Join(repo.Path(), "dev.txt")
+	if err := os.WriteFile(devFile, []byte("develop content\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	run(t, repo.Path(), "git", "add", ".")
+	run(t, repo.Path(), "git", "commit", "-m", "develop commit")
+	repo.Checkout(baseBranch)
+
+	wtDir := filepath.Join(t.TempDir(), "wt-existing-dev")
+	if err := repo.PrepareWorktree(wtDir, "feature-issue-2", "develop", baseBranch); err != nil {
+		t.Fatalf("PrepareWorktree failed: %v", err)
+	}
+
+	// The worktree should contain the develop commit's file
+	wtDevFile := filepath.Join(wtDir, "dev.txt")
+	if _, err := os.Stat(wtDevFile); os.IsNotExist(err) {
+		t.Error("expected dev.txt in worktree (branched from develop)")
+	}
+
+	// Cleanup
+	repo.RemoveWorktree(wtDir)
 }
 
 func TestMergeConflict(t *testing.T) {

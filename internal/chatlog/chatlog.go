@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"regexp"
 	"strings"
@@ -108,26 +109,6 @@ func (c *ChatLog) Poll(recipient string) ([]Message, error) {
 	return messages, nil
 }
 
-// PollSince reads messages for the recipient filtered by timestamp.
-// Only messages with Timestamp >= since are returned.
-// If since is zero, all messages are returned (same as Poll).
-func (c *ChatLog) PollSince(recipient string, since time.Time) ([]Message, error) {
-	msgs, err := c.Poll(recipient)
-	if err != nil {
-		return nil, err
-	}
-	if since.IsZero() {
-		return msgs, nil
-	}
-	var filtered []Message
-	for _, m := range msgs {
-		if !m.Timestamp.Before(since) {
-			filtered = append(filtered, m)
-		}
-	}
-	return filtered, nil
-}
-
 // Watch monitors the chatlog file for new messages to the given recipient.
 // It yields messages on the returned channel until ctx is cancelled.
 func (c *ChatLog) Watch(ctx context.Context, recipient string) <-chan Message {
@@ -208,6 +189,48 @@ func (c *ChatLog) WatchAll(ctx context.Context) <-chan Message {
 	return ch
 }
 
+// Truncate keeps only the latest maxLines lines of the chatlog file,
+// removing older entries. It uses atomic write (temp file + rename) for safety.
+// If the file does not exist or has fewer lines than maxLines, it does nothing.
+func (c *ChatLog) Truncate(maxLines int) error {
+	data, err := os.ReadFile(c.path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("read chatlog: %w", err)
+	}
+
+	lines := strings.Split(string(data), "\n")
+
+	// Remove trailing empty lines
+	for len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+
+	if len(lines) <= maxLines {
+		return nil
+	}
+
+	removed := len(lines) - maxLines
+	lines = lines[removed:]
+
+	newContent := strings.Join(lines, "\n") + "\n"
+
+	tmpPath := c.path + ".tmp"
+	if err := os.WriteFile(tmpPath, []byte(newContent), 0644); err != nil {
+		return fmt.Errorf("write temp chatlog: %w", err)
+	}
+
+	if err := os.Rename(tmpPath, c.path); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("rename chatlog: %w", err)
+	}
+
+	log.Printf("[chatlog] truncated %d lines, keeping latest %d lines", removed, maxLines)
+	return nil
+}
+
 func (c *ChatLog) readFrom(offset int64, recipient string) ([]Message, int64, error) {
 	f, err := os.Open(c.path)
 	if err != nil {
@@ -220,7 +243,11 @@ func (c *ChatLog) readFrom(offset int64, recipient string) ([]Message, int64, er
 		return nil, offset, err
 	}
 
-	if info.Size() <= offset {
+	if info.Size() < offset {
+		// File was truncated (e.g., by Truncate()), reset offset
+		offset = 0
+	}
+	if info.Size() == offset {
 		return nil, offset, nil
 	}
 

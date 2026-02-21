@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -90,6 +91,62 @@ func (c *ClaudeProcess) buildArgs(prompt string) []string {
 	args = append(args, prompt)
 
 	return args
+}
+
+// RateLimitError はレート制限に抵触したことを示す専用エラー型。
+type RateLimitError struct {
+	Wrapped error
+}
+
+func (e *RateLimitError) Error() string {
+	return e.Wrapped.Error()
+}
+
+func (e *RateLimitError) Unwrap() error {
+	return e.Wrapped
+}
+
+// containsRateLimitKeyword は文字列がレート制限関連のキーワードを含むか検査する。
+// Gemini CLI の stderr 出力から直接レート制限を検出するために使用する。
+func containsRateLimitKeyword(s string) bool {
+	lower := strings.ToLower(s)
+	keywords := []string{
+		"resource_exhausted",
+		"quota exceeded",
+		"rate limit",
+		"429",
+		"too many requests",
+		"resourceexhausted",
+	}
+	for _, kw := range keywords {
+		if strings.Contains(lower, kw) {
+			return true
+		}
+	}
+	return false
+}
+
+// IsRateLimitError checks whether the error indicates a token/rate limit.
+func IsRateLimitError(err error) bool {
+	if err == nil {
+		return false
+	}
+	// 型ベースのチェック（RateLimitError 型でラップされている場合）
+	var rlErr *RateLimitError
+	if errors.As(err, &rlErr) {
+		return true
+	}
+	// 既存の文字列チェック（後方互換性）
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "rate limit") ||
+		strings.Contains(msg, "token limit") ||
+		strings.Contains(msg, "usage limit") ||
+		strings.Contains(msg, "too many requests") ||
+		strings.Contains(msg, "429") ||
+		strings.Contains(msg, "overloaded") ||
+		strings.Contains(msg, "resource_exhausted") ||
+		strings.Contains(msg, "quota exceeded") ||
+		strings.Contains(msg, "resourceexhausted")
 }
 
 // filterEnv returns a copy of env with the given key removed.

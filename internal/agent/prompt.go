@@ -16,17 +16,12 @@ type PromptVars struct {
 	MainBranch    string
 	FeaturePrefix string
 	TeamNum       string
-	RepoPath      string // 作業ディレクトリ（worktree パスまたはリポジトリパス）
 }
 
 // promptFileNames maps roles to their prompt template filenames.
 var promptFileNames = map[Role]string{
 	RoleSuperintendent: "superintendent.md",
-	RolePM:             "pm.md",
-	RoleArchitect:      "architect.md",
 	RoleEngineer:       "engineer.md",
-	RoleReviewer:       "reviewer.md",
-	RoleReleaseManager: "release_manager.md",
 }
 
 // LoadPrompt reads a role's prompt template and substitutes variables.
@@ -56,7 +51,6 @@ func substituteVars(content string, vars PromptVars) string {
 		"{{MAIN_BRANCH}}":    vars.MainBranch,
 		"{{FEATURE_PREFIX}}": vars.FeaturePrefix,
 		"{{TEAM_NUM}}":       vars.TeamNum,
-		"{{REPO_PATH}}":      vars.RepoPath,
 	}
 
 	for placeholder, value := range replacements {

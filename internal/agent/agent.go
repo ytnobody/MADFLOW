@@ -7,24 +7,29 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/ytnobody/madflow/internal/cache"
 	"github.com/ytnobody/madflow/internal/chatlog"
 	"github.com/ytnobody/madflow/internal/reset"
 )
 
-// Agent represents a running MADFLOW agent.
 type Agent struct {
-	ID             AgentID
-	Process        Process
-	ChatLog        *chatlog.ChatLog
-	MemosDir       string
-	ResetInterval  time.Duration
-	SystemPrompt   string
-	OriginalTask   string // The initial task/context for this agent
+	ID            AgentID
+	Process       Process
+	ChatLog       *chatlog.ChatLog
+	MemosDir      string
+	ResetInterval time.Duration
+	SystemPrompt  string
+	OriginalTask  string
+	Dormancy      *Dormancy
+	CacheManager  *cache.Manager
+	IssueID       string
+	ready         chan struct{}
+	readyOnce     sync.Once
 }
 
-// AgentConfig holds configuration for creating an agent.
 type AgentConfig struct {
 	ID            AgentID
 	Role          Role
@@ -35,20 +40,22 @@ type AgentConfig struct {
 	MemosDir      string
 	ResetInterval time.Duration
 	OriginalTask  string
-	Process       Process // Optional: if nil, a ClaudeProcess is created
+	Process       Process
+	Dormancy      *Dormancy
+	CacheManager  *cache.Manager
+	IssueID       string
 }
 
-// NewAgent creates a new agent from configuration.
 func NewAgent(cfg AgentConfig) *Agent {
 	var proc Process
 	if cfg.Process != nil {
 		proc = cfg.Process
+	} else if strings.HasPrefix(cfg.Model, "gemini-") && cfg.CacheManager != nil {
+		proc = NewGeminiAPIProcess(GeminiAPIOptions{Client: cfg.CacheManager.Client(), Model: cfg.Model, SystemPrompt: cfg.SystemPrompt, WorkDir: cfg.WorkDir})
+	} else if strings.HasPrefix(cfg.Model, "gemini-") {
+		proc = NewGmnProcess(GmnOptions{SystemPrompt: cfg.SystemPrompt, Model: cfg.Model, WorkDir: cfg.WorkDir})
 	} else {
-		proc = NewClaudeProcess(ClaudeOptions{
-			SystemPrompt: cfg.SystemPrompt,
-			Model:        cfg.Model,
-			WorkDir:      cfg.WorkDir,
-		})
+		proc = NewClaudeProcess(ClaudeOptions{SystemPrompt: cfg.SystemPrompt, Model: cfg.Model, WorkDir: cfg.WorkDir})
 	}
 
 	return &Agent{
@@ -59,63 +66,48 @@ func NewAgent(cfg AgentConfig) *Agent {
 		ResetInterval: cfg.ResetInterval,
 		SystemPrompt:  cfg.SystemPrompt,
 		OriginalTask:  cfg.OriginalTask,
+		Dormancy:      cfg.Dormancy,
+		CacheManager:  cfg.CacheManager,
+		IssueID:       cfg.IssueID,
+		ready:         make(chan struct{}),
 	}
 }
 
-// Run executes the agent's main loop:
-//  1. Watch chatlog for messages addressed to this agent
-//  2. Send messages to Claude for processing
-//  3. Claude executes actions (writes to chatlog, edits files, etc.)
-//  4. Reset context when timer expires
+func (a *Agent) Ready() <-chan struct{} { return a.ready }
+
+func (a *Agent) markReady() { a.readyOnce.Do(func() { close(a.ready) }) }
+
 func (a *Agent) Run(ctx context.Context) error {
 	timer := reset.NewTimer(a.ResetInterval)
 	recipient := a.ID.String()
-
 	log.Printf("[%s] agent started", recipient)
 
-	// Load latest memo if resuming, with timestamp for replay
-	memo, memoTs, _ := reset.LoadLatestMemoWithTime(a.MemosDir, recipient)
-
-	// Retrieve messages that arrived while the agent was down
-	missed, _ := a.ChatLog.PollSince(recipient, memoTs)
-
-	// Initial prompt to start the agent
-	initialPrompt := a.buildInitialPromptWithReplay(memo, missed)
-	if _, err := a.Process.Send(ctx, initialPrompt); err != nil {
+	memo, _ := reset.LoadLatestMemo(a.MemosDir, recipient)
+	_, initErr := a.send(ctx, a.buildInitialPrompt(memo))
+	a.markReady()
+	if initErr != nil {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		log.Printf("[%s] initial send failed: %v", recipient, err)
+		log.Printf("[%s] initial send failed: %v", recipient, initErr)
 	}
 
-	// Watch for new messages
 	msgCh := a.ChatLog.Watch(ctx, recipient)
-
 	for {
 		select {
 		case <-ctx.Done():
 			log.Printf("[%s] agent stopped", recipient)
 			return ctx.Err()
-
 		case msg, ok := <-msgCh:
 			if !ok {
 				return nil
 			}
-
-			// Check if reset is needed before processing
 			if timer.Expired() {
 				if err := a.performReset(ctx, timer); err != nil {
 					log.Printf("[%s] reset failed: %v", recipient, err)
 				}
 			}
-
-			// Build prompt with the incoming message
-			prompt := fmt.Sprintf(
-				"チャットログに新しいメッセージがあります:\n\n%s\n\n適切に対応してください。",
-				msg.Raw,
-			)
-
-			response, err := a.Process.Send(ctx, prompt)
+			response, err := a.send(ctx, fmt.Sprintf("チャットログに新しいメッセージがあります:\n\n%s\n\n適切に対応してください。", msg.Raw))
 			if err != nil {
 				if ctx.Err() != nil {
 					return ctx.Err()
@@ -123,7 +115,6 @@ func (a *Agent) Run(ctx context.Context) error {
 				log.Printf("[%s] send failed: %v", recipient, err)
 				continue
 			}
-
 			if response != "" {
 				log.Printf("[%s] response: %s", recipient, truncate(response, 200))
 			}
@@ -131,18 +122,15 @@ func (a *Agent) Run(ctx context.Context) error {
 	}
 }
 
-// performReset executes the 8-minute context reset protocol.
 func (a *Agent) performReset(ctx context.Context, timer *reset.Timer) error {
 	recipient := a.ID.String()
 	log.Printf("[%s] context reset triggered", recipient)
 
-	// Ask Claude to distill current state
-	distilled, err := a.Process.Send(ctx, reset.DistillPrompt)
+	distilled, err := a.send(ctx, reset.DistillPrompt)
 	if err != nil {
 		return fmt.Errorf("distill failed: %w", err)
 	}
 
-	// Parse and save the memo
 	memo := parseDistilledMemo(recipient, distilled)
 	memoPath, err := reset.SaveMemo(a.MemosDir, memo)
 	if err != nil {
@@ -150,11 +138,16 @@ func (a *Agent) performReset(ctx context.Context, timer *reset.Timer) error {
 	}
 	log.Printf("[%s] memo saved: %s", recipient, filepath.Base(memoPath))
 
-	// Rebuild process with fresh context
-	memoContent, _ := os.ReadFile(memoPath)
-	freshPrompt := a.buildInitialPrompt(string(memoContent))
+	if a.CacheManager != nil && a.IssueID != "" {
+		if err := a.CacheManager.Refresh(ctx, a.IssueID); err != nil {
+			log.Printf("[%s] cache refresh failed: %v", recipient, err)
+		} else {
+			log.Printf("[%s] cache TTL refreshed", recipient)
+		}
+	}
 
-	if _, err := a.Process.Send(ctx, freshPrompt); err != nil {
+	memoContent, _ := os.ReadFile(memoPath)
+	if _, err := a.send(ctx, a.buildInitialPrompt(string(memoContent))); err != nil {
 		return fmt.Errorf("fresh start failed: %w", err)
 	}
 
@@ -164,58 +157,31 @@ func (a *Agent) performReset(ctx context.Context, timer *reset.Timer) error {
 }
 
 func (a *Agent) buildInitialPrompt(memo string) string {
-	return a.buildInitialPromptWithReplay(memo, nil)
-}
-
-func (a *Agent) buildInitialPromptWithReplay(memo string, missed []chatlog.Message) string {
 	var sb strings.Builder
 	sb.WriteString("あなたは以下の役割で動作するエージェントです。\n\n")
-
 	if a.OriginalTask != "" {
 		sb.WriteString("## 元の依頼内容\n")
 		sb.WriteString(a.OriginalTask)
 		sb.WriteString("\n\n")
 	}
-
 	if memo != "" {
 		sb.WriteString("## 直近の作業メモ（前回のコンテキストリセットから引き継ぎ）\n")
 		sb.WriteString(memo)
 		sb.WriteString("\n\n")
 	}
-
-	if len(missed) > 0 {
-		sb.WriteString("## 未処理メッセージ（システム停止中に届いたメッセージ）\n")
-		for _, m := range missed {
-			sb.WriteString(m.Raw)
-			sb.WriteString("\n")
-		}
-		sb.WriteString("\n")
-	}
-
 	sb.WriteString("チャットログのパス: ")
 	sb.WriteString(a.ChatLog.Path())
 	sb.WriteString("\n\n")
-
 	sb.WriteString("チャットログへの書き込みには以下のコマンドを使用してください:\n")
-	sb.WriteString(fmt.Sprintf(
-		`echo "[$(date +%%Y-%%m-%%dT%%H:%%M:%%S)] [@宛先] %s: メッセージ内容" >> %s`,
-		a.ID.String(), a.ChatLog.Path(),
-	))
+	sb.WriteString(fmt.Sprintf(`echo "[$(date +%%Y-%%m-%%dT%%H:%%M:%%S)] [@宛先] %s: メッセージ内容" >> %s`, a.ID.String(), a.ChatLog.Path()))
 	sb.WriteString("\n\n")
-
 	sb.WriteString("自分宛のメンションがチャットログに投稿されるのを待ち、適切に対応してください。")
-
 	return sb.String()
 }
 
 func parseDistilledMemo(agentID, raw string) reset.WorkMemo {
-	memo := reset.WorkMemo{
-		AgentID:   agentID,
-		Timestamp: time.Now(),
-	}
-
-	lines := strings.Split(raw, "\n")
-	for _, line := range lines {
+	memo := reset.WorkMemo{AgentID: agentID, Timestamp: time.Now()}
+	for _, line := range strings.Split(raw, "\n") {
 		line = strings.TrimSpace(line)
 		switch {
 		case strings.HasPrefix(line, "STATE:"):
@@ -228,13 +194,30 @@ func parseDistilledMemo(agentID, raw string) reset.WorkMemo {
 			memo.NextStep = strings.TrimSpace(strings.TrimPrefix(line, "NEXT:"))
 		}
 	}
-
-	// Fallback: if parsing failed, store entire response as current state
 	if memo.CurrentState == "" && memo.Decisions == "" {
 		memo.CurrentState = raw
 	}
-
 	return memo
+}
+
+func (a *Agent) send(ctx context.Context, prompt string) (string, error) {
+	for {
+		if a.Dormancy != nil {
+			if err := a.Dormancy.Wait(ctx); err != nil {
+				return "", err
+			}
+		}
+		resp, err := a.Process.Send(ctx, prompt)
+		if err != nil && a.Dormancy != nil && IsRateLimitError(err) {
+			log.Printf("[%s] rate limit detected, entering dormancy", a.ID.String())
+			a.Dormancy.Enter(ctx, func(pctx context.Context) error {
+				_, perr := a.Process.Send(pctx, "hello")
+				return perr
+			})
+			continue
+		}
+		return resp, err
+	}
 }
 
 func truncate(s string, maxLen int) string {

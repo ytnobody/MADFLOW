@@ -1,6 +1,9 @@
 package agent
 
 import (
+	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -36,7 +39,7 @@ NEXT: テストを書く`
 
 func TestParseDistilledMemoFallback(t *testing.T) {
 	raw := "予期しないフォーマットの応答"
-	memo := parseDistilledMemo("pm", raw)
+	memo := parseDistilledMemo("superintendent", raw)
 
 	if memo.CurrentState != raw {
 		t.Errorf("expected fallback to raw, got %s", memo.CurrentState)
@@ -84,48 +87,6 @@ func TestBuildInitialPromptWithMemo(t *testing.T) {
 	}
 }
 
-func TestBuildInitialPromptWithReplay(t *testing.T) {
-	ag := &Agent{
-		ID:           AgentID{Role: RoleEngineer, TeamNum: 1},
-		OriginalTask: "コード実装",
-		ChatLog:      chatlog.New("/tmp/test/chatlog.txt"),
-	}
-
-	missed := []chatlog.Message{
-		{Raw: "[2026-02-21T10:00:00] [@engineer-1] PM: タスクを確認してください"},
-		{Raw: "[2026-02-21T10:01:00] [@engineer-1] architect-1: 設計レビュー完了"},
-	}
-
-	prompt := ag.buildInitialPromptWithReplay("前回のメモ", missed)
-
-	if !strings.Contains(prompt, "未処理メッセージ") {
-		t.Error("expected missed messages section in prompt")
-	}
-	if !strings.Contains(prompt, "タスクを確認してください") {
-		t.Error("expected first missed message in prompt")
-	}
-	if !strings.Contains(prompt, "設計レビュー完了") {
-		t.Error("expected second missed message in prompt")
-	}
-	if !strings.Contains(prompt, "前回のメモ") {
-		t.Error("expected memo content in prompt")
-	}
-}
-
-func TestBuildInitialPromptWithReplayEmpty(t *testing.T) {
-	ag := &Agent{
-		ID:           AgentID{Role: RoleEngineer, TeamNum: 1},
-		OriginalTask: "コード実装",
-		ChatLog:      chatlog.New("/tmp/test/chatlog.txt"),
-	}
-
-	prompt := ag.buildInitialPromptWithReplay("メモ", nil)
-
-	if strings.Contains(prompt, "未処理メッセージ") {
-		t.Error("should not contain missed messages section when there are none")
-	}
-}
-
 func TestTruncate(t *testing.T) {
 	if truncate("short", 10) != "short" {
 		t.Error("should not truncate short strings")
@@ -133,6 +94,93 @@ func TestTruncate(t *testing.T) {
 	result := truncate("this is a long string", 10)
 	if result != "this is a ..." {
 		t.Errorf("unexpected truncation: %s", result)
+	}
+}
+
+// mockProcess is a test double for Process.
+type mockProcess struct {
+	response string
+	err      error
+}
+
+func (m *mockProcess) Send(ctx context.Context, prompt string) (string, error) {
+	return m.response, m.err
+}
+
+func TestReadySignaledAfterRun(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "chatlog.txt")
+	os.WriteFile(logPath, nil, 0644)
+	memosDir := filepath.Join(dir, "memos")
+	os.MkdirAll(memosDir, 0755)
+
+	ag := NewAgent(AgentConfig{
+		ID:            AgentID{Role: RoleSuperintendent},
+		Role:          RoleSuperintendent,
+		SystemPrompt:  "test",
+		Model:         "test",
+		ChatLogPath:   logPath,
+		MemosDir:      memosDir,
+		ResetInterval: time.Hour,
+		Process:       &mockProcess{response: "ok"},
+	})
+
+	// Ready should not be signaled before Run
+	select {
+	case <-ag.Ready():
+		t.Fatal("Ready should not be closed before Run")
+	default:
+		// expected
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// Run in background; it will send initial prompt then block on chatlog watch
+	go func() {
+		ag.Run(ctx)
+	}()
+
+	// Wait for Ready signal
+	select {
+	case <-ag.Ready():
+		// success
+	case <-time.After(2 * time.Second):
+		t.Fatal("Ready was not signaled within timeout")
+	}
+
+	cancel()
+}
+
+func TestReadySignaledOnSendError(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "chatlog.txt")
+	os.WriteFile(logPath, nil, 0644)
+	memosDir := filepath.Join(dir, "memos")
+	os.MkdirAll(memosDir, 0755)
+
+	ag := NewAgent(AgentConfig{
+		ID:            AgentID{Role: RoleSuperintendent},
+		Role:          RoleSuperintendent,
+		SystemPrompt:  "test",
+		Model:         "test",
+		ChatLogPath:   logPath,
+		MemosDir:      memosDir,
+		ResetInterval: time.Hour,
+		Process:       &mockProcess{err: context.Canceled},
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // pre-cancel
+
+	go func() {
+		ag.Run(ctx)
+	}()
+
+	select {
+	case <-ag.Ready():
+		// success - Ready should be signaled even on error
+	case <-time.After(2 * time.Second):
+		t.Fatal("Ready was not signaled on send error")
 	}
 }
 
