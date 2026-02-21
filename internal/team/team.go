@@ -15,7 +15,7 @@ import (
 // announceStart は各エージェントの作業開始をチャットログに報告する。
 func announceStart(team *Team) {
 	line := chatlog.FormatMessage(
-		"",
+		"superintendent",
 		team.Engineer.ID.String(),
 		fmt.Sprintf("チーム %d の %s として作業を開始します。イシュー: %s", team.ID, team.Engineer.ID.Role, team.IssueID),
 	)
