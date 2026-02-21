@@ -85,8 +85,8 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 		return fmt.Errorf("wait for agents ready: %w", err)
 	}
 
-	// Restore teams for in-progress issues
-	o.restoreTeams(ctx)
+	// Start teams for all open/in-progress issues
+	o.startAllTeams(ctx)
 
 	// Start GitHub sync if configured
 	if o.cfg.GitHub != nil {
@@ -188,36 +188,44 @@ func (o *Orchestrator) waitForAgentsReady(ctx context.Context) error {
 	return nil
 }
 
-// restoreTeams creates teams for all issues that are currently in_progress.
-// This is called on startup to resume work that was interrupted by a restart.
-func (o *Orchestrator) restoreTeams(ctx context.Context) {
-	inProgress := issue.StatusInProgress
-	issues, err := o.store.List(issue.StatusFilter{Status: &inProgress})
+// startAllTeams creates teams for all open and in-progress issues.
+// Called on startup so that all team agents are already watching the chatlog
+// before resident agents (PM etc.) begin sending messages.
+func (o *Orchestrator) startAllTeams(ctx context.Context) {
+	allIssues, err := o.store.List(issue.StatusFilter{})
 	if err != nil {
-		log.Printf("[orchestrator] restore teams: list issues: %v", err)
+		log.Printf("[orchestrator] start teams: list issues: %v", err)
 		return
 	}
 
-	if len(issues) == 0 {
-		log.Println("[orchestrator] no in-progress issues to restore")
+	var targets []*issue.Issue
+	for _, iss := range allIssues {
+		if iss.Status == issue.StatusOpen || iss.Status == issue.StatusInProgress {
+			targets = append(targets, iss)
+		}
+	}
+
+	if len(targets) == 0 {
+		log.Println("[orchestrator] no issues to start teams for")
 		return
 	}
 
-	for _, iss := range issues {
+	for _, iss := range targets {
 		if ctx.Err() != nil {
 			return
 		}
 		t, err := o.teams.Create(ctx, iss.ID)
 		if err != nil {
-			log.Printf("[orchestrator] restore teams: create team for %s: %v", iss.ID, err)
+			log.Printf("[orchestrator] start teams: create team for %s: %v", iss.ID, err)
 			continue
 		}
 		iss.AssignedTeam = t.ID
+		iss.Status = issue.StatusInProgress
 		o.store.Update(iss)
-		log.Printf("[orchestrator] restored team %d for issue %s", t.ID, iss.ID)
+		log.Printf("[orchestrator] started team %d for issue %s", t.ID, iss.ID)
 	}
 
-	log.Printf("[orchestrator] restored %d teams", o.teams.Count())
+	log.Printf("[orchestrator] started %d teams", o.teams.Count())
 }
 
 // runAgentWithRestart runs an agent and restarts it if it exits unexpectedly.

@@ -287,7 +287,7 @@ func (f *mockTeamFactory) CreateTeamAgents(teamNum int, issueID string) (archite
 		nil
 }
 
-func TestRestoreTeamsNoIssues(t *testing.T) {
+func TestStartAllTeamsNoIssues(t *testing.T) {
 	dir := t.TempDir()
 	cfg := testConfig(dir)
 	os.MkdirAll(filepath.Join(dir, "issues"), 0755)
@@ -295,82 +295,86 @@ func TestRestoreTeamsNoIssues(t *testing.T) {
 	orc := New(cfg, dir, t.TempDir())
 
 	// Should be a no-op without panicking
-	orc.restoreTeams(t.Context())
+	orc.startAllTeams(t.Context())
 
 	if orc.Teams().Count() != 0 {
 		t.Errorf("expected 0 teams, got %d", orc.Teams().Count())
 	}
 }
 
-func TestRestoreTeamsSkipsNonInProgress(t *testing.T) {
+func TestStartAllTeamsSkipsResolvedAndClosed(t *testing.T) {
 	dir := t.TempDir()
 	cfg := testConfig(dir)
 	os.MkdirAll(filepath.Join(dir, "issues"), 0755)
 
 	orc := New(cfg, dir, t.TempDir())
 
-	// Create issues with non-in_progress statuses
-	for _, title := range []string{"Open Issue", "Resolved Issue", "Closed Issue"} {
+	// Create issues with resolved/closed statuses only
+	for _, title := range []string{"Resolved Issue", "Closed Issue"} {
 		iss, err := orc.Store().Create(title, "body")
 		if err != nil {
 			t.Fatalf("create issue: %v", err)
 		}
 		switch title {
 		case "Resolved Issue":
-			iss.Status = "resolved"
+			iss.Status = issue.StatusResolved
 		case "Closed Issue":
-			iss.Status = "closed"
+			iss.Status = issue.StatusClosed
 		}
 		orc.Store().Update(iss)
 	}
 
-	orc.restoreTeams(t.Context())
+	orc.startAllTeams(t.Context())
 
 	if orc.Teams().Count() != 0 {
-		t.Errorf("expected 0 teams for non-in_progress issues, got %d", orc.Teams().Count())
+		t.Errorf("expected 0 teams for resolved/closed issues, got %d", orc.Teams().Count())
 	}
 }
 
-func TestRestoreTeamsCreatesTeamsForInProgress(t *testing.T) {
+func TestStartAllTeamsCreatesForOpenAndInProgress(t *testing.T) {
 	dir := t.TempDir()
 	cfg := testConfig(dir)
-	cfg.Agent.MaxTeams = 4
+	cfg.Agent.MaxTeams = 10
 	os.MkdirAll(filepath.Join(dir, "issues"), 0755)
 	os.WriteFile(filepath.Join(dir, "chatlog.txt"), nil, 0644)
 
 	orc := New(cfg, dir, t.TempDir())
 	// Replace team manager with one using mock factory
-	orc.teams = team.NewManager(newMockTeamFactory(t), 4)
+	orc.teams = team.NewManager(newMockTeamFactory(t), 10)
 
-	// Create 2 in-progress issues and 1 open issue
-	for i, title := range []string{"Task A", "Task B", "Task C"} {
-		iss, err := orc.Store().Create(title, "body")
+	// Create: 1 open, 1 in_progress, 1 resolved, 1 closed
+	statuses := []issue.Status{issue.StatusOpen, issue.StatusInProgress, issue.StatusResolved, issue.StatusClosed}
+	for i, s := range statuses {
+		iss, err := orc.Store().Create(fmt.Sprintf("Task %d", i), "body")
 		if err != nil {
 			t.Fatalf("create issue: %v", err)
 		}
-		if i < 2 {
-			iss.Status = "in_progress"
-			orc.Store().Update(iss)
-		}
+		iss.Status = s
+		orc.Store().Update(iss)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	orc.restoreTeams(ctx)
+	orc.startAllTeams(ctx)
 
+	// Only open + in_progress = 2 teams
 	if orc.Teams().Count() != 2 {
-		t.Errorf("expected 2 teams for in_progress issues, got %d", orc.Teams().Count())
+		t.Errorf("expected 2 teams, got %d", orc.Teams().Count())
 	}
 
-	// Verify team assignments were updated
+	// All targeted issues should now be in_progress with assigned teams
 	issues, _ := orc.Store().List(issue.StatusFilter{})
 	for _, iss := range issues {
-		if iss.Status == "in_progress" && iss.AssignedTeam == 0 {
-			t.Errorf("in_progress issue %s should have assigned team", iss.ID)
-		}
-		if iss.Status == "open" && iss.AssignedTeam != 0 {
-			t.Errorf("open issue %s should not have assigned team", iss.ID)
+		switch iss.Status {
+		case issue.StatusInProgress:
+			if iss.AssignedTeam == 0 {
+				t.Errorf("in_progress issue %s should have assigned team", iss.ID)
+			}
+		case issue.StatusResolved, issue.StatusClosed:
+			if iss.AssignedTeam != 0 {
+				t.Errorf("%s issue %s should not have assigned team", iss.Status, iss.ID)
+			}
 		}
 	}
 
