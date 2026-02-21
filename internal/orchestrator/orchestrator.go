@@ -418,7 +418,7 @@ func (o *Orchestrator) runEventWatcher(ctx context.Context) {
 			o.chatLog.Append("superintendent", "orchestrator", msg)
 
 
-			// If the issue is assigned to a team, also notify the team engineer (who now covers architect responsibilities)
+			// If the issue is assigned to a team, also notify the team engineer
 			iss, err := o.store.Get(issueID)
 			if err == nil && iss.AssignedTeam > 0 {
 				engineerID := fmt.Sprintf("engineer-%d", iss.AssignedTeam)

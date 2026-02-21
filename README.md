@@ -4,8 +4,9 @@ MADFLOW（Multi-Agent Development Flow）は、複数の AI エージェント�
 
 ## 特徴
 
-- **動的特務チーム型アーキテクチャ**: 監督・エンジニア・レビュアー・リリースマネージャーの4つのロールが連携
-- **自律的なタスク管理**: イシューの作成から設計・実装・レビュー・リリースまでを AI エージェントが遂行
+- **シンプルな2エージェント構成**: 監督とエンジニアのみで構成
+- **監督の一元管理**: 監督がPM・設計・レビュー・マージを統括
+- **自律的なタスク管理**: イシューの作成から実装・レビュー・マージまでを AI エージェントが遂行
 - **コンテキストリセット機能**: AIの性能低下を防ぐ自動リフレッシュ機構
 - **Git/GitHub 統合**: ブランチ戦略・イシュー同期を自動管理
 
@@ -13,7 +14,9 @@ MADFLOW（Multi-Agent Development Flow）は、複数の AI エージェント�
 
 - Go 1.23 以上
 - Git
-- [Claude Code](https://claude.com/claude-code)（`claude` コマンドが利用可能であること）
+- 以下のいずれか:
+  - [Claude Code](https://claude.com/claude-code)（`claude` コマンド）
+  - [gmn](https://github.com/yourusername/gmn)（`gmn` コマンド）- Gemini モデル使用時
 - GitHub CLI（`gh`）（GitHub Issue 同期を使用する場合）
 
 ## インストール
@@ -76,8 +79,9 @@ context_reset_minutes = 8
 [agent.models]
 superintendent = "claude-opus-4-6"
 engineer = "claude-sonnet-4-6"
-reviewer = "claude-sonnet-4-6"
-release_manager = "claude-haiku-4-5"
+# Gemini モデルも使用可能:
+# superintendent = "gemini-2.0-flash-exp"
+# engineer = "gemini-2.5-pro"
 
 [branches]
 main = "main"

@@ -45,7 +45,6 @@ type AgentConfig struct {
 type ModelConfig struct {
 	Superintendent string `toml:"superintendent"`
 	Engineer       string `toml:"engineer"`
-	Reviewer       string `toml:"reviewer"`
 }
 
 type BranchConfig struct {

@@ -53,7 +53,7 @@ func NewAgent(cfg AgentConfig) *Agent {
 	} else if strings.HasPrefix(cfg.Model, "gemini-") && cfg.CacheManager != nil {
 		proc = NewGeminiAPIProcess(GeminiAPIOptions{Client: cfg.CacheManager.Client(), Model: cfg.Model, SystemPrompt: cfg.SystemPrompt, WorkDir: cfg.WorkDir})
 	} else if strings.HasPrefix(cfg.Model, "gemini-") {
-		proc = NewGeminiProcess(GeminiOptions{SystemPrompt: cfg.SystemPrompt, Model: cfg.Model, WorkDir: cfg.WorkDir})
+		proc = NewGmnProcess(GmnOptions{SystemPrompt: cfg.SystemPrompt, Model: cfg.Model, WorkDir: cfg.WorkDir})
 	} else {
 		proc = NewClaudeProcess(ClaudeOptions{SystemPrompt: cfg.SystemPrompt, Model: cfg.Model, WorkDir: cfg.WorkDir})
 	}
