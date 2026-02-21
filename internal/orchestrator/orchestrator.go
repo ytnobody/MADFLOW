@@ -189,11 +189,10 @@ func (o *Orchestrator) waitForAgentsReady(ctx context.Context) error {
 	return nil
 }
 
-// startAllTeams unconditionally creates maxTeams teams at startup.
+// startAllTeams unconditionally creates maxTeams teams at startup in parallel.
 // If open/in-progress issues exist, they are assigned to teams.
 // Remaining slots start as standby teams ready to receive work.
-// teams.Create blocks until each team's agents are Ready, so this
-// method returns only after all teams are fully operational.
+// Returns after all teams are fully operational.
 func (o *Orchestrator) startAllTeams(ctx context.Context) {
 	maxTeams := o.cfg.Agent.MaxTeams
 	if maxTeams <= 0 {
@@ -213,31 +212,38 @@ func (o *Orchestrator) startAllTeams(ctx context.Context) {
 		}
 	}
 
+	// Launch all teams concurrently
+	var twg sync.WaitGroup
 	for i := 0; i < maxTeams; i++ {
-		if ctx.Err() != nil {
-			return
-		}
-
+		idx := i
 		var issueID string
-		if i < len(assignable) {
-			issueID = assignable[i].ID
+		if idx < len(assignable) {
+			issueID = assignable[idx].ID
 		}
 
-		t, err := o.teams.Create(ctx, issueID)
-		if err != nil {
-			log.Printf("[orchestrator] start teams: team %d: %v", i+1, err)
-			continue
-		}
+		twg.Add(1)
+		go func() {
+			defer twg.Done()
 
-		if i < len(assignable) {
-			assignable[i].AssignedTeam = t.ID
-			assignable[i].Status = issue.StatusInProgress
-			o.store.Update(assignable[i])
-			log.Printf("[orchestrator] started team %d for issue %s", t.ID, issueID)
-		} else {
-			log.Printf("[orchestrator] started team %d (standby)", t.ID)
-		}
+			t, err := o.teams.Create(ctx, issueID)
+			if err != nil {
+				log.Printf("[orchestrator] start teams: team %d: %v", idx+1, err)
+				return
+			}
+
+			if idx < len(assignable) {
+				o.mu.Lock()
+				assignable[idx].AssignedTeam = t.ID
+				assignable[idx].Status = issue.StatusInProgress
+				o.store.Update(assignable[idx])
+				o.mu.Unlock()
+				log.Printf("[orchestrator] started team %d for issue %s", t.ID, issueID)
+			} else {
+				log.Printf("[orchestrator] started team %d (standby)", t.ID)
+			}
+		}()
 	}
+	twg.Wait()
 
 	log.Printf("[orchestrator] started %d teams", o.teams.Count())
 }
