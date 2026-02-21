@@ -2,6 +2,9 @@ package github
 
 import (
 	"testing"
+	"time"
+
+	"github.com/ytnobody/madflow/internal/issue"
 )
 
 func TestFormatID(t *testing.T) {
@@ -153,4 +156,146 @@ func TestNewSyncer(t *testing.T) {
 	if s.repos[0] != "madflow" {
 		t.Errorf("repos[0] = %q, want %q", s.repos[0], "madflow")
 	}
+}
+
+func TestSyncer_WithIdleDetector(t *testing.T) {
+	d := NewIdleDetector()
+	s := NewSyncer(nil, "owner", []string{"repo"}, time.Minute).
+		WithIdleDetector(d, 15*time.Minute)
+
+	if s.idleDetector != d {
+		t.Error("expected idleDetector to be set")
+	}
+	if s.idleInterval != 15*time.Minute {
+		t.Errorf("expected idleInterval 15m, got %v", s.idleInterval)
+	}
+}
+
+func TestSyncer_CurrentInterval_NoDetector(t *testing.T) {
+	s := NewSyncer(nil, "owner", []string{"repo"}, 30*time.Second)
+	// Without idle detector, always returns normal interval
+	if got := s.currentInterval(); got != 30*time.Second {
+		t.Errorf("expected 30s, got %v", got)
+	}
+}
+
+func TestSyncer_CurrentInterval_WithDetector(t *testing.T) {
+	d := NewIdleDetector()
+	normal := 30 * time.Second
+	idle := 15 * time.Minute
+	s := NewSyncer(nil, "owner", []string{"repo"}, normal).
+		WithIdleDetector(d, idle)
+
+	// With issues (detector default) → normal
+	if got := s.currentInterval(); got != normal {
+		t.Errorf("with issues: expected %v, got %v", normal, got)
+	}
+
+	// Without issues → idle
+	d.SetHasIssues(false)
+	if got := s.currentInterval(); got != idle {
+		t.Errorf("without issues: expected %v, got %v", idle, got)
+	}
+
+	// Issues return → normal again
+	d.SetHasIssues(true)
+	if got := s.currentInterval(); got != normal {
+		t.Errorf("issues returned: expected %v, got %v", normal, got)
+	}
+}
+
+func TestSyncer_UpdateIdleState_NoIssues(t *testing.T) {
+	dir := t.TempDir()
+	store := issue.NewStore(dir)
+
+	d := NewIdleDetector()
+	// Start as active
+	d.SetHasIssues(true)
+
+	s := NewSyncer(store, "owner", []string{"repo"}, time.Minute).
+		WithIdleDetector(d, 15*time.Minute)
+
+	// No issues in store → detector should report no issues
+	s.updateIdleState()
+	if d.HasIssues() {
+		t.Error("expected HasIssues=false when store is empty")
+	}
+}
+
+func TestSyncer_UpdateIdleState_WithOpenIssue(t *testing.T) {
+	dir := t.TempDir()
+	store := issue.NewStore(dir)
+
+	// Add an open issue
+	iss := &issue.Issue{
+		ID:     "owner-repo-001",
+		Title:  "Open Issue",
+		Status: issue.StatusOpen,
+	}
+	_ = store.Update(iss)
+
+	d := NewIdleDetector()
+	d.SetHasIssues(false) // Start as idle
+
+	s := NewSyncer(store, "owner", []string{"repo"}, time.Minute).
+		WithIdleDetector(d, 15*time.Minute)
+
+	// Open issue in store → detector should report has issues
+	s.updateIdleState()
+	if !d.HasIssues() {
+		t.Error("expected HasIssues=true when there is an open issue")
+	}
+}
+
+func TestSyncer_UpdateIdleState_WithInProgressIssue(t *testing.T) {
+	dir := t.TempDir()
+	store := issue.NewStore(dir)
+
+	// Add an in-progress issue
+	iss := &issue.Issue{
+		ID:     "local-001",
+		Title:  "In Progress Issue",
+		Status: issue.StatusInProgress,
+	}
+	_ = store.Update(iss)
+
+	d := NewIdleDetector()
+	d.SetHasIssues(false)
+
+	s := NewSyncer(store, "owner", []string{"repo"}, time.Minute).
+		WithIdleDetector(d, 15*time.Minute)
+
+	s.updateIdleState()
+	if !d.HasIssues() {
+		t.Error("expected HasIssues=true when there is an in-progress issue")
+	}
+}
+
+func TestSyncer_UpdateIdleState_OnlyClosedIssues(t *testing.T) {
+	dir := t.TempDir()
+	store := issue.NewStore(dir)
+
+	// Add only closed/resolved issues
+	_ = store.Update(&issue.Issue{ID: "owner-repo-001", Title: "Closed", Status: issue.StatusClosed})
+	_ = store.Update(&issue.Issue{ID: "owner-repo-002", Title: "Resolved", Status: issue.StatusResolved})
+
+	d := NewIdleDetector()
+	d.SetHasIssues(true)
+
+	s := NewSyncer(store, "owner", []string{"repo"}, time.Minute).
+		WithIdleDetector(d, 15*time.Minute)
+
+	s.updateIdleState()
+	if d.HasIssues() {
+		t.Error("expected HasIssues=false when all issues are closed/resolved")
+	}
+}
+
+func TestSyncer_UpdateIdleState_NilDetector(t *testing.T) {
+	dir := t.TempDir()
+	store := issue.NewStore(dir)
+
+	// Without idle detector, updateIdleState should be a no-op (no panic)
+	s := NewSyncer(store, "owner", []string{"repo"}, time.Minute)
+	s.updateIdleState() // should not panic
 }

@@ -38,10 +38,12 @@ type ghLabel struct {
 
 // Syncer synchronizes GitHub Issues to local issue files.
 type Syncer struct {
-	store    *issue.Store
-	owner    string
-	repos    []string
-	interval time.Duration
+	store        *issue.Store
+	owner        string
+	repos        []string
+	interval     time.Duration
+	idleDetector *IdleDetector // nil = no adaptive behavior
+	idleInterval time.Duration // effective only when idleDetector is set
 }
 
 // NewSyncer creates a new GitHub issue syncer.
@@ -54,7 +56,50 @@ func NewSyncer(store *issue.Store, owner string, repos []string, interval time.D
 	}
 }
 
+// WithIdleDetector attaches an IdleDetector to the Syncer, enabling adaptive polling.
+// When the detector reports no active issues, the Syncer uses idleInterval instead
+// of the normal interval. Returns the Syncer for method chaining.
+func (s *Syncer) WithIdleDetector(d *IdleDetector, idleInterval time.Duration) *Syncer {
+	s.idleDetector = d
+	s.idleInterval = idleInterval
+	return s
+}
+
+// currentInterval returns the interval to use for the next sleep, taking idle state into account.
+func (s *Syncer) currentInterval() time.Duration {
+	if s.idleDetector != nil {
+		return s.idleDetector.AdaptInterval(s.interval, s.idleInterval)
+	}
+	return s.interval
+}
+
+// updateIdleState checks the issue store for active issues and updates the IdleDetector.
+// An issue is considered active if its status is open or in_progress.
+func (s *Syncer) updateIdleState() {
+	if s.idleDetector == nil {
+		return
+	}
+
+	all, err := s.store.List(issue.StatusFilter{})
+	if err != nil {
+		// On error, assume there might be issues to avoid suppressing polling
+		s.idleDetector.SetHasIssues(true)
+		return
+	}
+
+	for _, iss := range all {
+		if iss.Status == issue.StatusOpen || iss.Status == issue.StatusInProgress {
+			s.idleDetector.SetHasIssues(true)
+			return
+		}
+	}
+	s.idleDetector.SetHasIssues(false)
+}
+
 // Run starts the periodic sync loop. Blocks until ctx is cancelled.
+// If an IdleDetector is attached (via WithIdleDetector), the sync interval
+// automatically increases to idleInterval when no active issues are present,
+// and reverts to the normal interval when issues appear.
 func (s *Syncer) Run(ctx context.Context) error {
 	log.Printf("[github-sync] started (interval: %v, repos: %v)", s.interval, s.repos)
 
@@ -62,19 +107,19 @@ func (s *Syncer) Run(ctx context.Context) error {
 	if err := s.SyncOnce(); err != nil {
 		log.Printf("[github-sync] initial sync failed: %v", err)
 	}
-
-	ticker := time.NewTicker(s.interval)
-	defer ticker.Stop()
+	s.updateIdleState()
 
 	for {
+		interval := s.currentInterval()
 		select {
 		case <-ctx.Done():
 			log.Println("[github-sync] stopped")
 			return ctx.Err()
-		case <-ticker.C:
+		case <-time.After(interval):
 			if err := s.SyncOnce(); err != nil {
 				log.Printf("[github-sync] sync failed: %v", err)
 			}
+			s.updateIdleState()
 		}
 	}
 }

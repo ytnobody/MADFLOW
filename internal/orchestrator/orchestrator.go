@@ -31,7 +31,8 @@ type Orchestrator struct {
 	teams        *team.Manager
 	repos        map[string]*git.Repo // name -> repo
 	dormancy     *agent.Dormancy
-	cacheManager *cache.Manager // nil when cache is disabled
+	cacheManager *cache.Manager  // nil when cache is disabled
+	idleDetector *github.IdleDetector // shared idle state for GitHub polling
 
 	residentAgents []*agent.Agent
 	mu             sync.Mutex
@@ -47,14 +48,20 @@ func New(cfg *config.Config, dataDir, promptDir string) *Orchestrator {
 		repos[r.Name] = git.NewRepo(r.Path)
 	}
 
+	idleDetector := github.NewIdleDetector()
+	if cfg.GitHub != nil && cfg.GitHub.IdleThresholdMinutes > 0 {
+		idleDetector.SetIdleThreshold(time.Duration(cfg.GitHub.IdleThresholdMinutes) * time.Minute)
+	}
+
 	orc := &Orchestrator{
-		cfg:       cfg,
-		dataDir:   dataDir,
-		promptDir: promptDir,
-		store:     issue.NewStore(issuesDir),
-		chatLog:   chatlog.New(chatLogPath),
-		repos:     repos,
-		dormancy:  agent.NewDormancy(),
+		cfg:          cfg,
+		dataDir:      dataDir,
+		promptDir:    promptDir,
+		store:        issue.NewStore(issuesDir),
+		chatLog:      chatlog.New(chatLogPath),
+		repos:        repos,
+		dormancy:     agent.NewDormancy(),
+		idleDetector: idleDetector,
 	}
 
 	orc.teams = team.NewManager(orc, cfg.Agent.MaxTeams)
@@ -417,7 +424,6 @@ func (o *Orchestrator) runEventWatcher(ctx context.Context) {
 
 			o.chatLog.Append("superintendent", "orchestrator", msg)
 
-
 			// If the issue is assigned to a team, also notify the team engineer
 			iss, err := o.store.Get(issueID)
 			if err == nil && iss.AssignedTeam > 0 {
@@ -427,7 +433,9 @@ func (o *Orchestrator) runEventWatcher(ctx context.Context) {
 		}
 	}
 
-	watcher := github.NewEventWatcher(o.store, gh.Owner, gh.Repos, interval, callback)
+	idleInterval := time.Duration(gh.IdlePollMinutes) * time.Minute
+	watcher := github.NewEventWatcher(o.store, gh.Owner, gh.Repos, interval, callback).
+		WithIdleDetector(o.idleDetector, idleInterval)
 	if err := watcher.Run(ctx); err != nil && ctx.Err() == nil {
 		log.Printf("[orchestrator] event watcher stopped: %v", err)
 	}
@@ -464,7 +472,9 @@ func (o *Orchestrator) runChatlogCleanup(ctx context.Context) {
 func (o *Orchestrator) runGitHubSync(ctx context.Context) {
 	gh := o.cfg.GitHub
 	interval := time.Duration(gh.SyncIntervalMinutes) * time.Minute
-	syncer := github.NewSyncer(o.store, gh.Owner, gh.Repos, interval)
+	idleInterval := time.Duration(gh.IdlePollMinutes) * time.Minute
+	syncer := github.NewSyncer(o.store, gh.Owner, gh.Repos, interval).
+		WithIdleDetector(o.idleDetector, idleInterval)
 	if err := syncer.Run(ctx); err != nil && ctx.Err() == nil {
 		log.Printf("[orchestrator] github sync stopped: %v", err)
 	}
