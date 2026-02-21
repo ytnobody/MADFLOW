@@ -97,10 +97,10 @@ func setDefaults(cfg *Config) {
 		cfg.Agent.ContextResetMinutes = 8
 	}
 	if cfg.Agent.Models.Superintendent == "" {
-		cfg.Agent.Models.Superintendent = "claude-opus-4-6"
+		cfg.Agent.Models.Superintendent = "claude-sonnet-4-6"
 	}
 	if cfg.Agent.Models.Engineer == "" {
-		cfg.Agent.Models.Engineer = "claude-sonnet-4-6"
+		cfg.Agent.Models.Engineer = "claude-haiku-4-5"
 	}
 	if cfg.Agent.MaxTeams == 0 {
 		cfg.Agent.MaxTeams = 4
