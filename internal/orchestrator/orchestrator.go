@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/ytnobody/madflow/internal/agent"
+	"github.com/ytnobody/madflow/internal/cache"
 	"github.com/ytnobody/madflow/internal/chatlog"
 	"github.com/ytnobody/madflow/internal/config"
 	"github.com/ytnobody/madflow/internal/git"
@@ -25,11 +26,12 @@ type Orchestrator struct {
 	dataDir   string
 	promptDir string
 
-	store    *issue.Store
-	chatLog  *chatlog.ChatLog
-	teams    *team.Manager
-	repos    map[string]*git.Repo // name -> repo
-	dormancy *agent.Dormancy
+	store        *issue.Store
+	chatLog      *chatlog.ChatLog
+	teams        *team.Manager
+	repos        map[string]*git.Repo // name -> repo
+	dormancy     *agent.Dormancy
+	cacheManager *cache.Manager // nil when cache is disabled
 
 	residentAgents []*agent.Agent
 	mu             sync.Mutex
@@ -56,6 +58,28 @@ func New(cfg *config.Config, dataDir, promptDir string) *Orchestrator {
 	}
 
 	orc.teams = team.NewManager(orc, cfg.Agent.MaxTeams)
+
+	// Initialize cache manager if enabled
+	if cfg.Cache != nil && cfg.Cache.Enabled {
+		apiKey := cfg.Cache.GeminiAPIKey
+		if apiKey == "" {
+			apiKey = os.Getenv("GEMINI_API_KEY")
+		}
+		if apiKey != "" {
+			model := cfg.Agent.Models.Engineer
+			cacheDir := filepath.Join(dataDir, "caches")
+			cm, err := cache.NewManager(context.Background(), apiKey, model, cacheDir, cfg.Cache.TTLMinutes)
+			if err != nil {
+				log.Printf("[orchestrator] cache manager init failed: %v", err)
+			} else {
+				orc.cacheManager = cm
+				log.Printf("[orchestrator] cache manager initialized (model=%s, ttl=%dm)", model, cfg.Cache.TTLMinutes)
+			}
+		} else {
+			log.Printf("[orchestrator] cache.enabled=true but GEMINI_API_KEY is not set, cache disabled")
+		}
+	}
+
 	return orc
 }
 
@@ -489,6 +513,14 @@ func (o *Orchestrator) CreateTeamAgents(teamNum int, issueID string) (architect,
 			return nil, nil, nil, fmt.Errorf("load prompt for %s: %w", r.role, err)
 		}
 
+		// Inject cache manager for Gemini models only
+		var agentCacheManager *cache.Manager
+		var agentIssueID string
+		if o.cacheManager != nil && strings.HasPrefix(r.model, "gemini-") {
+			agentCacheManager = o.cacheManager
+			agentIssueID = issueID
+		}
+
 		agents[i] = agent.NewAgent(agent.AgentConfig{
 			ID:            agent.AgentID{Role: r.role, TeamNum: teamNum},
 			Role:          r.role,
@@ -500,6 +532,8 @@ func (o *Orchestrator) CreateTeamAgents(teamNum int, issueID string) (architect,
 			ResetInterval: resetInterval,
 			OriginalTask:  originalTask,
 			Dormancy:      o.dormancy,
+			CacheManager:  agentCacheManager,
+			IssueID:       agentIssueID,
 		})
 	}
 

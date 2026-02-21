@@ -13,6 +13,16 @@ type Config struct {
 	Branches   BranchConfig   `toml:"branches"`
 	GitHub     *GitHubConfig  `toml:"github,omitempty"`
 	PromptsDir string         `toml:"prompts_dir,omitempty"`
+	Cache      *CacheConfig   `toml:"cache,omitempty"`
+}
+
+// CacheConfig holds configuration for Gemini Context Caching.
+type CacheConfig struct {
+	Enabled       bool     `toml:"enabled"`
+	TTLMinutes    int      `toml:"ttl_minutes"`
+	FilePatterns  []string `toml:"file_patterns"`
+	MaxFileSizeKB int      `toml:"max_file_size_kb"`
+	GeminiAPIKey  string   `toml:"gemini_api_key"`
 }
 
 type ProjectConfig struct {
@@ -116,6 +126,14 @@ func setDefaults(cfg *Config) {
 	}
 	if cfg.GitHub != nil && cfg.GitHub.EventPollSeconds == 0 {
 		cfg.GitHub.EventPollSeconds = 60
+	}
+	if cfg.Cache != nil {
+		if cfg.Cache.TTLMinutes == 0 {
+			cfg.Cache.TTLMinutes = 30
+		}
+		if cfg.Cache.MaxFileSizeKB == 0 {
+			cfg.Cache.MaxFileSizeKB = 1024
+		}
 	}
 }
 
