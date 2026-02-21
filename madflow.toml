@@ -19,7 +19,7 @@ release_manager = "claude-haiku-4-5"
 [github]
 owner = "ytnobody"
 repos = ["MADFLOW"]
-sync_interval_minutes = 15
+sync_interval_minutes = 20
 event_poll_seconds = 60
 
 [branches]
