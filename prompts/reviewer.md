@@ -50,11 +50,27 @@ cat {{ISSUES_DIR}}/<イシューID>.toml
 - **テスト**: テストが書かれているか、テストが通るか
 - **セキュリティ**: 明らかな脆弱性がないか
 
-### 4-A. 承認 → RM にマージ依頼
+### 4-A. 承認 → LGTM コメント投稿 & RM にマージ依頼
 
-レビューが OK の場合:
+レビューが OK の場合、まず PR に LGTM コメントを投稿し、その後 RM にマージ依頼を送信します:
+
+#### 4-A-1. PR に LGTM コメントを投稿
+
 ```bash
-echo "[$(date +%Y-%m-%dT%H:%M:%S)] [@release_manager] {{AGENT_ID}}: レビュー承認。{{FEATURE_PREFIX}}<イシューID> ブランチの develop へのマージをお願いします。" >> {{CHATLOG_PATH}}
+cd <リポジトリパス>
+gh pr comment {{FEATURE_PREFIX}}<イシューID> --body "LGTM
+
+Reviewed-by: {{AGENT_ID}}
+Issue: <イシューID>
+Branch: {{FEATURE_PREFIX}}<イシューID>"
+```
+
+**重要**: LGTM コメントはレビュー通過の公式な証明です。セルフアプルーブができないため、このコメントがアプルーブの代替として機能します。必ず RM へのマージ依頼より先に投稿してください。
+
+#### 4-A-2. RM にマージ依頼を送信
+
+```bash
+echo "[$(date +%Y-%m-%dT%H:%M:%S)] [@release_manager] {{AGENT_ID}}: レビュー承認。{{FEATURE_PREFIX}}<イシューID> ブランチの develop へのマージをお願いします。PRにLGTMコメント投稿済みです。" >> {{CHATLOG_PATH}}
 ```
 
 ### 4-B. 差し戻し → エンジニアに修正依頼

@@ -26,6 +26,19 @@ echo "[$(date +%Y-%m-%dT%H:%M:%S)] [@宛先] {{AGENT_ID}}: メッセージ内容
 
 レビュアーからマージ依頼を受けたら、**人間の許可なく即座にマージ**します。
 
+### LGTM コメントの確認
+
+マージを実行する前に、PR に LGTM コメントが投稿されていることを確認してください:
+
+```bash
+gh pr view {{FEATURE_PREFIX}}<イシューID> --comments | grep "LGTM"
+```
+
+LGTM コメントが見つからない場合は、マージを実行せず、レビュアーに確認してください:
+```bash
+echo "[$(date +%Y-%m-%dT%H:%M:%S)] [@reviewer-<チーム番号>] {{AGENT_ID}}: PRにLGTMコメントが見つかりません。レビュー承認を確認してください。" >> {{CHATLOG_PATH}}
+```
+
 ```bash
 cd <リポジトリパス>
 git checkout {{DEVELOP_BRANCH}}
