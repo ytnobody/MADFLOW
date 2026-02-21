@@ -111,6 +111,8 @@ func (w *EventWatcher) currentInterval() time.Duration {
 // If an IdleDetector is attached (via WithIdleDetector), the poll interval
 // automatically increases to idleInterval when no active issues are present,
 // and reverts to the normal interval when an issue event is detected.
+// When the detector reports dormancy (via IsDormant), all GitHub API calls are
+// suspended until Wake() is called on the detector or issues reappear.
 func (w *EventWatcher) Run(ctx context.Context) error {
 	log.Printf("[event-watcher] started (interval: %v, repos: %v)", w.interval, w.repos)
 
@@ -123,6 +125,18 @@ func (w *EventWatcher) Run(ctx context.Context) error {
 	}
 
 	for {
+		// Dormancy check: if dormant, suspend GitHub API calls entirely.
+		if w.idleDetector != nil && w.idleDetector.IsDormant() {
+			select {
+			case <-ctx.Done():
+				log.Println("[event-watcher] stopped")
+				return ctx.Err()
+			case <-time.After(dormancyCheckInterval):
+				// Re-evaluate dormancy without making any GitHub API calls.
+				continue
+			}
+		}
+
 		interval := w.currentInterval()
 		select {
 		case <-ctx.Done():

@@ -96,10 +96,16 @@ func (s *Syncer) updateIdleState() {
 	s.idleDetector.SetHasIssues(false)
 }
 
+// dormancyCheckInterval is how often the Syncer re-checks dormancy state
+// while dormant (no GitHub API calls are made during this wait).
+const dormancyCheckInterval = 30 * time.Second
+
 // Run starts the periodic sync loop. Blocks until ctx is cancelled.
 // If an IdleDetector is attached (via WithIdleDetector), the sync interval
 // automatically increases to idleInterval when no active issues are present,
 // and reverts to the normal interval when issues appear.
+// When the detector reports dormancy (via IsDormant), all GitHub API calls are
+// suspended until Wake() is called on the detector or issues reappear.
 func (s *Syncer) Run(ctx context.Context) error {
 	log.Printf("[github-sync] started (interval: %v, repos: %v)", s.interval, s.repos)
 
@@ -110,6 +116,18 @@ func (s *Syncer) Run(ctx context.Context) error {
 	s.updateIdleState()
 
 	for {
+		// Dormancy check: if dormant, suspend GitHub API calls entirely.
+		if s.idleDetector != nil && s.idleDetector.IsDormant() {
+			select {
+			case <-ctx.Done():
+				log.Println("[github-sync] stopped")
+				return ctx.Err()
+			case <-time.After(dormancyCheckInterval):
+				// Re-evaluate dormancy without making any GitHub API calls.
+				continue
+			}
+		}
+
 		interval := s.currentInterval()
 		select {
 		case <-ctx.Done():

@@ -64,6 +64,12 @@ type GitHubConfig struct {
 	// IdleThresholdMinutes is how long there must be no open issues before
 	// entering idle mode. Defaults to 5 minutes.
 	IdleThresholdMinutes int `toml:"idle_threshold_minutes"`
+	// DormancyThresholdMinutes is how long there must be no open issues (measured from
+	// when issues first disappeared) before entering dormancy and completely stopping
+	// GitHub API polling. 0 (default) disables dormancy. Should be larger than
+	// IdleThresholdMinutes to form a natural progression: active → idle → dormant.
+	// Dormancy can be exited via the WAKE_GITHUB orchestrator command.
+	DormancyThresholdMinutes int `toml:"dormancy_threshold_minutes"`
 }
 
 func Load(path string) (*Config, error) {
@@ -123,6 +129,8 @@ func setDefaults(cfg *Config) {
 	if cfg.GitHub != nil && cfg.GitHub.IdleThresholdMinutes == 0 {
 		cfg.GitHub.IdleThresholdMinutes = 5
 	}
+	// DormancyThresholdMinutes intentionally has no default (0 = disabled).
+	// Users must opt-in by setting a positive value in their config.
 	if cfg.Cache != nil {
 		if cfg.Cache.TTLMinutes == 0 {
 			cfg.Cache.TTLMinutes = 30

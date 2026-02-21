@@ -52,6 +52,9 @@ func New(cfg *config.Config, dataDir, promptDir string) *Orchestrator {
 	if cfg.GitHub != nil && cfg.GitHub.IdleThresholdMinutes > 0 {
 		idleDetector.SetIdleThreshold(time.Duration(cfg.GitHub.IdleThresholdMinutes) * time.Minute)
 	}
+	if cfg.GitHub != nil && cfg.GitHub.DormancyThresholdMinutes > 0 {
+		idleDetector.SetDormancyThreshold(time.Duration(cfg.GitHub.DormancyThresholdMinutes) * time.Minute)
+	}
 
 	orc := &Orchestrator{
 		cfg:          cfg,
@@ -332,9 +335,23 @@ func (o *Orchestrator) handleCommand(ctx context.Context, msg chatlog.Message) {
 		o.handleTeamDisband(body)
 	case strings.HasPrefix(body, "RELEASE"):
 		o.handleRelease(body)
+	case strings.HasPrefix(body, "WAKE_GITHUB"):
+		o.handleWakeGitHub()
 	default:
 		log.Printf("[orchestrator] unknown command from %s: %s", msg.Sender, body)
 	}
+}
+
+// handleWakeGitHub wakes the GitHub polling subsystem from dormancy.
+// This is useful when the system has stopped polling due to a long idle period
+// and an operator wants to force an immediate sync.
+func (o *Orchestrator) handleWakeGitHub() {
+	if o.idleDetector == nil {
+		log.Println("[orchestrator] WAKE_GITHUB: no idle detector configured")
+		return
+	}
+	o.idleDetector.Wake()
+	log.Println("[orchestrator] WAKE_GITHUB: GitHub polling resumed")
 }
 
 // handleTeamCreate creates a new team for an issue.
