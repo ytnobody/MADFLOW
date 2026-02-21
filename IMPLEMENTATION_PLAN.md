@@ -2,7 +2,7 @@
 
 ## 0. 前提
 
-- 本計画は `README.md`（MADF要件定義書）に基づく
+- 本計画は `SPEC.md`（MADF要件定義書）に基づく
 - 対象プロジェクトのコードベースは未作成（ゼロからの実装）
 - 各エージェントの実体は Claude Code のサブプロセスとして起動する
 
@@ -40,7 +40,8 @@ Go 標準ライブラリ + TOML パーサーのみを依存とし、それ以外
 
 ```
 MADFLOW/
-├── README.md                     # 要件定義書（既存）
+├── README.md                     # ユーザー向けドキュメント（新規作成）
+├── SPEC.md                       # 要件定義書（README.mdからリネーム）
 ├── IMPLEMENTATION_PLAN.md        # 本文書
 ├── go.mod
 ├── go.sum
