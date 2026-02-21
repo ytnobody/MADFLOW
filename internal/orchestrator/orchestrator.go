@@ -75,17 +75,14 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 
 	var wg sync.WaitGroup
 
+	// Start all teams first so they are watching the chatlog
+	// before resident agents (PM etc.) begin sending messages.
+	o.startAllTeams(ctx)
+
 	// Start resident agents (superintendent, PM, RM)
 	if err := o.startResidentAgents(ctx, &wg); err != nil {
 		return fmt.Errorf("start resident agents: %w", err)
 	}
-
-	// Start teams for all open/in-progress issues (concurrently with resident agents)
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		o.startAllTeams(ctx)
-	}()
 
 	// Wait for all resident agents to complete their initial startup
 	if err := o.waitForAgentsReady(ctx); err != nil {
@@ -195,6 +192,8 @@ func (o *Orchestrator) waitForAgentsReady(ctx context.Context) error {
 // startAllTeams unconditionally creates maxTeams teams at startup.
 // If open/in-progress issues exist, they are assigned to teams.
 // Remaining slots start as standby teams ready to receive work.
+// teams.Create blocks until each team's agents are Ready, so this
+// method returns only after all teams are fully operational.
 func (o *Orchestrator) startAllTeams(ctx context.Context) {
 	maxTeams := o.cfg.Agent.MaxTeams
 	if maxTeams <= 0 {
