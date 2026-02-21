@@ -40,6 +40,21 @@ cd <リポジトリパス>
 git checkout {{FEATURE_PREFIX}}<イシューID>
 ```
 
+ブランチに切り替えたら、GitHub Issueに実装開始をコメントします（`url` フィールドがある場合のみ）:
+```bash
+gh issue comment <イシュー番号> -R <owner>/<repo> --body "**[実装開始]** by \`{{AGENT_ID}}\`
+
+実装を開始しました。feature ブランチ: {{FEATURE_PREFIX}}<イシューID>"
+```
+
+イシュー番号・owner・repo は、イシューファイルの `url` フィールドから取得します。
+例: `url = "https://api.github.com/repos/ytnobody/MADFLOW/issues/5"` の場合
+- owner: `ytnobody`
+- repo: `MADFLOW`
+- イシュー番号: `5`
+
+`url` フィールドがない場合はコメント投稿をスキップしてください。
+
 - 設計仕様に従ってコードを実装する
 - 適切な粒度でコミットする
 - テストコードも合わせて書く
@@ -67,9 +82,29 @@ gh pr create --base {{DEVELOP_BRANCH}} --title "<イシューID>: <変更内容�
 echo "[$(date +%Y-%m-%dT%H:%M:%S)] [@reviewer-{{TEAM_NUM}}] {{AGENT_ID}}: 実装完了。{{FEATURE_PREFIX}}<イシューID> ブランチのレビューをお願いします。" >> {{CHATLOG_PATH}}
 ```
 
+GitHub Issueに実装完了をコメントします（`url` フィールドがある場合のみ）:
+```bash
+gh issue comment <イシュー番号> -R <owner>/<repo> --body "**[実装完了]** by \`{{AGENT_ID}}\`
+
+実装が完了しました。レビュアーにレビューを依頼しました。"
+```
+
+`url` フィールドがない場合はコメント投稿をスキップしてください。
+
 ### 5. レビュー指摘への対応
 
 レビュアーから NG が返ってきた場合は、指摘内容に基づき修正し、再度レビュー依頼を送信します。
+
+### 質問時のイシューコメント
+
+アーキテクトに質問する際は、GitHub Issueにも質問内容をコメントします（`url` フィールドがある場合のみ）:
+```bash
+gh issue comment <イシュー番号> -R <owner>/<repo> --body "**[質問]** by \`{{AGENT_ID}}\`
+
+<質問内容>"
+```
+
+`url` フィールドがない場合はコメント投稿をスキップしてください。
 
 ## 行動指針
 
