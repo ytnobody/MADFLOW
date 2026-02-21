@@ -1,0 +1,297 @@
+package github
+
+import (
+	"encoding/json"
+	"testing"
+	"time"
+
+	"github.com/ytnobody/madflow/internal/issue"
+)
+
+func TestParseGHResponse(t *testing.T) {
+	raw := "HTTP/2.0 200 OK\nETag: \"abc123\"\nContent-Type: application/json\n\n[{\"id\":\"1\",\"type\":\"IssuesEvent\"}]"
+	etag, body := ParseGHResponse(raw)
+
+	if etag != "\"abc123\"" {
+		t.Errorf("expected etag '\"abc123\"', got %q", etag)
+	}
+	if body != "[{\"id\":\"1\",\"type\":\"IssuesEvent\"}]" {
+		t.Errorf("unexpected body: %s", body)
+	}
+}
+
+func TestParseGHResponseNoHeaders(t *testing.T) {
+	raw := `[{"id":"1","type":"IssuesEvent"}]`
+	etag, body := ParseGHResponse(raw)
+	if etag != "" {
+		t.Errorf("expected empty etag, got %q", etag)
+	}
+	if body != raw {
+		t.Errorf("unexpected body: %s", body)
+	}
+}
+
+func TestParseGHResponseETagCaseInsensitive(t *testing.T) {
+	raw := "HTTP/2.0 200 OK\netag: W/\"xyz\"\n\n[]"
+	etag, body := ParseGHResponse(raw)
+	if etag != "W/\"xyz\"" {
+		t.Errorf("expected etag W/\"xyz\", got %q", etag)
+	}
+	if body != "[]" {
+		t.Errorf("unexpected body: %s", body)
+	}
+}
+
+func TestParseGHResponseCRLF(t *testing.T) {
+	// HTTP headers with \r\n line endings (standard HTTP format)
+	raw := "HTTP/2.0 200 OK\r\nEtag: \"crlf-test\"\r\nContent-Type: application/json\r\n\r\n[{\"id\":\"1\"}]"
+	etag, body := ParseGHResponse(raw)
+	if etag != "\"crlf-test\"" {
+		t.Errorf("expected etag '\"crlf-test\"', got %q", etag)
+	}
+	if body != "[{\"id\":\"1\"}]" {
+		t.Errorf("unexpected body: %s", body)
+	}
+}
+
+func TestProcessIssuesEvent(t *testing.T) {
+	dir := t.TempDir()
+	store := issue.NewStore(dir)
+
+	var gotEventType EventType
+	var gotIssueID string
+
+	cb := func(et EventType, id string, c *issue.Comment) {
+		gotEventType = et
+		gotIssueID = id
+	}
+
+	w := NewEventWatcher(store, "owner", []string{"repo"}, time.Minute, cb)
+
+	payload := ghEventPayloadIssue{
+		Action: "opened",
+		Issue: ghIssue{
+			Number: 1,
+			Title:  "Test Issue",
+			URL:    "https://github.com/owner/repo/issues/1",
+			Body:   "Issue body",
+			Labels: []ghLabel{{Name: "bug"}},
+		},
+	}
+	payloadBytes, _ := json.Marshal(payload)
+
+	ev := ghEvent{
+		ID:      "evt-1",
+		Type:    "IssuesEvent",
+		Payload: payloadBytes,
+	}
+
+	w.processEvent("repo", ev)
+
+	if gotEventType != EventTypeIssues {
+		t.Errorf("expected IssuesEvent callback, got %s", gotEventType)
+	}
+	if gotIssueID != "owner-repo-001" {
+		t.Errorf("expected issue ID owner-repo-001, got %s", gotIssueID)
+	}
+
+	// Verify issue was created in store
+	iss, err := store.Get("owner-repo-001")
+	if err != nil {
+		t.Fatalf("expected issue in store: %v", err)
+	}
+	if iss.Title != "Test Issue" {
+		t.Errorf("expected title 'Test Issue', got %s", iss.Title)
+	}
+}
+
+func TestProcessIssueCommentEvent(t *testing.T) {
+	dir := t.TempDir()
+	store := issue.NewStore(dir)
+
+	// Pre-create the issue
+	iss := &issue.Issue{
+		ID:     "owner-repo-001",
+		Title:  "Test",
+		Status: issue.StatusOpen,
+	}
+	store.Update(iss)
+
+	var gotComment *issue.Comment
+	cb := func(et EventType, id string, c *issue.Comment) {
+		gotComment = c
+	}
+
+	w := NewEventWatcher(store, "owner", []string{"repo"}, time.Minute, cb)
+
+	payload := ghEventPayloadComment{
+		Action: "created",
+		Issue:  ghIssue{Number: 1},
+		Comment: ghEventComment{
+			ID:        42,
+			Body:      "Nice work!",
+			CreatedAt: "2026-02-21T10:00:00Z",
+			UpdatedAt: "2026-02-21T10:00:00Z",
+		},
+	}
+	payload.Comment.User.Login = "alice"
+	payloadBytes, _ := json.Marshal(payload)
+
+	ev := ghEvent{
+		ID:      "evt-2",
+		Type:    "IssueCommentEvent",
+		Payload: payloadBytes,
+	}
+
+	w.processEvent("repo", ev)
+
+	if gotComment == nil {
+		t.Fatal("expected comment callback")
+	}
+	if gotComment.Author != "alice" {
+		t.Errorf("expected author alice, got %s", gotComment.Author)
+	}
+	if gotComment.Body != "Nice work!" {
+		t.Errorf("expected body 'Nice work!', got %s", gotComment.Body)
+	}
+
+	// Verify comment was persisted
+	updated, _ := store.Get("owner-repo-001")
+	if len(updated.Comments) != 1 {
+		t.Fatalf("expected 1 comment, got %d", len(updated.Comments))
+	}
+	if updated.Comments[0].ID != 42 {
+		t.Errorf("expected comment ID 42, got %d", updated.Comments[0].ID)
+	}
+}
+
+func TestEventDedup(t *testing.T) {
+	dir := t.TempDir()
+	store := issue.NewStore(dir)
+
+	callCount := 0
+	cb := func(et EventType, id string, c *issue.Comment) {
+		callCount++
+	}
+
+	w := NewEventWatcher(store, "owner", []string{"repo"}, time.Minute, cb)
+
+	payload := ghEventPayloadIssue{
+		Action: "opened",
+		Issue: ghIssue{
+			Number: 1,
+			Title:  "Test",
+			Body:   "Body",
+		},
+	}
+	payloadBytes, _ := json.Marshal(payload)
+
+	ev := ghEvent{
+		ID:      "evt-dup",
+		Type:    "IssuesEvent",
+		Payload: payloadBytes,
+	}
+
+	// Process same event twice
+	w.processEvent("repo", ev)
+	w.processEvent("repo", ev)
+
+	if callCount != 1 {
+		t.Errorf("expected callback called once (dedup), got %d", callCount)
+	}
+}
+
+func TestSeenEventsAutoClean(t *testing.T) {
+	dir := t.TempDir()
+	store := issue.NewStore(dir)
+
+	w := NewEventWatcher(store, "owner", []string{"repo"}, time.Minute, nil)
+
+	// Fill up seen events to the limit
+	for i := 0; i < maxSeenEvents; i++ {
+		w.markSeen(FormatID("x", "y", i))
+	}
+
+	if w.SeenCount() != maxSeenEvents {
+		t.Fatalf("expected %d seen events, got %d", maxSeenEvents, w.SeenCount())
+	}
+
+	// Adding one more should trigger a clear
+	w.markSeen("trigger-clean")
+	if w.SeenCount() != 1 {
+		t.Errorf("expected 1 after auto-clean, got %d", w.SeenCount())
+	}
+}
+
+func TestIgnoredIssueActions(t *testing.T) {
+	dir := t.TempDir()
+	store := issue.NewStore(dir)
+
+	callCount := 0
+	cb := func(et EventType, id string, c *issue.Comment) {
+		callCount++
+	}
+
+	w := NewEventWatcher(store, "owner", []string{"repo"}, time.Minute, cb)
+
+	// "closed" action should be ignored
+	payload := ghEventPayloadIssue{
+		Action: "closed",
+		Issue:  ghIssue{Number: 1, Title: "Test", Body: "Body"},
+	}
+	payloadBytes, _ := json.Marshal(payload)
+
+	ev := ghEvent{ID: "evt-closed", Type: "IssuesEvent", Payload: payloadBytes}
+	w.processEvent("repo", ev)
+
+	if callCount != 0 {
+		t.Errorf("expected 0 callbacks for ignored action, got %d", callCount)
+	}
+}
+
+func TestIgnoredCommentActions(t *testing.T) {
+	dir := t.TempDir()
+	store := issue.NewStore(dir)
+
+	// Pre-create issue
+	store.Update(&issue.Issue{ID: "owner-repo-001", Title: "Test", Status: issue.StatusOpen})
+
+	callCount := 0
+	cb := func(et EventType, id string, c *issue.Comment) {
+		callCount++
+	}
+
+	w := NewEventWatcher(store, "owner", []string{"repo"}, time.Minute, cb)
+
+	// "deleted" action should be ignored
+	payload := ghEventPayloadComment{
+		Action:  "deleted",
+		Issue:   ghIssue{Number: 1},
+		Comment: ghEventComment{ID: 1, Body: "Deleted"},
+	}
+	payloadBytes, _ := json.Marshal(payload)
+
+	ev := ghEvent{ID: "evt-del", Type: "IssueCommentEvent", Payload: payloadBytes}
+	w.processEvent("repo", ev)
+
+	if callCount != 0 {
+		t.Errorf("expected 0 callbacks for deleted comment, got %d", callCount)
+	}
+}
+
+func TestNilCallback(t *testing.T) {
+	dir := t.TempDir()
+	store := issue.NewStore(dir)
+
+	// nil callback should not panic
+	w := NewEventWatcher(store, "owner", []string{"repo"}, time.Minute, nil)
+
+	payload := ghEventPayloadIssue{
+		Action: "opened",
+		Issue:  ghIssue{Number: 1, Title: "Test", Body: "Body"},
+	}
+	payloadBytes, _ := json.Marshal(payload)
+
+	ev := ghEvent{ID: "evt-nil", Type: "IssuesEvent", Payload: payloadBytes}
+	w.processEvent("repo", ev) // should not panic
+}

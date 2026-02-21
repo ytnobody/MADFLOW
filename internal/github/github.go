@@ -12,6 +12,17 @@ import (
 	"github.com/ytnobody/madflow/internal/issue"
 )
 
+// ghComment represents a comment from `gh api` for issue comments.
+type ghComment struct {
+	ID        int64  `json:"id"`
+	Body      string `json:"body"`
+	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at"`
+	User      struct {
+		Login string `json:"login"`
+	} `json:"user"`
+}
+
 // ghIssue represents a GitHub issue from `gh issue list --json`.
 type ghIssue struct {
 	Number int       `json:"number"`
@@ -106,6 +117,8 @@ func (s *Syncer) syncRepo(repo string) error {
 			} else {
 				log.Printf("[github-sync] imported %s: %s", localID, gh.Title)
 			}
+			// Sync comments for new issue
+			s.syncComments(repo, gh.Number, localID)
 			continue
 		}
 
@@ -131,9 +144,74 @@ func (s *Syncer) syncRepo(repo string) error {
 				log.Printf("[github-sync] updated %s", localID)
 			}
 		}
+
+		// Sync comments for existing issue
+		s.syncComments(repo, gh.Number, localID)
 	}
 
 	return nil
+}
+
+// syncComments fetches and persists comments for a single issue.
+func (s *Syncer) syncComments(repo string, issueNumber int, localID string) {
+	comments, err := s.fetchComments(repo, issueNumber)
+	if err != nil {
+		log.Printf("[github-sync] fetch comments for %s failed: %v", localID, err)
+		return
+	}
+	if len(comments) == 0 {
+		return
+	}
+
+	iss, err := s.store.Get(localID)
+	if err != nil {
+		return
+	}
+
+	added := 0
+	for _, c := range comments {
+		createdAt, _ := time.Parse(time.RFC3339, c.CreatedAt)
+		updatedAt, _ := time.Parse(time.RFC3339, c.UpdatedAt)
+		comment := issue.Comment{
+			ID:        c.ID,
+			Author:    c.User.Login,
+			Body:      c.Body,
+			CreatedAt: createdAt,
+			UpdatedAt: updatedAt,
+		}
+		if iss.AddComment(comment) {
+			added++
+		}
+	}
+
+	if added > 0 {
+		if err := s.store.Update(iss); err != nil {
+			log.Printf("[github-sync] save comments for %s failed: %v", localID, err)
+		} else {
+			log.Printf("[github-sync] added %d comments to %s", added, localID)
+		}
+	}
+}
+
+// fetchComments fetches all comments for a GitHub issue via gh CLI.
+func (s *Syncer) fetchComments(repo string, issueNumber int) ([]ghComment, error) {
+	endpoint := fmt.Sprintf("repos/%s/%s/issues/%d/comments", s.owner, repo, issueNumber)
+	cmd := exec.Command("gh", "api", endpoint, "--paginate")
+
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("gh api comments for %s/%s#%d: %w", s.owner, repo, issueNumber, err)
+	}
+
+	if len(out) == 0 {
+		return nil, nil
+	}
+
+	var comments []ghComment
+	if err := json.Unmarshal(out, &comments); err != nil {
+		return nil, fmt.Errorf("parse comments: %w", err)
+	}
+	return comments, nil
 }
 
 func (s *Syncer) fetchIssues(repo string) ([]ghIssue, error) {

@@ -1,9 +1,9 @@
 [project]
-name = "my-app"
+name = "MADFLOW"
 
 [[project.repos]]
-name = "main"
-path = "."
+name = "MADFLOW"
+path = "/home/ytnobody/MADFLOW"
 
 [agent]
 context_reset_minutes = 8
@@ -16,12 +16,11 @@ engineer = "claude-sonnet-4-6"
 reviewer = "claude-sonnet-4-6"
 release_manager = "claude-haiku-4-5"
 
-# GitHub Issue 定期同期を使う場合（オプショナル）
-# [github]
-# owner = "myorg"
-# repos = ["my-app"]
-# sync_interval_minutes = 15   # フル同期間隔（デフォルト15分）
-# event_poll_seconds = 60      # Events API ポーリング間隔（デフォルト60秒）
+[github]
+owner = "ytnobody"
+repos = ["MADFLOW"]
+sync_interval_minutes = 15
+event_poll_seconds = 60
 
 [branches]
 main = "main"
