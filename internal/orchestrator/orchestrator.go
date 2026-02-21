@@ -192,41 +192,52 @@ func (o *Orchestrator) waitForAgentsReady(ctx context.Context) error {
 	return nil
 }
 
-// startAllTeams creates teams for all open and in-progress issues.
-// Called on startup so that all team agents are already watching the chatlog
-// before resident agents (PM etc.) begin sending messages.
+// startAllTeams unconditionally creates maxTeams teams at startup.
+// If open/in-progress issues exist, they are assigned to teams.
+// Remaining slots start as standby teams ready to receive work.
 func (o *Orchestrator) startAllTeams(ctx context.Context) {
+	maxTeams := o.cfg.Agent.MaxTeams
+	if maxTeams <= 0 {
+		maxTeams = team.DefaultMaxTeams
+	}
+
+	// Collect assignable issues
+	var assignable []*issue.Issue
 	allIssues, err := o.store.List(issue.StatusFilter{})
 	if err != nil {
 		log.Printf("[orchestrator] start teams: list issues: %v", err)
-		return
-	}
-
-	var targets []*issue.Issue
-	for _, iss := range allIssues {
-		if iss.Status == issue.StatusOpen || iss.Status == issue.StatusInProgress {
-			targets = append(targets, iss)
+	} else {
+		for _, iss := range allIssues {
+			if iss.Status == issue.StatusOpen || iss.Status == issue.StatusInProgress {
+				assignable = append(assignable, iss)
+			}
 		}
 	}
 
-	if len(targets) == 0 {
-		log.Println("[orchestrator] no issues to start teams for")
-		return
-	}
-
-	for _, iss := range targets {
+	for i := 0; i < maxTeams; i++ {
 		if ctx.Err() != nil {
 			return
 		}
-		t, err := o.teams.Create(ctx, iss.ID)
+
+		var issueID string
+		if i < len(assignable) {
+			issueID = assignable[i].ID
+		}
+
+		t, err := o.teams.Create(ctx, issueID)
 		if err != nil {
-			log.Printf("[orchestrator] start teams: create team for %s: %v", iss.ID, err)
+			log.Printf("[orchestrator] start teams: team %d: %v", i+1, err)
 			continue
 		}
-		iss.AssignedTeam = t.ID
-		iss.Status = issue.StatusInProgress
-		o.store.Update(iss)
-		log.Printf("[orchestrator] started team %d for issue %s", t.ID, iss.ID)
+
+		if i < len(assignable) {
+			assignable[i].AssignedTeam = t.ID
+			assignable[i].Status = issue.StatusInProgress
+			o.store.Update(assignable[i])
+			log.Printf("[orchestrator] started team %d for issue %s", t.ID, issueID)
+		} else {
+			log.Printf("[orchestrator] started team %d (standby)", t.ID)
+		}
 	}
 
 	log.Printf("[orchestrator] started %d teams", o.teams.Count())

@@ -287,60 +287,36 @@ func (f *mockTeamFactory) CreateTeamAgents(teamNum int, issueID string) (archite
 		nil
 }
 
-func TestStartAllTeamsNoIssues(t *testing.T) {
+func TestStartAllTeamsCreatesMaxTeamsUnconditionally(t *testing.T) {
 	dir := t.TempDir()
 	cfg := testConfig(dir)
-	os.MkdirAll(filepath.Join(dir, "issues"), 0755)
-
-	orc := New(cfg, dir, t.TempDir())
-
-	// Should be a no-op without panicking
-	orc.startAllTeams(t.Context())
-
-	if orc.Teams().Count() != 0 {
-		t.Errorf("expected 0 teams, got %d", orc.Teams().Count())
-	}
-}
-
-func TestStartAllTeamsSkipsResolvedAndClosed(t *testing.T) {
-	dir := t.TempDir()
-	cfg := testConfig(dir)
-	os.MkdirAll(filepath.Join(dir, "issues"), 0755)
-
-	orc := New(cfg, dir, t.TempDir())
-
-	// Create issues with resolved/closed statuses only
-	for _, title := range []string{"Resolved Issue", "Closed Issue"} {
-		iss, err := orc.Store().Create(title, "body")
-		if err != nil {
-			t.Fatalf("create issue: %v", err)
-		}
-		switch title {
-		case "Resolved Issue":
-			iss.Status = issue.StatusResolved
-		case "Closed Issue":
-			iss.Status = issue.StatusClosed
-		}
-		orc.Store().Update(iss)
-	}
-
-	orc.startAllTeams(t.Context())
-
-	if orc.Teams().Count() != 0 {
-		t.Errorf("expected 0 teams for resolved/closed issues, got %d", orc.Teams().Count())
-	}
-}
-
-func TestStartAllTeamsCreatesForOpenAndInProgress(t *testing.T) {
-	dir := t.TempDir()
-	cfg := testConfig(dir)
-	cfg.Agent.MaxTeams = 10
+	cfg.Agent.MaxTeams = 3
 	os.MkdirAll(filepath.Join(dir, "issues"), 0755)
 	os.WriteFile(filepath.Join(dir, "chatlog.txt"), nil, 0644)
 
 	orc := New(cfg, dir, t.TempDir())
-	// Replace team manager with one using mock factory
-	orc.teams = team.NewManager(newMockTeamFactory(t), 10)
+	orc.teams = team.NewManager(newMockTeamFactory(t), 3)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// No issues exist — should still create 3 standby teams
+	orc.startAllTeams(ctx)
+
+	if orc.Teams().Count() != 3 {
+		t.Errorf("expected 3 standby teams, got %d", orc.Teams().Count())
+	}
+}
+
+func TestStartAllTeamsAssignsIssues(t *testing.T) {
+	dir := t.TempDir()
+	cfg := testConfig(dir)
+	cfg.Agent.MaxTeams = 4
+	os.MkdirAll(filepath.Join(dir, "issues"), 0755)
+	os.WriteFile(filepath.Join(dir, "chatlog.txt"), nil, 0644)
+
+	orc := New(cfg, dir, t.TempDir())
+	orc.teams = team.NewManager(newMockTeamFactory(t), 4)
 
 	// Create: 1 open, 1 in_progress, 1 resolved, 1 closed
 	statuses := []issue.Status{issue.StatusOpen, issue.StatusInProgress, issue.StatusResolved, issue.StatusClosed}
@@ -358,12 +334,12 @@ func TestStartAllTeamsCreatesForOpenAndInProgress(t *testing.T) {
 
 	orc.startAllTeams(ctx)
 
-	// Only open + in_progress = 2 teams
-	if orc.Teams().Count() != 2 {
-		t.Errorf("expected 2 teams, got %d", orc.Teams().Count())
+	// All 4 teams created (2 with issues + 2 standby)
+	if orc.Teams().Count() != 4 {
+		t.Errorf("expected 4 teams, got %d", orc.Teams().Count())
 	}
 
-	// All targeted issues should now be in_progress with assigned teams
+	// Open and in_progress issues should be assigned
 	issues, _ := orc.Store().List(issue.StatusFilter{})
 	for _, iss := range issues {
 		switch iss.Status {
@@ -377,8 +353,6 @@ func TestStartAllTeamsCreatesForOpenAndInProgress(t *testing.T) {
 			}
 		}
 	}
-
-	cancel()
 }
 
 func TestCreateTeamAgentsMissingPrompt(t *testing.T) {
