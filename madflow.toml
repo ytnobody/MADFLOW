@@ -9,12 +9,12 @@
   context_reset_minutes = 8
   max_teams = 0
   [agent.models]
-    superintendent = "gemini-1.5-pro-latest"
-    pm = "gemini-1.5-pro-latest"
-    architect = "gemini-1.5-pro-latest"
-    engineer = "gemini-1.5-flash-latest"
-    reviewer = "gemini-1.5-pro-latest"
-    release_manager = "gemini-1.5-flash-latest"
+    superintendent = "claude-sonnet-4-6"
+    pm = "claude-haiku-4-5"
+    architect = "claude-opus-4-6"
+    engineer = "claude-sonnet-4-6"
+    reviewer = "claude-sonnet-4-6"
+    release_manager = "claude-haiku-4-5"
 
 [branches]
   main = "main"
