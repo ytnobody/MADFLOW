@@ -1,28 +1,27 @@
 [project]
-name = "MADFLOW"
+  name = "MADFLOW"
 
-[[project.repos]]
-name = "MADFLOW"
-path = "/home/ytnobody/MADFLOW"
+  [[project.repos]]
+    name = "MADFLOW"
+    path = "/home/ytnobody/MADFLOW"
 
 [agent]
-context_reset_minutes = 8
-
-[agent.models]
-superintendent = "claude-sonnet-4-6"
-pm = "claude-sonnet-4-6"
-architect = "claude-opus-4-6"
-engineer = "claude-sonnet-4-6"
-reviewer = "claude-sonnet-4-6"
-release_manager = "claude-haiku-4-5"
-
-[github]
-owner = "ytnobody"
-repos = ["MADFLOW"]
-sync_interval_minutes = 20
-event_poll_seconds = 60
+  context_reset_minutes = 8
+  max_teams = 0
+  [agent.models]
+    superintendent = "gemini-1.5-pro-latest"
+    pm = "gemini-1.5-pro-latest"
+    architect = "gemini-1.5-pro-latest"
+    engineer = "gemini-1.5-flash-latest"
+    reviewer = "gemini-1.5-pro-latest"
+    release_manager = "gemini-1.5-flash-latest"
 
 [branches]
-main = "main"
-develop = "develop"
-feature_prefix = "feature/issue-"
+  main = "main"
+  develop = "develop"
+  feature_prefix = "feature/issue-"
+
+[github]
+  owner = "ytnobody"
+  repos = ["MADFLOW"]
+  sync_interval_minutes = 20

@@ -33,6 +33,7 @@ Commands:
   issue close <id>          Close an issue
   release                   Merge develop into main
   sync                      Sync GitHub issues manually
+  use <claude|gemini>       Switch all models to a specific backend
 `
 
 // ANSI color codes for role-based coloring.
@@ -72,6 +73,8 @@ func main() {
 		err = cmdRelease()
 	case "sync":
 		err = cmdSync()
+	case "use":
+		err = cmdUse()
 	case "help", "--help", "-h":
 		fmt.Print(usage)
 		return
@@ -456,32 +459,16 @@ func cmdSync() error {
 
 // loadProjectConfig detects the project and loads its config.
 func loadProjectConfig() (*config.Config, *project.Project, error) {
-	proj, err := project.Detect()
+	configPath, err := findConfigPath()
 	if err != nil {
 		return nil, nil, err
 	}
 
-	// Find config file
-	configPath := ""
-	for _, p := range proj.Paths {
-		cp := filepath.Join(p, "madflow.toml")
-		if _, err := os.Stat(cp); err == nil {
-			configPath = cp
-			break
-		}
+	proj, err := project.Detect()
+	if err != nil {
+		return nil, nil, err
 	}
-	if configPath == "" {
-		// Try cwd
-		cwd, _ := os.Getwd()
-		cp := filepath.Join(cwd, "madflow.toml")
-		if _, err := os.Stat(cp); err == nil {
-			configPath = cp
-		}
-	}
-	if configPath == "" {
-		return nil, nil, fmt.Errorf("madflow.toml not found")
-	}
-
+	
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		return nil, nil, err
