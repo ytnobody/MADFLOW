@@ -25,3 +25,4 @@
   owner = "ytnobody"
   repos = ["MADFLOW"]
   sync_interval_minutes = 20
+  event_poll_seconds = 60

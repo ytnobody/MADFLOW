@@ -20,7 +20,8 @@ release_manager = "claude-haiku-4-5"
 # [github]
 # owner = "myorg"
 # repos = ["my-app"]
-# sync_interval_minutes = 5
+# sync_interval_minutes = 15   # フル同期間隔（デフォルト15分）
+# event_poll_seconds = 60      # Events API ポーリング間隔（デフォルト60秒）
 
 [branches]
 main = "main"

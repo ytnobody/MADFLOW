@@ -50,6 +50,7 @@ type GitHubConfig struct {
 	Owner                string   `toml:"owner"`
 	Repos                []string `toml:"repos"`
 	SyncIntervalMinutes  int      `toml:"sync_interval_minutes"`
+	EventPollSeconds     int      `toml:"event_poll_seconds"`
 }
 
 func Load(path string) (*Config, error) {
@@ -107,7 +108,10 @@ func setDefaults(cfg *Config) {
 		cfg.Branches.FeaturePrefix = "feature/issue-"
 	}
 	if cfg.GitHub != nil && cfg.GitHub.SyncIntervalMinutes == 0 {
-		cfg.GitHub.SyncIntervalMinutes = 5
+		cfg.GitHub.SyncIntervalMinutes = 15
+	}
+	if cfg.GitHub != nil && cfg.GitHub.EventPollSeconds == 0 {
+		cfg.GitHub.EventPollSeconds = 60
 	}
 }
 

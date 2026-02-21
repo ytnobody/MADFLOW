@@ -93,6 +93,13 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 			defer wg.Done()
 			o.runGitHubSync(ctx)
 		}()
+
+		// Start event watcher for real-time updates
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			o.runEventWatcher(ctx)
+		}()
 	}
 
 	// Watch chatlog for orchestrator commands
@@ -358,6 +365,42 @@ func (o *Orchestrator) handleRelease(_ string) {
 			continue
 		}
 		log.Printf("[orchestrator] release: merged %s -> %s on %s", o.cfg.Branches.Develop, o.cfg.Branches.Main, name)
+	}
+}
+
+// runEventWatcher starts the GitHub Events API watcher for real-time updates.
+func (o *Orchestrator) runEventWatcher(ctx context.Context) {
+	gh := o.cfg.GitHub
+	interval := time.Duration(gh.EventPollSeconds) * time.Second
+
+	callback := func(eventType github.EventType, issueID string, comment *issue.Comment) {
+		switch eventType {
+		case github.EventTypeIssues:
+			// Notify superintendent about new/updated issue
+			o.chatLog.Append("superintendent", "orchestrator",
+				fmt.Sprintf("GitHub Issue updated: %s", issueID))
+		case github.EventTypeIssueComment:
+			if comment == nil {
+				return
+			}
+			// Notify superintendent, PM, and the assigned team's architect
+			msg := fmt.Sprintf("New comment on %s by @%s: %s", issueID, comment.Author, comment.Body)
+
+			o.chatLog.Append("superintendent", "orchestrator", msg)
+			o.chatLog.Append("PM", "orchestrator", msg)
+
+			// If the issue is assigned to a team, also notify the team architect
+			iss, err := o.store.Get(issueID)
+			if err == nil && iss.AssignedTeam > 0 {
+				archID := fmt.Sprintf("architect-%d", iss.AssignedTeam)
+				o.chatLog.Append(archID, "orchestrator", msg)
+			}
+		}
+	}
+
+	watcher := github.NewEventWatcher(o.store, gh.Owner, gh.Repos, interval, callback)
+	if err := watcher.Run(ctx); err != nil && ctx.Err() == nil {
+		log.Printf("[orchestrator] event watcher stopped: %v", err)
 	}
 }
 

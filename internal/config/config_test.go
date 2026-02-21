@@ -140,3 +140,69 @@ sync_interval_minutes = 10
 		t.Errorf("expected sync interval 10, got %d", cfg.GitHub.SyncIntervalMinutes)
 	}
 }
+
+func TestEventPollSecondsDefault(t *testing.T) {
+	content := `
+[project]
+name = "test-app"
+
+[[project.repos]]
+name = "api"
+path = "/tmp/api"
+
+[github]
+owner = "myorg"
+repos = ["api"]
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "madflow.toml")
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if cfg.GitHub.EventPollSeconds != 60 {
+		t.Errorf("expected default event_poll_seconds 60, got %d", cfg.GitHub.EventPollSeconds)
+	}
+	if cfg.GitHub.SyncIntervalMinutes != 15 {
+		t.Errorf("expected default sync_interval_minutes 15, got %d", cfg.GitHub.SyncIntervalMinutes)
+	}
+}
+
+func TestEventPollSecondsCustom(t *testing.T) {
+	content := `
+[project]
+name = "test-app"
+
+[[project.repos]]
+name = "api"
+path = "/tmp/api"
+
+[github]
+owner = "myorg"
+repos = ["api"]
+event_poll_seconds = 30
+sync_interval_minutes = 10
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "madflow.toml")
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if cfg.GitHub.EventPollSeconds != 30 {
+		t.Errorf("expected event_poll_seconds 30, got %d", cfg.GitHub.EventPollSeconds)
+	}
+	if cfg.GitHub.SyncIntervalMinutes != 10 {
+		t.Errorf("expected sync_interval_minutes 10, got %d", cfg.GitHub.SyncIntervalMinutes)
+	}
+}
