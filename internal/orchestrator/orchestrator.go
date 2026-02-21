@@ -80,6 +80,11 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 		return fmt.Errorf("start resident agents: %w", err)
 	}
 
+	// Wait for all resident agents to complete their initial startup
+	if err := o.waitForAgentsReady(ctx); err != nil {
+		return fmt.Errorf("wait for agents ready: %w", err)
+	}
+
 	// Start GitHub sync if configured
 	if o.cfg.GitHub != nil {
 		wg.Add(1)
@@ -157,6 +162,26 @@ func (o *Orchestrator) startResidentAgents(ctx context.Context, wg *sync.WaitGro
 		}(ag)
 	}
 
+	return nil
+}
+
+// waitForAgentsReady blocks until all resident agents have completed
+// their initial startup (first prompt sent) or ctx is cancelled.
+func (o *Orchestrator) waitForAgentsReady(ctx context.Context) error {
+	o.mu.Lock()
+	agents := make([]*agent.Agent, len(o.residentAgents))
+	copy(agents, o.residentAgents)
+	o.mu.Unlock()
+
+	for _, ag := range agents {
+		select {
+		case <-ag.Ready():
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+
+	log.Println("[orchestrator] all resident agents ready")
 	return nil
 }
 

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ytnobody/madflow/internal/chatlog"
@@ -23,6 +24,8 @@ type Agent struct {
 	SystemPrompt   string
 	OriginalTask   string    // The initial task/context for this agent
 	Dormancy       *Dormancy // shared dormancy state (optional, nil = no dormancy)
+	ready          chan struct{}
+	readyOnce      sync.Once
 }
 
 // AgentConfig holds configuration for creating an agent.
@@ -62,7 +65,21 @@ func NewAgent(cfg AgentConfig) *Agent {
 		SystemPrompt:  cfg.SystemPrompt,
 		OriginalTask:  cfg.OriginalTask,
 		Dormancy:      cfg.Dormancy,
+		ready:         make(chan struct{}),
 	}
+}
+
+// Ready returns a channel that is closed when the agent has completed
+// its initial startup (first prompt sent). Used by the orchestrator to
+// wait for all agents to be ready before starting other subsystems.
+func (a *Agent) Ready() <-chan struct{} {
+	return a.ready
+}
+
+// markReady signals that the agent has completed its initial startup.
+// Safe to call multiple times; only the first call has an effect.
+func (a *Agent) markReady() {
+	a.readyOnce.Do(func() { close(a.ready) })
 }
 
 // Run executes the agent's main loop:
@@ -81,11 +98,13 @@ func (a *Agent) Run(ctx context.Context) error {
 
 	// Initial prompt to start the agent
 	initialPrompt := a.buildInitialPrompt(memo)
-	if _, err := a.send(ctx, initialPrompt); err != nil {
+	_, initErr := a.send(ctx, initialPrompt)
+	a.markReady()
+	if initErr != nil {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		log.Printf("[%s] initial send failed: %v", recipient, err)
+		log.Printf("[%s] initial send failed: %v", recipient, initErr)
 	}
 
 	// Watch for new messages

@@ -1,6 +1,9 @@
 package agent
 
 import (
+	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -91,6 +94,93 @@ func TestTruncate(t *testing.T) {
 	result := truncate("this is a long string", 10)
 	if result != "this is a ..." {
 		t.Errorf("unexpected truncation: %s", result)
+	}
+}
+
+// mockProcess is a test double for Process.
+type mockProcess struct {
+	response string
+	err      error
+}
+
+func (m *mockProcess) Send(ctx context.Context, prompt string) (string, error) {
+	return m.response, m.err
+}
+
+func TestReadySignaledAfterRun(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "chatlog.txt")
+	os.WriteFile(logPath, nil, 0644)
+	memosDir := filepath.Join(dir, "memos")
+	os.MkdirAll(memosDir, 0755)
+
+	ag := NewAgent(AgentConfig{
+		ID:            AgentID{Role: RolePM},
+		Role:          RolePM,
+		SystemPrompt:  "test",
+		Model:         "test",
+		ChatLogPath:   logPath,
+		MemosDir:      memosDir,
+		ResetInterval: time.Hour,
+		Process:       &mockProcess{response: "ok"},
+	})
+
+	// Ready should not be signaled before Run
+	select {
+	case <-ag.Ready():
+		t.Fatal("Ready should not be closed before Run")
+	default:
+		// expected
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// Run in background; it will send initial prompt then block on chatlog watch
+	go func() {
+		ag.Run(ctx)
+	}()
+
+	// Wait for Ready signal
+	select {
+	case <-ag.Ready():
+		// success
+	case <-time.After(2 * time.Second):
+		t.Fatal("Ready was not signaled within timeout")
+	}
+
+	cancel()
+}
+
+func TestReadySignaledOnSendError(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "chatlog.txt")
+	os.WriteFile(logPath, nil, 0644)
+	memosDir := filepath.Join(dir, "memos")
+	os.MkdirAll(memosDir, 0755)
+
+	ag := NewAgent(AgentConfig{
+		ID:            AgentID{Role: RolePM},
+		Role:          RolePM,
+		SystemPrompt:  "test",
+		Model:         "test",
+		ChatLogPath:   logPath,
+		MemosDir:      memosDir,
+		ResetInterval: time.Hour,
+		Process:       &mockProcess{err: context.Canceled},
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // pre-cancel
+
+	go func() {
+		ag.Run(ctx)
+	}()
+
+	select {
+	case <-ag.Ready():
+		// success - Ready should be signaled even on error
+	case <-time.After(2 * time.Second):
+		t.Fatal("Ready was not signaled on send error")
 	}
 }
 
