@@ -2,6 +2,7 @@ package issue
 
 import (
 	"testing"
+	"time"
 )
 
 func TestCreateAndGet(t *testing.T) {
@@ -144,5 +145,88 @@ func TestListEmptyDir(t *testing.T) {
 	}
 	if len(issues) != 0 {
 		t.Fatalf("expected 0 issues, got %d", len(issues))
+	}
+}
+
+func TestCommentTOMLPersistence(t *testing.T) {
+	dir := t.TempDir()
+	store := NewStore(dir)
+
+	iss, err := store.Create("Issue with comments", "body")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Date(2026, 2, 21, 10, 0, 0, 0, time.UTC)
+	c1 := Comment{ID: 100, Author: "alice", Body: "first comment", CreatedAt: now, UpdatedAt: now}
+	c2 := Comment{ID: 200, Author: "bob", Body: "second comment", CreatedAt: now, UpdatedAt: now}
+
+	iss.AddComment(c1)
+	iss.AddComment(c2)
+
+	if err := store.Update(iss); err != nil {
+		t.Fatal(err)
+	}
+
+	// Re-read from disk
+	got, err := store.Get(iss.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(got.Comments) != 2 {
+		t.Fatalf("expected 2 comments, got %d", len(got.Comments))
+	}
+	if got.Comments[0].Author != "alice" {
+		t.Errorf("expected author alice, got %s", got.Comments[0].Author)
+	}
+	if got.Comments[1].ID != 200 {
+		t.Errorf("expected comment ID 200, got %d", got.Comments[1].ID)
+	}
+}
+
+func TestCommentDedup(t *testing.T) {
+	iss := &Issue{ID: "test-001"}
+	c := Comment{ID: 42, Author: "user", Body: "hello"}
+
+	if !iss.AddComment(c) {
+		t.Error("first AddComment should return true")
+	}
+	if iss.AddComment(c) {
+		t.Error("duplicate AddComment should return false")
+	}
+	if len(iss.Comments) != 1 {
+		t.Errorf("expected 1 comment, got %d", len(iss.Comments))
+	}
+}
+
+func TestHasComment(t *testing.T) {
+	iss := &Issue{ID: "test-001"}
+	if iss.HasComment(1) {
+		t.Error("should not have comment 1")
+	}
+	iss.Comments = []Comment{{ID: 1, Author: "a", Body: "b"}}
+	if !iss.HasComment(1) {
+		t.Error("should have comment 1")
+	}
+}
+
+func TestBackwardCompatNoComments(t *testing.T) {
+	// An issue TOML file without comments should load fine
+	dir := t.TempDir()
+	store := NewStore(dir)
+
+	iss, err := store.Create("No comments", "body")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Re-read — Comments should be nil/empty
+	got, err := store.Get(iss.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Comments) != 0 {
+		t.Errorf("expected 0 comments, got %d", len(got.Comments))
 	}
 }

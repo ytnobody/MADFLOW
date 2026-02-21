@@ -7,9 +7,19 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/BurntSushi/toml"
 )
+
+// Comment represents a GitHub issue comment.
+type Comment struct {
+	ID        int64     `toml:"id"`
+	Author    string    `toml:"author"`
+	Body      string    `toml:"body"`
+	CreatedAt time.Time `toml:"created_at"`
+	UpdatedAt time.Time `toml:"updated_at"`
+}
 
 type Status string
 
@@ -21,15 +31,36 @@ const (
 )
 
 type Issue struct {
-	ID           string   `toml:"id"`
-	Title        string   `toml:"title"`
-	URL          string   `toml:"url,omitempty"`
-	Status       Status   `toml:"status"`
-	AssignedTeam int      `toml:"assigned_team"`
-	Repos        []string `toml:"repos,omitempty"`
-	Labels       []string `toml:"labels,omitempty"`
-	Body         string   `toml:"body"`
-	Acceptance   string   `toml:"acceptance,omitempty"`
+	ID           string    `toml:"id"`
+	Title        string    `toml:"title"`
+	URL          string    `toml:"url,omitempty"`
+	Status       Status    `toml:"status"`
+	AssignedTeam int       `toml:"assigned_team"`
+	Repos        []string  `toml:"repos,omitempty"`
+	Labels       []string  `toml:"labels,omitempty"`
+	Body         string    `toml:"body"`
+	Acceptance   string    `toml:"acceptance,omitempty"`
+	Comments     []Comment `toml:"comments,omitempty"`
+}
+
+// HasComment checks whether a comment with the given ID already exists.
+func (iss *Issue) HasComment(id int64) bool {
+	for _, c := range iss.Comments {
+		if c.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+// AddComment appends a comment if it doesn't already exist (dedup by ID).
+// Returns true if the comment was added.
+func (iss *Issue) AddComment(c Comment) bool {
+	if iss.HasComment(c.ID) {
+		return false
+	}
+	iss.Comments = append(iss.Comments, c)
+	return true
 }
 
 type StatusFilter struct {
