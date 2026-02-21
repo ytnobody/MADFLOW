@@ -70,8 +70,17 @@ git commit -m "feat: <変更内容の説明>"
 ```bash
 cd <リポジトリパス>
 git push -u origin {{FEATURE_PREFIX}}<イシューID>
-gh pr create --base {{DEVELOP_BRANCH}} --title "<イシューID>: <変更内容の要約>" --body "Issue: <イシューID>"
+gh pr create --base {{DEVELOP_BRANCH}} --title "<イシューID>: <変更内容の要約>" --body "Closes #<イシュー番号>
+
+Issue: <イシューID>"
 ```
+
+イシュー番号は、イシューファイルの `url` フィールドから取得します。
+例: `url = "https://api.github.com/repos/ytnobody/MADFLOW/issues/9"` の場合
+- イシュー番号: `9`
+- PR ボディの `Closes #9` により、GitHub 上で PR と Issue がリンクされます。
+
+`url` フィールドがない場合は `Closes #<イシュー番号>` の行を省略してください。
 
 既に PR が存在する場合はこのステップをスキップしてください。
 
