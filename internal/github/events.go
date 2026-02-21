@@ -71,6 +71,9 @@ type EventWatcher struct {
 	interval time.Duration
 	callback EventCallback
 
+	idleDetector *IdleDetector // nil = no adaptive behavior
+	idleInterval time.Duration // effective only when idleDetector is set
+
 	mu         sync.Mutex
 	seenEvents map[string]struct{}
 }
@@ -87,7 +90,27 @@ func NewEventWatcher(store *issue.Store, owner string, repos []string, interval 
 	}
 }
 
+// WithIdleDetector attaches an IdleDetector to the EventWatcher, enabling adaptive polling.
+// When the detector reports no active issues, the watcher uses idleInterval instead
+// of the normal interval. Returns the EventWatcher for method chaining.
+func (w *EventWatcher) WithIdleDetector(d *IdleDetector, idleInterval time.Duration) *EventWatcher {
+	w.idleDetector = d
+	w.idleInterval = idleInterval
+	return w
+}
+
+// currentInterval returns the interval to use for the next sleep, taking idle state into account.
+func (w *EventWatcher) currentInterval() time.Duration {
+	if w.idleDetector != nil {
+		return w.idleDetector.AdaptInterval(w.interval, w.idleInterval)
+	}
+	return w.interval
+}
+
 // Run starts the event polling loop. Blocks until ctx is cancelled.
+// If an IdleDetector is attached (via WithIdleDetector), the poll interval
+// automatically increases to idleInterval when no active issues are present,
+// and reverts to the normal interval when an issue event is detected.
 func (w *EventWatcher) Run(ctx context.Context) error {
 	log.Printf("[event-watcher] started (interval: %v, repos: %v)", w.interval, w.repos)
 
@@ -99,15 +122,13 @@ func (w *EventWatcher) Run(ctx context.Context) error {
 		etags[repo] = w.pollRepo(repo, etags[repo])
 	}
 
-	ticker := time.NewTicker(w.interval)
-	defer ticker.Stop()
-
 	for {
+		interval := w.currentInterval()
 		select {
 		case <-ctx.Done():
 			log.Println("[event-watcher] stopped")
 			return ctx.Err()
-		case <-ticker.C:
+		case <-time.After(interval):
 			for _, repo := range w.repos {
 				etags[repo] = w.pollRepo(repo, etags[repo])
 			}
@@ -348,6 +369,11 @@ func (w *EventWatcher) handleIssuesEvent(repo string, ev ghEvent) {
 			}
 			log.Printf("[event-watcher] updated %s", localID)
 		}
+	}
+
+	// Notify idle detector that there is an active issue
+	if w.idleDetector != nil {
+		w.idleDetector.SetHasIssues(true)
 	}
 
 	if w.callback != nil {

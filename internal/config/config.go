@@ -54,10 +54,16 @@ type BranchConfig struct {
 }
 
 type GitHubConfig struct {
-	Owner                string   `toml:"owner"`
-	Repos                []string `toml:"repos"`
-	SyncIntervalMinutes  int      `toml:"sync_interval_minutes"`
-	EventPollSeconds     int      `toml:"event_poll_seconds"`
+	Owner               string   `toml:"owner"`
+	Repos               []string `toml:"repos"`
+	SyncIntervalMinutes int      `toml:"sync_interval_minutes"`
+	EventPollSeconds    int      `toml:"event_poll_seconds"`
+	// IdlePollMinutes specifies how often to poll when no open issues are found.
+	// Defaults to 15 minutes. Must be greater than EventPollSeconds/60 to have any effect.
+	IdlePollMinutes int `toml:"idle_poll_minutes"`
+	// IdleThresholdMinutes is how long there must be no open issues before
+	// entering idle mode. Defaults to 5 minutes.
+	IdleThresholdMinutes int `toml:"idle_threshold_minutes"`
 }
 
 func Load(path string) (*Config, error) {
@@ -110,6 +116,12 @@ func setDefaults(cfg *Config) {
 	}
 	if cfg.GitHub != nil && cfg.GitHub.EventPollSeconds == 0 {
 		cfg.GitHub.EventPollSeconds = 60
+	}
+	if cfg.GitHub != nil && cfg.GitHub.IdlePollMinutes == 0 {
+		cfg.GitHub.IdlePollMinutes = 15
+	}
+	if cfg.GitHub != nil && cfg.GitHub.IdleThresholdMinutes == 0 {
+		cfg.GitHub.IdleThresholdMinutes = 5
 	}
 	if cfg.Cache != nil {
 		if cfg.Cache.TTLMinutes == 0 {
