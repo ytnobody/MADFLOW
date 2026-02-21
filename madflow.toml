@@ -1,0 +1,28 @@
+[project]
+name = "MADFLOW"
+
+[[project.repos]]
+name = "MADFLOW"
+path = "/home/ytnobody/MADFLOW"
+
+[agent]
+context_reset_minutes = 8
+
+[agent.models]
+superintendent = "claude-sonnet-4-6"
+pm = "claude-sonnet-4-6"
+architect = "claude-opus-4-6"
+engineer = "claude-sonnet-4-6"
+reviewer = "claude-sonnet-4-6"
+release_manager = "claude-haiku-4-5"
+
+[github]
+owner = "ytnobody"
+repos = ["MADFLOW"]
+sync_interval_minutes = 20
+event_poll_seconds = 60
+
+[branches]
+main = "main"
+develop = "develop"
+feature_prefix = "feature/issue-"
