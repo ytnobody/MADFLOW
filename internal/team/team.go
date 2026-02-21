@@ -13,6 +13,17 @@ import (
 	"github.com/ytnobody/madflow/internal/agent"
 )
 
+// announceStart は各エージェントの作業開始をチャットログに報告する。
+func announceStart(team *Team) {
+	for _, ag := range []*agent.Agent{team.Architect, team.Engineer, team.Reviewer} {
+		ag.ChatLog.Append(
+			"PM",
+			ag.ID.String(),
+			fmt.Sprintf("チーム %d の %s として作業を開始します。イシュー: %s", team.ID, ag.ID.Role, team.IssueID),
+		)
+	}
+}
+
 // Team represents a task force team (architect + engineer + reviewer).
 type Team struct {
 	ID        int
@@ -183,6 +194,8 @@ func (m *Manager) Restore(ctx context.Context, checker IssueChecker) error {
 		m.launchWithRestart(teamCtx, entry.ID, engineer)
 		m.launchWithRestart(teamCtx, entry.ID, reviewer)
 
+		announceStart(t)
+
 		log.Printf("[team-%d] restored for issue %s", entry.ID, entry.IssueID)
 	}
 
@@ -254,6 +267,8 @@ func (m *Manager) Create(ctx context.Context, issueID string) (*Team, error) {
 	m.launchWithRestart(teamCtx, teamNum, architect)
 	m.launchWithRestart(teamCtx, teamNum, engineer)
 	m.launchWithRestart(teamCtx, teamNum, reviewer)
+
+	announceStart(team)
 
 	log.Printf("[team-%d] created for issue %s", teamNum, issueID)
 	return team, nil

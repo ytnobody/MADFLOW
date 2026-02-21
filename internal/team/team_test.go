@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -556,6 +557,92 @@ func TestRestoreReusesWorktree(t *testing.T) {
 
 	if team.WorkDir != expectedWorkDir {
 		t.Errorf("expected WorkDir %s, got %s", expectedWorkDir, team.WorkDir)
+	}
+}
+
+// --- Announce start tests ---
+
+func TestCreateAnnouncesStart(t *testing.T) {
+	factory := newMockFactory(t)
+	m := NewManager(factory)
+
+	team := createAndCancel(t, m, "issue-announce")
+
+	for _, ag := range []*agent.Agent{team.Architect, team.Engineer, team.Reviewer} {
+		msgs, err := ag.ChatLog.Poll("PM")
+		if err != nil {
+			t.Fatalf("Poll failed for %s: %v", ag.ID.String(), err)
+		}
+		if len(msgs) != 1 {
+			t.Errorf("expected 1 announce message for %s, got %d", ag.ID.String(), len(msgs))
+			continue
+		}
+		if msgs[0].Sender != ag.ID.String() {
+			t.Errorf("expected sender %s, got %s", ag.ID.String(), msgs[0].Sender)
+		}
+		if !strings.Contains(msgs[0].Body, "作業を開始します") {
+			t.Errorf("expected announce body to contain '作業を開始します', got %q", msgs[0].Body)
+		}
+		if !strings.Contains(msgs[0].Body, "issue-announce") {
+			t.Errorf("expected announce body to contain issue ID, got %q", msgs[0].Body)
+		}
+	}
+}
+
+func TestRestoreAnnouncesStart(t *testing.T) {
+	dir := t.TempDir()
+	stateFile := filepath.Join(dir, "teams.toml")
+
+	state := teamState{
+		NextID: 2,
+		Teams: []teamEntry{
+			{ID: 1, IssueID: "issue-restore-announce"},
+		},
+	}
+	f, err := os.Create(stateFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	toml.NewEncoder(f).Encode(state)
+	f.Close()
+
+	factory := newMockFactory(t)
+	m := NewManagerWithState(factory, stateFile)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	checker := &mockIssueChecker{finished: map[string]bool{}}
+	if err := m.Restore(ctx, checker); err != nil {
+		t.Fatalf("Restore failed: %v", err)
+	}
+
+	m.mu.Lock()
+	team := m.teams[1]
+	m.mu.Unlock()
+
+	if team == nil {
+		t.Fatal("expected team 1 to exist after restore")
+	}
+
+	for _, ag := range []*agent.Agent{team.Architect, team.Engineer, team.Reviewer} {
+		msgs, err := ag.ChatLog.Poll("PM")
+		if err != nil {
+			t.Fatalf("Poll failed for %s: %v", ag.ID.String(), err)
+		}
+		if len(msgs) != 1 {
+			t.Errorf("expected 1 announce message for %s, got %d", ag.ID.String(), len(msgs))
+			continue
+		}
+		if msgs[0].Sender != ag.ID.String() {
+			t.Errorf("expected sender %s, got %s", ag.ID.String(), msgs[0].Sender)
+		}
+		if !strings.Contains(msgs[0].Body, "作業を開始します") {
+			t.Errorf("expected announce body to contain '作業を開始します', got %q", msgs[0].Body)
+		}
+		if !strings.Contains(msgs[0].Body, "issue-restore-announce") {
+			t.Errorf("expected announce body to contain issue ID, got %q", msgs[0].Body)
+		}
 	}
 }
 
