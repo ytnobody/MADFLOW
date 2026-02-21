@@ -11,9 +11,13 @@ import (
 	"github.com/ytnobody/madflow/internal/project"
 )
 
-const useUsage = `Usage: madflow use <claude|gemini>
+const useUsage = `Usage: madflow use <claude|gemini|mixed>
 
 Switches all agent models in madflow.toml to a specific backend.
+  claude: All roles use Claude models (stable, higher cost)
+  gemini: All roles use Gemini models (cost-effective)
+  mixed:  Strategic roles (superintendent, PM, architect, RM) use Claude,
+          execution roles (engineer, reviewer) use Gemini (recommended for cost optimization)
 `
 
 func cmdUse() error {
@@ -27,21 +31,30 @@ func cmdUse() error {
 	switch backend {
 	case "claude":
 		newModels = config.ModelConfig{
-			Superintendent: "claude-3-opus-20240229",
-			PM:             "claude-3-sonnet-20240229",
-			Architect:      "claude-3-opus-20240229",
-			Engineer:       "claude-3-haiku-20240307",
-			Reviewer:       "claude-3-sonnet-20240229",
-			ReleaseManager: "claude-3-haiku-20240307",
+			Superintendent: "claude-opus-4-6",
+			PM:             "claude-sonnet-4-6",
+			Architect:      "claude-opus-4-6",
+			Engineer:       "claude-sonnet-4-6",
+			Reviewer:       "claude-sonnet-4-6",
+			ReleaseManager: "claude-haiku-4-5",
 		}
 	case "gemini":
 		newModels = config.ModelConfig{
-			Superintendent: "gemini-1.5-pro-latest",
-			PM:             "gemini-1.5-pro-latest",
-			Architect:      "gemini-1.5-pro-latest",
-			Engineer:       "gemini-1.5-flash-latest",
-			Reviewer:       "gemini-1.5-pro-latest",
-			ReleaseManager: "gemini-1.5-flash-latest",
+			Superintendent: "gemini-2.5-pro",
+			PM:             "gemini-2.5-flash",
+			Architect:      "gemini-2.5-pro",
+			Engineer:       "gemini-2.5-flash",
+			Reviewer:       "gemini-2.5-flash",
+			ReleaseManager: "gemini-2.5-flash",
+		}
+	case "mixed":
+		newModels = config.ModelConfig{
+			Superintendent: "claude-sonnet-4-6",
+			PM:             "claude-haiku-4-5",
+			Architect:      "claude-sonnet-4-6",
+			Engineer:       "gemini-2.5-flash",
+			Reviewer:       "gemini-2.5-flash",
+			ReleaseManager: "claude-haiku-4-5",
 		}
 	default:
 		fmt.Fprintf(os.Stderr, "unknown backend: %s\n", backend)
