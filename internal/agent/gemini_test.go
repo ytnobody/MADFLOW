@@ -17,27 +17,28 @@ func TestGeminiProcess_buildArgs(t *testing.T) {
 		expected []string
 	}{
 		{
-			name: "simple prompt",
-			opts: GeminiOptions{},
-			prompt: "hello",
+			name:     "simple prompt",
+			opts:     GeminiOptions{},
+			prompt:   "hello",
 			expected: []string{"-p", "hello", "-o", "text", "--approval-mode", "yolo"},
 		},
 		{
-			name: "with model",
-			opts: GeminiOptions{Model: "gemini-pro-vision"},
+			name:   "with model",
+			opts:   GeminiOptions{Model: "gemini-2.5-flash"},
 			prompt: "describe image",
-			expected: []string{"-p", "describe image", "-o", "text", "--approval-mode", "yolo", "-m", "pro-vision"},
+			// モデル名をそのまま渡す（stripしない）
+			expected: []string{"-p", "describe image", "-o", "text", "--approval-mode", "yolo", "-m", "gemini-2.5-flash"},
 		},
 		{
-			name: "with system prompt",
-			opts: GeminiOptions{SystemPrompt: "act as a bot"},
-			prompt: "who are you?",
+			name:     "with system prompt",
+			opts:     GeminiOptions{SystemPrompt: "act as a bot"},
+			prompt:   "who are you?",
 			expected: []string{"-p", "act as a bot\n\nwho are you?", "-o", "text", "--approval-mode", "yolo"},
 		},
 		{
-			name: "with allowed tools",
-			opts: GeminiOptions{AllowedTools: []string{"read_file", "write_file"}},
-			prompt: "read main.go",
+			name:     "with allowed tools",
+			opts:     GeminiOptions{AllowedTools: []string{"read_file", "write_file"}},
+			prompt:   "read main.go",
 			expected: []string{"-p", "read main.go", "-o", "text", "--approval-mode", "yolo", "--allowed-tools", "read_file,write_file"},
 		},
 	}
@@ -58,10 +59,52 @@ func TestGeminiProcess_buildArgs(t *testing.T) {
 func TestGeminiProcess_Send(t *testing.T) {
 	// To test this properly, we would need to replace exec.CommandContext.
 	// One way is to have a variable for it that can be swapped in tests:
-	//   var execCommand = exec.CommandContext 
+	//   var execCommand = exec.CommandContext
 	// In test:
 	//   execCommand = func(...) *exec.Cmd { ... return a mock command ... }
-	
+
 	t.Skip("skipping test requiring mock of exec.CommandContext")
 }
 
+func TestSanitizeGeminiResponse(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{"plain text", "hello world", "hello world"},
+		{"code block wrapped", "```\nhello world\n```", "hello world"},
+		{"code block with language", "```bash\necho hello\n```", "echo hello"},
+		{"multiple code blocks", "text\n```\ncode\n```\nmore", "text\n```\ncode\n```\nmore"},
+		{"empty", "", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := sanitizeGeminiResponse(tt.input)
+			if result != tt.expected {
+				t.Errorf("got %q, want %q", result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestContainsRateLimitKeyword(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected bool
+	}{
+		{"RESOURCE_EXHAUSTED: quota exceeded", true},
+		{"Error: 429 Too Many Requests", true},
+		{"normal error message", false},
+		{"ResourceExhausted", true},
+		{"", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			result := containsRateLimitKeyword(tt.input)
+			if result != tt.expected {
+				t.Errorf("got %v, want %v", result, tt.expected)
+			}
+		})
+	}
+}

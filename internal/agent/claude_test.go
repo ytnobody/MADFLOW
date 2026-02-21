@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"errors"
+	"fmt"
 	"testing"
 )
 
@@ -55,5 +57,62 @@ func TestBuildArgsMinimal(t *testing.T) {
 
 	if args[len(args)-1] != "test" {
 		t.Errorf("expected last arg to be prompt, got %s", args[len(args)-1])
+	}
+}
+
+func TestRateLimitError(t *testing.T) {
+	inner := fmt.Errorf("quota exceeded")
+	rlErr := &RateLimitError{Wrapped: inner}
+
+	// Error() メソッドが内包エラーのメッセージを返すこと
+	if rlErr.Error() != "quota exceeded" {
+		t.Errorf("RateLimitError.Error() = %q, want %q", rlErr.Error(), "quota exceeded")
+	}
+
+	// Unwrap() が内包エラーを返すこと
+	if rlErr.Unwrap() != inner {
+		t.Errorf("RateLimitError.Unwrap() did not return wrapped error")
+	}
+
+	// errors.As が RateLimitError を検出できること
+	var target *RateLimitError
+	if !errors.As(rlErr, &target) {
+		t.Error("errors.As should detect RateLimitError")
+	}
+
+	// IsRateLimitError が RateLimitError を検出できること
+	if !IsRateLimitError(rlErr) {
+		t.Error("IsRateLimitError should return true for RateLimitError")
+	}
+
+	// IsRateLimitError がラップされた RateLimitError を検出できること
+	wrapped := fmt.Errorf("outer: %w", rlErr)
+	if !IsRateLimitError(wrapped) {
+		t.Error("IsRateLimitError should return true for wrapped RateLimitError")
+	}
+}
+
+func TestIsRateLimitError_GeminiKeywords(t *testing.T) {
+	tests := []struct {
+		errMsg   string
+		expected bool
+	}{
+		{"RESOURCE_EXHAUSTED: quota exceeded", true},
+		{"error: ResourceExhausted", true},
+		{"quota exceeded for API calls", true},
+		{"rate limit exceeded", true},
+		{"429 Too Many Requests", true},
+		{"overloaded", true},
+		{"normal error", false},
+		{"connection refused", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.errMsg, func(t *testing.T) {
+			err := fmt.Errorf("%s", tt.errMsg)
+			result := IsRateLimitError(err)
+			if result != tt.expected {
+				t.Errorf("IsRateLimitError(%q) = %v, want %v", tt.errMsg, result, tt.expected)
+			}
+		})
 	}
 }
