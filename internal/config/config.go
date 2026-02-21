@@ -28,6 +28,7 @@ type RepoConfig struct {
 type AgentConfig struct {
 	ContextResetMinutes int         `toml:"context_reset_minutes"`
 	MaxTeams            int         `toml:"max_teams"`
+	ChatlogMaxLines     int         `toml:"chatlog_max_lines"`
 	Models              ModelConfig `toml:"models"`
 }
 
@@ -97,6 +98,9 @@ func setDefaults(cfg *Config) {
 	}
 	if cfg.Agent.MaxTeams == 0 {
 		cfg.Agent.MaxTeams = 4
+	}
+	if cfg.Agent.ChatlogMaxLines == 0 {
+		cfg.Agent.ChatlogMaxLines = 500
 	}
 	if cfg.Branches.Main == "" {
 		cfg.Branches.Main = "main"

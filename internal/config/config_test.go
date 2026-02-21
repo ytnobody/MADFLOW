@@ -206,3 +206,56 @@ sync_interval_minutes = 10
 		t.Errorf("expected sync_interval_minutes 10, got %d", cfg.GitHub.SyncIntervalMinutes)
 	}
 }
+
+func TestChatlogMaxLinesDefault(t *testing.T) {
+	content := `
+[project]
+name = "test-app"
+
+[[project.repos]]
+name = "main"
+path = "."
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "madflow.toml")
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if cfg.Agent.ChatlogMaxLines != 500 {
+		t.Errorf("expected default chatlog_max_lines 500, got %d", cfg.Agent.ChatlogMaxLines)
+	}
+}
+
+func TestChatlogMaxLinesCustom(t *testing.T) {
+	content := `
+[project]
+name = "test-app"
+
+[[project.repos]]
+name = "main"
+path = "."
+
+[agent]
+chatlog_max_lines = 1000
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "madflow.toml")
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if cfg.Agent.ChatlogMaxLines != 1000 {
+		t.Errorf("expected chatlog_max_lines 1000, got %d", cfg.Agent.ChatlogMaxLines)
+	}
+}

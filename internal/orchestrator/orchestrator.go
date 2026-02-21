@@ -102,6 +102,13 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 		}()
 	}
 
+	// Start chatlog cleanup goroutine
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		o.runChatlogCleanup(ctx)
+	}()
+
 	// Watch chatlog for orchestrator commands
 	wg.Add(1)
 	go func() {
@@ -401,6 +408,33 @@ func (o *Orchestrator) runEventWatcher(ctx context.Context) {
 	watcher := github.NewEventWatcher(o.store, gh.Owner, gh.Repos, interval, callback)
 	if err := watcher.Run(ctx); err != nil && ctx.Err() == nil {
 		log.Printf("[orchestrator] event watcher stopped: %v", err)
+	}
+}
+
+// runChatlogCleanup periodically truncates old chatlog entries.
+func (o *Orchestrator) runChatlogCleanup(ctx context.Context) {
+	maxLines := o.cfg.Agent.ChatlogMaxLines
+	if maxLines <= 0 {
+		maxLines = 500
+	}
+
+	interval := time.Duration(o.cfg.Agent.ContextResetMinutes) * time.Minute
+	if interval <= 0 {
+		interval = 8 * time.Minute
+	}
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := o.chatLog.Truncate(maxLines); err != nil {
+				log.Printf("[orchestrator] chatlog cleanup failed: %v", err)
+			}
+		}
 	}
 }
 

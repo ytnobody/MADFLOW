@@ -7,6 +7,7 @@ path = "."
 
 [agent]
 context_reset_minutes = 8
+# chatlog_max_lines = 500  # チャットログの最大保持行数（デフォルト500）
 
 [agent.models]
 superintendent = "claude-opus-4-6"
