@@ -10,7 +10,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ytnobody/madflow/internal/cache"
 	"github.com/ytnobody/madflow/internal/chatlog"
 	"github.com/ytnobody/madflow/internal/reset"
 )
@@ -24,8 +23,6 @@ type Agent struct {
 	SystemPrompt  string
 	OriginalTask  string
 	Dormancy      *Dormancy
-	CacheManager  *cache.Manager
-	IssueID       string
 	ready         chan struct{}
 	readyOnce     sync.Once
 }
@@ -42,20 +39,26 @@ type AgentConfig struct {
 	OriginalTask  string
 	Process       Process
 	Dormancy      *Dormancy
-	CacheManager  *cache.Manager
-	IssueID       string
 }
 
 func NewAgent(cfg AgentConfig) *Agent {
 	var proc Process
 	if cfg.Process != nil {
 		proc = cfg.Process
-	} else if strings.HasPrefix(cfg.Model, "gemini-") && cfg.CacheManager != nil {
-		proc = NewGeminiAPIProcess(GeminiAPIOptions{Client: cfg.CacheManager.Client(), Model: cfg.Model, SystemPrompt: cfg.SystemPrompt, WorkDir: cfg.WorkDir})
-	} else if strings.HasPrefix(cfg.Model, "gemini-") {
-		proc = NewGmnProcess(GmnOptions{SystemPrompt: cfg.SystemPrompt, Model: cfg.Model, WorkDir: cfg.WorkDir})
 	} else {
-		proc = NewClaudeProcess(ClaudeOptions{SystemPrompt: cfg.SystemPrompt, Model: cfg.Model, WorkDir: cfg.WorkDir})
+		if strings.HasPrefix(cfg.Model, "gemini-") {
+			proc = NewGeminiProcess(GeminiOptions{
+				SystemPrompt: cfg.SystemPrompt,
+				Model:        cfg.Model,
+				WorkDir:      cfg.WorkDir,
+			})
+		} else {
+			proc = NewClaudeProcess(ClaudeOptions{
+				SystemPrompt: cfg.SystemPrompt,
+				Model:        cfg.Model,
+				WorkDir:      cfg.WorkDir,
+			})
+		}
 	}
 
 	return &Agent{
@@ -67,8 +70,6 @@ func NewAgent(cfg AgentConfig) *Agent {
 		SystemPrompt:  cfg.SystemPrompt,
 		OriginalTask:  cfg.OriginalTask,
 		Dormancy:      cfg.Dormancy,
-		CacheManager:  cfg.CacheManager,
-		IssueID:       cfg.IssueID,
 		ready:         make(chan struct{}),
 	}
 }
@@ -137,14 +138,6 @@ func (a *Agent) performReset(ctx context.Context, timer *reset.Timer) error {
 		return fmt.Errorf("save memo: %w", err)
 	}
 	log.Printf("[%s] memo saved: %s", recipient, filepath.Base(memoPath))
-
-	if a.CacheManager != nil && a.IssueID != "" {
-		if err := a.CacheManager.Refresh(ctx, a.IssueID); err != nil {
-			log.Printf("[%s] cache refresh failed: %v", recipient, err)
-		} else {
-			log.Printf("[%s] cache TTL refreshed", recipient)
-		}
-	}
 
 	memoContent, _ := os.ReadFile(memoPath)
 	if _, err := a.send(ctx, a.buildInitialPrompt(string(memoContent))); err != nil {
