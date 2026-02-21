@@ -24,8 +24,6 @@ var promptFileNames = map[Role]string{
 	RolePM:             "pm.md",
 	RoleArchitect:      "architect.md",
 	RoleEngineer:       "engineer.md",
-	RoleReviewer:       "reviewer.md",
-	RoleReleaseManager: "release_manager.md",
 }
 
 // LoadPrompt reads a role's prompt template and substitutes variables.

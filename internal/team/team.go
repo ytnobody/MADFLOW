@@ -14,7 +14,7 @@ import (
 
 // announceStart は各エージェントの作業開始をチャットログに報告する。
 func announceStart(team *Team) {
-	for _, ag := range []*agent.Agent{team.Architect, team.Engineer, team.Reviewer} {
+	for _, ag := range []*agent.Agent{team.Architect, team.Engineer} {
 		line := chatlog.FormatMessage(
 			"PM",
 			ag.ID.String(),
@@ -41,7 +41,6 @@ type Team struct {
 	IssueID   string
 	Architect *agent.Agent
 	Engineer  *agent.Agent
-	Reviewer  *agent.Agent
 	cancel    context.CancelFunc
 }
 
@@ -59,7 +58,7 @@ type Manager struct {
 
 // TeamFactory creates agents for a team. Provided by the orchestrator.
 type TeamFactory interface {
-	CreateTeamAgents(teamNum int, issueID string) (architect, engineer, reviewer *agent.Agent, err error)
+	CreateTeamAgents(teamNum int, issueID string) (architect, engineer *agent.Agent, err error)
 }
 
 func NewManager(factory TeamFactory, maxTeams int) *Manager {
@@ -85,7 +84,7 @@ func (m *Manager) Create(ctx context.Context, issueID string) (*Team, error) {
 	m.nextID++
 	m.mu.Unlock()
 
-	architect, engineer, reviewer, err := m.factory.CreateTeamAgents(teamNum, issueID)
+	architect, engineer, err := m.factory.CreateTeamAgents(teamNum, issueID)
 	if err != nil {
 		return nil, fmt.Errorf("create team agents: %w", err)
 	}
@@ -97,7 +96,6 @@ func (m *Manager) Create(ctx context.Context, issueID string) (*Team, error) {
 		IssueID:   issueID,
 		Architect: architect,
 		Engineer:  engineer,
-		Reviewer:  reviewer,
 		cancel:    cancel,
 	}
 
@@ -116,14 +114,9 @@ func (m *Manager) Create(ctx context.Context, issueID string) (*Team, error) {
 			log.Printf("[team-%d] engineer stopped: %v", teamNum, err)
 		}
 	}()
-	go func() {
-		if err := reviewer.Run(teamCtx); err != nil && teamCtx.Err() == nil {
-			log.Printf("[team-%d] reviewer stopped: %v", teamNum, err)
-		}
-	}()
 
 	// Wait for all agents to complete their initial startup
-	for _, ag := range []*agent.Agent{architect, engineer, reviewer} {
+	for _, ag := range []*agent.Agent{architect, engineer} {
 		select {
 		case <-ag.Ready():
 		case <-ctx.Done():

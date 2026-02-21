@@ -47,8 +47,6 @@ type ModelConfig struct {
 	PM             string `toml:"pm"`
 	Architect      string `toml:"architect"`
 	Engineer       string `toml:"engineer"`
-	Reviewer       string `toml:"reviewer"`
-	ReleaseManager string `toml:"release_manager"`
 }
 
 type BranchConfig struct {
@@ -99,12 +97,6 @@ func setDefaults(cfg *Config) {
 	}
 	if cfg.Agent.Models.Engineer == "" {
 		cfg.Agent.Models.Engineer = "claude-sonnet-4-6"
-	}
-	if cfg.Agent.Models.Reviewer == "" {
-		cfg.Agent.Models.Reviewer = "claude-sonnet-4-6"
-	}
-	if cfg.Agent.Models.ReleaseManager == "" {
-		cfg.Agent.Models.ReleaseManager = "claude-haiku-4-5"
 	}
 	if cfg.Agent.MaxTeams == 0 {
 		cfg.Agent.MaxTeams = 4

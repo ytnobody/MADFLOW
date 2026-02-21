@@ -12,8 +12,6 @@ const (
 	RolePM              Role = "pm"
 	RoleArchitect       Role = "architect"
 	RoleEngineer        Role = "engineer"
-	RoleReviewer        Role = "reviewer"
-	RoleReleaseManager  Role = "release_manager"
 	RoleOrchestrator    Role = "orchestrator"
 )
 
@@ -51,9 +49,7 @@ var AllowedTargets = map[Role][]Role{
 	RoleSuperintendent: {RolePM},
 	RolePM:             {RoleSuperintendent, RoleArchitect, RoleOrchestrator},
 	RoleArchitect:      {RolePM, RoleEngineer},
-	RoleEngineer:       {RoleArchitect, RoleReviewer},
-	RoleReviewer:       {RoleEngineer, RoleReleaseManager},
-	RoleReleaseManager: {RoleReviewer},
+	RoleEngineer:       {RoleArchitect},
 }
 
 func CanSendTo(from, to Role) bool {

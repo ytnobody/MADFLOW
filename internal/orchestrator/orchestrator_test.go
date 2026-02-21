@@ -31,8 +31,6 @@ func testConfig(repoPath string) *config.Config {
 				PM:             "claude-sonnet-4-6",
 				Architect:      "claude-opus-4-6",
 				Engineer:       "claude-sonnet-4-6",
-				Reviewer:       "claude-sonnet-4-6",
-				ReleaseManager: "claude-haiku-4-5",
 			},
 		},
 		Branches: config.BranchConfig{
@@ -183,18 +181,18 @@ func TestCreateTeamAgents(t *testing.T) {
 
 	// Create prompt templates
 	promptDir := t.TempDir()
-	for _, name := range []string{"architect.md", "engineer.md", "reviewer.md"} {
+	for _, name := range []string{"architect.md", "engineer.md"} {
 		content := "# " + name + "\nAgent: {{AGENT_ID}} Team: {{TEAM_NUM}}"
 		os.WriteFile(filepath.Join(promptDir, name), []byte(content), 0644)
 	}
 
 	orc := New(cfg, dir, promptDir)
 
-	architect, engineer, reviewer, err := orc.CreateTeamAgents(1, "test-issue-001")
+	architect, engineer, err := orc.CreateTeamAgents(1, "test-issue-001")
 	if err != nil {
 		t.Fatalf("CreateTeamAgents failed: %v", err)
 	}
-	if architect == nil || engineer == nil || reviewer == nil {
+	if architect == nil || engineer == nil {
 		t.Fatal("one or more agents is nil")
 	}
 
@@ -205,9 +203,7 @@ func TestCreateTeamAgents(t *testing.T) {
 	if engineer.ID.Role != "engineer" {
 		t.Errorf("expected engineer role, got %s", engineer.ID.Role)
 	}
-	if reviewer.ID.Role != "reviewer" {
-		t.Errorf("expected reviewer role, got %s", reviewer.ID.Role)
-	}
+
 
 	// All agents should have team number 1
 	if architect.ID.TeamNum != 1 {
@@ -223,7 +219,7 @@ func TestCreateTeamAgentsWithIssue(t *testing.T) {
 
 	// Create prompt templates
 	promptDir := t.TempDir()
-	for _, name := range []string{"architect.md", "engineer.md", "reviewer.md"} {
+	for _, name := range []string{"architect.md", "engineer.md"} {
 		content := "# " + name
 		os.WriteFile(filepath.Join(promptDir, name), []byte(content), 0644)
 	}
@@ -236,7 +232,7 @@ func TestCreateTeamAgentsWithIssue(t *testing.T) {
 		t.Fatalf("Create issue failed: %v", err)
 	}
 
-	architect, _, _, err := orc.CreateTeamAgents(1, iss.ID)
+	architect, engineer, err := orc.CreateTeamAgents(1, iss.ID)
 	if err != nil {
 		t.Fatalf("CreateTeamAgents failed: %v", err)
 	}
@@ -264,7 +260,7 @@ func newMockTeamFactory(t *testing.T) *mockTeamFactory {
 	return &mockTeamFactory{tmpDir: t.TempDir()}
 }
 
-func (f *mockTeamFactory) CreateTeamAgents(teamNum int, issueID string) (architect, engineer, reviewer *agent.Agent, err error) {
+func (f *mockTeamFactory) CreateTeamAgents(teamNum int, issueID string) (architect, engineer *agent.Agent, err error) {
 	makeAgent := func(role agent.Role) *agent.Agent {
 		id := agent.AgentID{Role: role, TeamNum: teamNum}
 		logPath := filepath.Join(f.tmpDir, fmt.Sprintf("chatlog-%s-%d.txt", role, teamNum))
@@ -283,7 +279,6 @@ func (f *mockTeamFactory) CreateTeamAgents(teamNum int, issueID string) (archite
 	}
 	return makeAgent(agent.RoleArchitect),
 		makeAgent(agent.RoleEngineer),
-		makeAgent(agent.RoleReviewer),
 		nil
 }
 
@@ -366,7 +361,7 @@ func TestCreateTeamAgentsMissingPrompt(t *testing.T) {
 
 	orc := New(cfg, dir, promptDir)
 
-	_, _, _, err := orc.CreateTeamAgents(1, "test-issue")
+	_, _, err := orc.CreateTeamAgents(1, "test-issue")
 	if err == nil {
 		t.Fatal("expected error for missing prompt templates")
 	}

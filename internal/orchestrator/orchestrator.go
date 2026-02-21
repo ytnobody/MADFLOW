@@ -160,7 +160,6 @@ func (o *Orchestrator) startResidentAgents(ctx context.Context, wg *sync.WaitGro
 	}{
 		{agent.RoleSuperintendent, o.cfg.Agent.Models.Superintendent},
 		{agent.RolePM, o.cfg.Agent.Models.PM},
-		{agent.RoleReleaseManager, o.cfg.Agent.Models.ReleaseManager},
 	}
 
 	for _, r := range residents {
@@ -473,7 +472,7 @@ func (o *Orchestrator) runGitHubSync(ctx context.Context) {
 }
 
 // CreateTeamAgents implements team.TeamFactory.
-func (o *Orchestrator) CreateTeamAgents(teamNum int, issueID string) (architect, engineer, reviewer *agent.Agent, err error) {
+func (o *Orchestrator) CreateTeamAgents(teamNum int, issueID string) (architect, engineer *agent.Agent, err error) {
 	resetInterval := time.Duration(o.cfg.Agent.ContextResetMinutes) * time.Minute
 	teamNumStr := fmt.Sprintf("%d", teamNum)
 
@@ -493,10 +492,9 @@ func (o *Orchestrator) CreateTeamAgents(teamNum int, issueID string) (architect,
 	}{
 		{agent.RoleArchitect, o.cfg.Agent.Models.Architect},
 		{agent.RoleEngineer, o.cfg.Agent.Models.Engineer},
-		{agent.RoleReviewer, o.cfg.Agent.Models.Reviewer},
 	}
 
-	agents := make([]*agent.Agent, 3)
+	agents := make([]*agent.Agent, 2)
 	for i, r := range roles {
 		vars := agent.PromptVars{
 			AgentID:       fmt.Sprintf("%s-%d", r.role, teamNum),
@@ -537,7 +535,7 @@ func (o *Orchestrator) CreateTeamAgents(teamNum int, issueID string) (architect,
 		})
 	}
 
-	return agents[0], agents[1], agents[2], nil
+	return agents[0], agents[1], nil
 }
 
 // Teams returns the team manager for external access.

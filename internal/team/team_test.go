@@ -28,7 +28,7 @@ func newMockFactory(t *testing.T) *mockFactory {
 	return &mockFactory{tmpDir: t.TempDir()}
 }
 
-func (m *mockFactory) CreateTeamAgents(teamNum int, issueID string) (architect, engineer, reviewer *agent.Agent, err error) {
+func (m *mockFactory) CreateTeamAgents(teamNum int, issueID string) (architect, engineer *agent.Agent, err error) {
 	if m.shouldFail {
 		return nil, nil, nil, fmt.Errorf("factory error")
 	}
@@ -54,7 +54,6 @@ func (m *mockFactory) CreateTeamAgents(teamNum int, issueID string) (architect, 
 
 	return makeAgent(agent.RoleArchitect),
 		makeAgent(agent.RoleEngineer),
-		makeAgent(agent.RoleReviewer),
 		nil
 }
 
@@ -97,7 +96,7 @@ func TestCreate(t *testing.T) {
 	if team.IssueID != "issue-001" {
 		t.Errorf("expected issue ID issue-001, got %s", team.IssueID)
 	}
-	if team.Architect == nil || team.Engineer == nil || team.Reviewer == nil {
+	if team.Architect == nil || team.Engineer == nil {
 		t.Error("expected all three agents to be non-nil")
 	}
 }
@@ -313,7 +312,7 @@ func TestCreateAnnouncesStart(t *testing.T) {
 
 	team := createAndCancel(t, m, "issue-announce")
 
-	for _, ag := range []*agent.Agent{team.Architect, team.Engineer, team.Reviewer} {
+	for _, ag := range []*agent.Agent{team.Architect, team.Engineer} {
 		msgs, err := ag.ChatLog.Poll("PM")
 		if err != nil {
 			t.Fatalf("Poll failed for %s: %v", ag.ID.String(), err)
