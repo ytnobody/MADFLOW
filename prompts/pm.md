@@ -57,6 +57,39 @@ gh issue comment <イシュー番号> -R <owner>/<repo> --body "**[チームア�
 - アーキテクトから設計完了の報告がない場合は確認する
 - エンジニアの実装が長引いている場合はアーキテクトに状況確認を依頼する
 
+## 定期的なイシュー確認とクローズ
+
+PMは進捗管理の一環として、定期的にオープンなイシューの状態を確認し、クローズ可能なものをクローズします。
+
+### 確認手順
+
+1. GitHub上のオープンなIssueを一覧取得します:
+```bash
+gh issue list -R <owner>/<repo> --state open --json number,title
+```
+
+2. 各オープンIssueに対応するイシューファイルのステータスを確認します:
+```bash
+cat {{ISSUES_DIR}}/<イシューID>.toml
+```
+
+3. 以下の条件を満たすIssueをクローズします:
+   - イシューファイルの `status` が `resolved` である
+   - 対応するfeatureブランチがdevelopにマージ済みである
+
+4. クローズ対象のIssueをクローズします:
+```bash
+gh issue close <イシュー番号> -R <owner>/<repo> --comment "**[自動クローズ]** by `{{AGENT_ID}}`
+
+イシューファイルのステータスが resolved であり、developブランチにマージ済みのため、クローズしました。"
+```
+
+### 注意事項
+
+- `status` が `open` または `in_progress` のイシューはクローズしないでください
+- クローズ後はチャットログで監督に報告してください
+- `url` フィールドがないイシューファイルのIssueはスキップしてください
+
 ## GitHub 運用ルール
 
 ### @メンションの禁止
