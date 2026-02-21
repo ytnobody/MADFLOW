@@ -83,6 +83,68 @@ func TestPollFileNotExist(t *testing.T) {
 	}
 }
 
+func TestAppend(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "chatlog.txt")
+
+	cl := New(path)
+
+	// Append to a new file
+	if err := cl.Append("PM", "orchestrator", "Hello PM"); err != nil {
+		t.Fatal(err)
+	}
+	if err := cl.Append("superintendent", "orchestrator", "Hello super"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify messages are readable
+	msgs, err := cl.Poll("PM")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message for PM, got %d", len(msgs))
+	}
+	if msgs[0].Body != "Hello PM" {
+		t.Errorf("expected body 'Hello PM', got %s", msgs[0].Body)
+	}
+	if msgs[0].Sender != "orchestrator" {
+		t.Errorf("expected sender 'orchestrator', got %s", msgs[0].Sender)
+	}
+
+	// All messages
+	all, err := cl.Poll("superintendent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 1 {
+		t.Fatalf("expected 1 message for superintendent, got %d", len(all))
+	}
+}
+
+func TestAppendToExistingFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "chatlog.txt")
+
+	// Pre-populate
+	if err := os.WriteFile(path, []byte("[2026-02-21T10:00:00] [@PM] 監督: existing\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cl := New(path)
+	if err := cl.Append("PM", "orchestrator", "new message"); err != nil {
+		t.Fatal(err)
+	}
+
+	msgs, err := cl.Poll("PM")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 2 {
+		t.Fatalf("expected 2 messages for PM, got %d", len(msgs))
+	}
+}
+
 func TestWatch(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "chatlog.txt")

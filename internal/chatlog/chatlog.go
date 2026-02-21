@@ -62,6 +62,21 @@ func FormatMessage(recipient, sender, body string) string {
 	return fmt.Sprintf("[%s] [@%s] %s: %s", ts, recipient, sender, body)
 }
 
+// Append writes a new formatted message to the chatlog file.
+func (c *ChatLog) Append(recipient, sender, body string) error {
+	f, err := os.OpenFile(c.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return fmt.Errorf("open chatlog for append: %w", err)
+	}
+	defer f.Close()
+
+	line := FormatMessage(recipient, sender, body)
+	if _, err := fmt.Fprintln(f, line); err != nil {
+		return fmt.Errorf("write chatlog: %w", err)
+	}
+	return nil
+}
+
 // Poll reads all messages from the log file and filters by recipient.
 func (c *ChatLog) Poll(recipient string) ([]Message, error) {
 	f, err := os.Open(c.path)
