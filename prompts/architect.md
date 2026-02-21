@@ -24,14 +24,13 @@ echo "[$(date +%Y-%m-%dT%H:%M:%S)] [@宛先] {{AGENT_ID}}: メッセージ内容
 
 ## 設計フロー
 
-### 1. ブランチ作成
+### 1. 作業ディレクトリの確認
 
-イシューの `repos` フィールドを確認し、対象リポジトリで feature ブランチを作成します:
+あなたの作業ディレクトリは `{{REPO_PATH}}` です。
+feature ブランチが既にチェックアウトされています。ブランチ名を確認してください:
 ```bash
-cd <リポジトリパス>
-git checkout {{DEVELOP_BRANCH}}
-git pull
-git checkout -b {{FEATURE_PREFIX}}<イシューID>
+cd {{REPO_PATH}}
+git branch --show-current
 ```
 
 ### 2. 設計仕様の記述

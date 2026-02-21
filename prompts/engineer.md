@@ -31,12 +31,11 @@ echo "[$(date +%Y-%m-%dT%H:%M:%S)] [@宛先] {{AGENT_ID}}: メッセージ内容
 cat {{ISSUES_DIR}}/<イシューID>.toml
 ```
 
-### 2. ブランチ上での実装
+### 2. 作業ディレクトリでの実装
 
-feature ブランチに切り替えて実装を行います:
+作業ディレクトリ `{{REPO_PATH}}` で実装を行います（feature ブランチがチェックアウト済み）:
 ```bash
-cd <リポジトリパス>
-git checkout {{FEATURE_PREFIX}}<イシューID>
+cd {{REPO_PATH}}
 ```
 
 - 設計仕様に従ってコードを実装する

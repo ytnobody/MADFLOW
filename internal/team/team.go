@@ -17,6 +17,7 @@ import (
 type Team struct {
 	ID        int
 	IssueID   string
+	WorkDir   string
 	Architect *agent.Agent
 	Engineer  *agent.Agent
 	Reviewer  *agent.Agent
@@ -33,6 +34,7 @@ type teamState struct {
 type teamEntry struct {
 	ID      int    `toml:"id"`
 	IssueID string `toml:"issue_id"`
+	WorkDir string `toml:"work_dir,omitempty"`
 }
 
 // IssueChecker checks whether an issue has been finished.
@@ -52,7 +54,14 @@ type Manager struct {
 
 // TeamFactory creates agents for a team. Provided by the orchestrator.
 type TeamFactory interface {
-	CreateTeamAgents(teamNum int, issueID string) (architect, engineer, reviewer *agent.Agent, err error)
+	CreateTeamAgents(teamNum int, issueID string, workDir string) (architect, engineer, reviewer *agent.Agent, err error)
+}
+
+// WorktreeProvider optionally provides worktree lifecycle management.
+// If the factory also implements this interface, worktrees are managed automatically.
+type WorktreeProvider interface {
+	PrepareWorktree(teamNum int, issueID string) (workDir string, err error)
+	CleanupWorktree(workDir string) error
 }
 
 func NewManager(factory TeamFactory) *Manager {
@@ -85,6 +94,7 @@ func (m *Manager) save() {
 		state.Teams = append(state.Teams, teamEntry{
 			ID:      t.ID,
 			IssueID: t.IssueID,
+			WorkDir: t.WorkDir,
 		})
 	}
 
@@ -148,7 +158,7 @@ func (m *Manager) Restore(ctx context.Context, checker IssueChecker) error {
 			continue
 		}
 
-		architect, engineer, reviewer, err := m.factory.CreateTeamAgents(entry.ID, entry.IssueID)
+		architect, engineer, reviewer, err := m.factory.CreateTeamAgents(entry.ID, entry.IssueID, entry.WorkDir)
 		if err != nil {
 			log.Printf("[team] restore: create agents for team %d failed: %v", entry.ID, err)
 			continue
@@ -158,6 +168,7 @@ func (m *Manager) Restore(ctx context.Context, checker IssueChecker) error {
 		t := &Team{
 			ID:        entry.ID,
 			IssueID:   entry.IssueID,
+			WorkDir:   entry.WorkDir,
 			Architect: architect,
 			Engineer:  engineer,
 			Reviewer:  reviewer,
@@ -208,7 +219,16 @@ func (m *Manager) Create(ctx context.Context, issueID string) (*Team, error) {
 	m.nextID++
 	m.mu.Unlock()
 
-	architect, engineer, reviewer, err := m.factory.CreateTeamAgents(teamNum, issueID)
+	var workDir string
+	if wp, ok := m.factory.(WorktreeProvider); ok {
+		wd, err := wp.PrepareWorktree(teamNum, issueID)
+		if err != nil {
+			return nil, fmt.Errorf("prepare worktree: %w", err)
+		}
+		workDir = wd
+	}
+
+	architect, engineer, reviewer, err := m.factory.CreateTeamAgents(teamNum, issueID, workDir)
 	if err != nil {
 		return nil, fmt.Errorf("create team agents: %w", err)
 	}
@@ -218,6 +238,7 @@ func (m *Manager) Create(ctx context.Context, issueID string) (*Team, error) {
 	team := &Team{
 		ID:        teamNum,
 		IssueID:   issueID,
+		WorkDir:   workDir,
 		Architect: architect,
 		Engineer:  engineer,
 		Reviewer:  reviewer,
@@ -251,6 +272,15 @@ func (m *Manager) Disband(teamNum int) error {
 	m.mu.Unlock()
 
 	team.cancel()
+
+	if team.WorkDir != "" {
+		if wp, ok := m.factory.(WorktreeProvider); ok {
+			if err := wp.CleanupWorktree(team.WorkDir); err != nil {
+				log.Printf("[team-%d] cleanup worktree failed: %v", teamNum, err)
+			}
+		}
+	}
+
 	log.Printf("[team-%d] disbanded (issue %s)", teamNum, team.IssueID)
 	return nil
 }

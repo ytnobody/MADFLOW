@@ -26,10 +26,9 @@ echo "[$(date +%Y-%m-%dT%H:%M:%S)] [@宛先] {{AGENT_ID}}: メッセージ内容
 
 ### 1. 変更内容の確認
 
-エンジニアからレビュー依頼を受けたら、差分を確認します:
+作業ディレクトリ `{{REPO_PATH}}` で差分を確認します:
 ```bash
-cd <リポジトリパス>
-git checkout {{FEATURE_PREFIX}}<イシューID>
+cd {{REPO_PATH}}
 git diff {{DEVELOP_BRANCH}}...HEAD
 ```
 

@@ -184,7 +184,7 @@ func TestCreateTeamAgents(t *testing.T) {
 
 	orc := New(cfg, dir, promptDir)
 
-	architect, engineer, reviewer, err := orc.CreateTeamAgents(1, "test-issue-001")
+	architect, engineer, reviewer, err := orc.CreateTeamAgents(1, "test-issue-001", "")
 	if err != nil {
 		t.Fatalf("CreateTeamAgents failed: %v", err)
 	}
@@ -230,7 +230,7 @@ func TestCreateTeamAgentsWithIssue(t *testing.T) {
 		t.Fatalf("Create issue failed: %v", err)
 	}
 
-	architect, _, _, err := orc.CreateTeamAgents(1, iss.ID)
+	architect, _, _, err := orc.CreateTeamAgents(1, iss.ID, "")
 	if err != nil {
 		t.Fatalf("CreateTeamAgents failed: %v", err)
 	}
@@ -252,7 +252,7 @@ func TestCreateTeamAgentsMissingPrompt(t *testing.T) {
 
 	orc := New(cfg, dir, promptDir)
 
-	_, _, _, err := orc.CreateTeamAgents(1, "test-issue")
+	_, _, _, err := orc.CreateTeamAgents(1, "test-issue", "")
 	if err == nil {
 		t.Fatal("expected error for missing prompt templates")
 	}

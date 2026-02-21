@@ -11,10 +11,23 @@ import (
 	"github.com/ytnobody/madflow/internal/orchestrator"
 )
 
+// initGitRepoWithDevelop initializes a git repo and creates a develop branch.
+func initGitRepoWithDevelop(t *testing.T, dir string) {
+	t.Helper()
+	initGitRepo(t, dir)
+	run(t, dir, "git", "checkout", "-b", "develop")
+}
+
 // TestIssueToTeamCreateFlow tests the flow from issue creation
 // to team creation via orchestrator command handling.
 func TestIssueToTeamCreateFlow(t *testing.T) {
 	dir := t.TempDir()
+
+	// Set up a git repo so worktree operations succeed
+	repoDir := filepath.Join(dir, "repo")
+	os.MkdirAll(repoDir, 0755)
+	initGitRepoWithDevelop(t, repoDir)
+
 	issuesDir := filepath.Join(dir, "issues")
 	memosDir := filepath.Join(dir, "memos")
 	logPath := filepath.Join(dir, "chatlog.txt")
@@ -32,7 +45,7 @@ func TestIssueToTeamCreateFlow(t *testing.T) {
 		Project: config.ProjectConfig{
 			Name: "test",
 			Repos: []config.RepoConfig{
-				{Name: "main", Path: dir},
+				{Name: "main", Path: repoDir},
 			},
 		},
 		Agent: config.AgentConfig{
@@ -169,6 +182,12 @@ func TestIssueLifecycle(t *testing.T) {
 // TestMultipleIssuesAndTeams tests managing multiple issues with separate teams.
 func TestMultipleIssuesAndTeams(t *testing.T) {
 	dir := t.TempDir()
+
+	// Set up a git repo so worktree operations succeed
+	repoDir := filepath.Join(dir, "repo")
+	os.MkdirAll(repoDir, 0755)
+	initGitRepoWithDevelop(t, repoDir)
+
 	issuesDir := filepath.Join(dir, "issues")
 	memosDir := filepath.Join(dir, "memos")
 	logPath := filepath.Join(dir, "chatlog.txt")
@@ -184,7 +203,7 @@ func TestMultipleIssuesAndTeams(t *testing.T) {
 	cfg := &config.Config{
 		Project: config.ProjectConfig{
 			Name:  "test",
-			Repos: []config.RepoConfig{{Name: "main", Path: dir}},
+			Repos: []config.RepoConfig{{Name: "main", Path: repoDir}},
 		},
 		Agent: config.AgentConfig{
 			ContextResetMinutes: 60,

@@ -331,8 +331,47 @@ func (o *Orchestrator) runGitHubSync(ctx context.Context) {
 	}
 }
 
+// PrepareWorktree implements team.WorktreeProvider.
+func (o *Orchestrator) PrepareWorktree(teamNum int, issueID string) (string, error) {
+	repo := o.firstRepo()
+	if repo == nil {
+		return "", fmt.Errorf("no repository configured")
+	}
+
+	wtPath := filepath.Join(o.dataDir, "worktrees", fmt.Sprintf("team-%d", teamNum))
+
+	// If directory already exists (crash recovery), reuse it
+	if info, err := os.Stat(wtPath); err == nil && info.IsDir() {
+		log.Printf("[orchestrator] reusing existing worktree at %s", wtPath)
+		return wtPath, nil
+	}
+
+	branch := o.cfg.Branches.FeaturePrefix + issueID
+	base := o.cfg.Branches.Develop
+
+	if err := repo.AddWorktree(wtPath, branch, base); err != nil {
+		return "", fmt.Errorf("add worktree: %w", err)
+	}
+
+	log.Printf("[orchestrator] created worktree at %s (branch %s)", wtPath, branch)
+	return wtPath, nil
+}
+
+// CleanupWorktree implements team.WorktreeProvider.
+func (o *Orchestrator) CleanupWorktree(workDir string) error {
+	repo := o.firstRepo()
+	if repo != nil {
+		if err := repo.RemoveWorktree(workDir); err != nil {
+			log.Printf("[orchestrator] git worktree remove failed, falling back to os.RemoveAll: %v", err)
+			return os.RemoveAll(workDir)
+		}
+		return nil
+	}
+	return os.RemoveAll(workDir)
+}
+
 // CreateTeamAgents implements team.TeamFactory.
-func (o *Orchestrator) CreateTeamAgents(teamNum int, issueID string) (architect, engineer, reviewer *agent.Agent, err error) {
+func (o *Orchestrator) CreateTeamAgents(teamNum int, issueID string, workDir string) (architect, engineer, reviewer *agent.Agent, err error) {
 	resetInterval := time.Duration(o.cfg.Agent.ContextResetMinutes) * time.Minute
 	teamNumStr := fmt.Sprintf("%d", teamNum)
 
@@ -355,6 +394,12 @@ func (o *Orchestrator) CreateTeamAgents(teamNum int, issueID string) (architect,
 		{agent.RoleReviewer, o.cfg.Agent.Models.Reviewer},
 	}
 
+	// Determine the effective working directory
+	effectiveWorkDir := workDir
+	if effectiveWorkDir == "" {
+		effectiveWorkDir = o.firstRepoPath()
+	}
+
 	agents := make([]*agent.Agent, 3)
 	for i, r := range roles {
 		vars := agent.PromptVars{
@@ -365,6 +410,7 @@ func (o *Orchestrator) CreateTeamAgents(teamNum int, issueID string) (architect,
 			MainBranch:    o.cfg.Branches.Main,
 			FeaturePrefix: o.cfg.Branches.FeaturePrefix,
 			TeamNum:       teamNumStr,
+			RepoPath:      effectiveWorkDir,
 		}
 
 		systemPrompt, err := agent.LoadPrompt(o.promptDir, r.role, vars)
@@ -377,7 +423,7 @@ func (o *Orchestrator) CreateTeamAgents(teamNum int, issueID string) (architect,
 			Role:          r.role,
 			SystemPrompt:  systemPrompt,
 			Model:         r.model,
-			WorkDir:       o.firstRepoPath(),
+			WorkDir:       effectiveWorkDir,
 			ChatLogPath:   o.chatLog.Path(),
 			MemosDir:      filepath.Join(o.dataDir, "memos"),
 			ResetInterval: resetInterval,
@@ -423,4 +469,12 @@ func (o *Orchestrator) firstRepoPath() string {
 		return o.cfg.Project.Repos[0].Path
 	}
 	return "."
+}
+
+func (o *Orchestrator) firstRepo() *git.Repo {
+	if len(o.cfg.Project.Repos) > 0 {
+		name := o.cfg.Project.Repos[0].Name
+		return o.repos[name]
+	}
+	return nil
 }

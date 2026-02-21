@@ -250,6 +250,102 @@ func TestMerge(t *testing.T) {
 	}
 }
 
+func TestAddWorktree(t *testing.T) {
+	repo := initTestRepo(t)
+
+	baseBranch, err := repo.CurrentBranch()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wtPath := filepath.Join(t.TempDir(), "wt1")
+	err = repo.AddWorktree(wtPath, "feature-wt", baseBranch)
+	if err != nil {
+		t.Fatalf("AddWorktree failed: %v", err)
+	}
+
+	// Verify the worktree directory exists
+	if _, err := os.Stat(wtPath); os.IsNotExist(err) {
+		t.Error("expected worktree directory to exist")
+	}
+
+	// Verify the branch in the worktree
+	wtRepo := NewRepo(wtPath)
+	branch, err := wtRepo.CurrentBranch()
+	if err != nil {
+		t.Fatalf("get worktree branch: %v", err)
+	}
+	if branch != "feature-wt" {
+		t.Errorf("expected branch feature-wt, got %s", branch)
+	}
+}
+
+func TestAddWorktreeExistingBranch(t *testing.T) {
+	repo := initTestRepo(t)
+
+	baseBranch, err := repo.CurrentBranch()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a branch first
+	err = repo.CreateBranch("existing-branch", baseBranch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Switch back to base so the branch is not checked out
+	err = repo.Checkout(baseBranch)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wtPath := filepath.Join(t.TempDir(), "wt2")
+	err = repo.AddWorktree(wtPath, "existing-branch", baseBranch)
+	if err != nil {
+		t.Fatalf("AddWorktree with existing branch failed: %v", err)
+	}
+
+	// Verify the worktree is on the existing branch
+	wtRepo := NewRepo(wtPath)
+	branch, err := wtRepo.CurrentBranch()
+	if err != nil {
+		t.Fatalf("get worktree branch: %v", err)
+	}
+	if branch != "existing-branch" {
+		t.Errorf("expected branch existing-branch, got %s", branch)
+	}
+}
+
+func TestRemoveWorktree(t *testing.T) {
+	repo := initTestRepo(t)
+
+	baseBranch, err := repo.CurrentBranch()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wtPath := filepath.Join(t.TempDir(), "wt-remove")
+	err = repo.AddWorktree(wtPath, "feature-remove", baseBranch)
+	if err != nil {
+		t.Fatalf("AddWorktree failed: %v", err)
+	}
+
+	// Verify directory exists
+	if _, err := os.Stat(wtPath); os.IsNotExist(err) {
+		t.Fatal("expected worktree directory to exist before remove")
+	}
+
+	err = repo.RemoveWorktree(wtPath)
+	if err != nil {
+		t.Fatalf("RemoveWorktree failed: %v", err)
+	}
+
+	// Verify directory is removed
+	if _, err := os.Stat(wtPath); !os.IsNotExist(err) {
+		t.Error("expected worktree directory to be removed")
+	}
+}
+
 func TestMergeConflict(t *testing.T) {
 	repo := initTestRepo(t)
 

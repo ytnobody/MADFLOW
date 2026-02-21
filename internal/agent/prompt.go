@@ -16,6 +16,7 @@ type PromptVars struct {
 	MainBranch    string
 	FeaturePrefix string
 	TeamNum       string
+	RepoPath      string // 作業ディレクトリ（worktree パスまたはリポジトリパス）
 }
 
 // promptFileNames maps roles to their prompt template filenames.
@@ -55,6 +56,7 @@ func substituteVars(content string, vars PromptVars) string {
 		"{{MAIN_BRANCH}}":    vars.MainBranch,
 		"{{FEATURE_PREFIX}}": vars.FeaturePrefix,
 		"{{TEAM_NUM}}":       vars.TeamNum,
+		"{{REPO_PATH}}":      vars.RepoPath,
 	}
 
 	for placeholder, value := range replacements {

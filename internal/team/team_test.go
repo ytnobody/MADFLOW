@@ -28,7 +28,7 @@ func newMockFactory(t *testing.T) *mockFactory {
 	return &mockFactory{tmpDir: t.TempDir()}
 }
 
-func (m *mockFactory) CreateTeamAgents(teamNum int, issueID string) (architect, engineer, reviewer *agent.Agent, err error) {
+func (m *mockFactory) CreateTeamAgents(teamNum int, issueID string, workDir string) (architect, engineer, reviewer *agent.Agent, err error) {
 	if m.shouldFail {
 		return nil, nil, nil, fmt.Errorf("factory error")
 	}
@@ -439,6 +439,123 @@ func TestRestoreNoFile(t *testing.T) {
 
 	if m.Count() != 0 {
 		t.Errorf("expected 0 teams, got %d", m.Count())
+	}
+}
+
+// --- Worktree tests ---
+
+// mockWorktreeFactory implements both TeamFactory and WorktreeProvider.
+type mockWorktreeFactory struct {
+	mockFactory
+	preparedDirs   []string
+	cleanedDirs    []string
+	prepareFail    bool
+}
+
+func newMockWorktreeFactory(t *testing.T) *mockWorktreeFactory {
+	t.Helper()
+	return &mockWorktreeFactory{
+		mockFactory: mockFactory{tmpDir: t.TempDir()},
+	}
+}
+
+func (m *mockWorktreeFactory) PrepareWorktree(teamNum int, issueID string) (string, error) {
+	if m.prepareFail {
+		return "", fmt.Errorf("prepare worktree failed")
+	}
+	dir := filepath.Join(m.tmpDir, fmt.Sprintf("worktrees/team-%d", teamNum))
+	os.MkdirAll(dir, 0755)
+	m.preparedDirs = append(m.preparedDirs, dir)
+	return dir, nil
+}
+
+func (m *mockWorktreeFactory) CleanupWorktree(workDir string) error {
+	m.cleanedDirs = append(m.cleanedDirs, workDir)
+	return nil
+}
+
+func TestCreateWithWorktree(t *testing.T) {
+	factory := newMockWorktreeFactory(t)
+	m := NewManager(factory)
+
+	team := createAndCancel(t, m, "issue-wt-001")
+
+	if team.WorkDir == "" {
+		t.Error("expected WorkDir to be set")
+	}
+	if len(factory.preparedDirs) != 1 {
+		t.Errorf("expected 1 prepared dir, got %d", len(factory.preparedDirs))
+	}
+	if team.WorkDir != factory.preparedDirs[0] {
+		t.Errorf("expected WorkDir %s, got %s", factory.preparedDirs[0], team.WorkDir)
+	}
+}
+
+func TestDisbandCleansWorktree(t *testing.T) {
+	factory := newMockWorktreeFactory(t)
+	m := NewManager(factory)
+
+	team := createAndCancel(t, m, "issue-wt-002")
+
+	if err := m.Disband(team.ID); err != nil {
+		t.Fatalf("Disband failed: %v", err)
+	}
+
+	if len(factory.cleanedDirs) != 1 {
+		t.Fatalf("expected 1 cleaned dir, got %d", len(factory.cleanedDirs))
+	}
+	if factory.cleanedDirs[0] != team.WorkDir {
+		t.Errorf("expected cleaned dir %s, got %s", team.WorkDir, factory.cleanedDirs[0])
+	}
+}
+
+func TestRestoreReusesWorktree(t *testing.T) {
+	dir := t.TempDir()
+	stateFile := filepath.Join(dir, "teams.toml")
+
+	expectedWorkDir := "/path/to/data/worktrees/team-3"
+
+	// Write a state file with work_dir
+	state := teamState{
+		NextID: 4,
+		Teams: []teamEntry{
+			{ID: 3, IssueID: "issue-wt-A", WorkDir: expectedWorkDir},
+		},
+	}
+	f, err := os.Create(stateFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	toml.NewEncoder(f).Encode(state)
+	f.Close()
+
+	factory := newMockWorktreeFactory(t)
+	m := NewManagerWithState(factory, stateFile)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	checker := &mockIssueChecker{finished: map[string]bool{}}
+	if err := m.Restore(ctx, checker); err != nil {
+		t.Fatalf("Restore failed: %v", err)
+	}
+
+	if m.Count() != 1 {
+		t.Fatalf("expected 1 team, got %d", m.Count())
+	}
+
+	// PrepareWorktree should NOT have been called (restore reuses existing dir)
+	if len(factory.preparedDirs) != 0 {
+		t.Errorf("expected 0 prepared dirs on restore, got %d", len(factory.preparedDirs))
+	}
+
+	// Verify the WorkDir was restored
+	m.mu.Lock()
+	team := m.teams[3]
+	m.mu.Unlock()
+
+	if team.WorkDir != expectedWorkDir {
+		t.Errorf("expected WorkDir %s, got %s", expectedWorkDir, team.WorkDir)
 	}
 }
 

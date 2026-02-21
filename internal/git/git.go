@@ -89,6 +89,29 @@ func (r *Repo) Pull() error {
 	return err
 }
 
+// AddWorktree creates a worktree at wtPath with a new branch from base.
+// If the branch already exists, attaches it instead.
+func (r *Repo) AddWorktree(wtPath, branch, base string) error {
+	_, err := r.run("worktree", "add", wtPath, "-b", branch, base)
+	if err != nil {
+		// Branch may already exist; try without -b
+		_, err2 := r.run("worktree", "add", wtPath, branch)
+		if err2 != nil {
+			return fmt.Errorf("add worktree %s: %w", wtPath, err2)
+		}
+	}
+	return nil
+}
+
+// RemoveWorktree removes the worktree at wtPath (--force).
+func (r *Repo) RemoveWorktree(wtPath string) error {
+	_, err := r.run("worktree", "remove", "--force", wtPath)
+	if err != nil {
+		return fmt.Errorf("remove worktree %s: %w", wtPath, err)
+	}
+	return nil
+}
+
 func (r *Repo) run(args ...string) (string, error) {
 	cmd := exec.Command("git", args...)
 	cmd.Dir = r.path
