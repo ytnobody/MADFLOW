@@ -418,3 +418,187 @@ func TestParseGHResponseWithStatus_InvalidHTTPStartsWithH(t *testing.T) {
 		t.Errorf("expected empty body (headers-only response), got %q", body)
 	}
 }
+
+// --- Idle mode tests ---
+
+// TestEventWatcherHasOpenIssues verifies that hasOpenIssues correctly queries the store.
+func TestEventWatcherHasOpenIssues(t *testing.T) {
+	dir := t.TempDir()
+	store := issue.NewStore(dir)
+	w := NewEventWatcher(store, "owner", []string{"repo"}, time.Minute, nil)
+
+	// No issues → false
+	if w.hasOpenIssues() {
+		t.Error("expected no open issues in empty store")
+	}
+
+	// Add an open issue → true
+	openIss := &issue.Issue{ID: "test-001", Status: issue.StatusOpen}
+	store.Update(openIss)
+	if !w.hasOpenIssues() {
+		t.Error("expected open issues after adding open issue")
+	}
+
+	// Add an in-progress issue alongside → still true
+	inProgressIss := &issue.Issue{ID: "test-002", Status: issue.StatusInProgress}
+	store.Update(inProgressIss)
+	if !w.hasOpenIssues() {
+		t.Error("expected open issues with in-progress issue present")
+	}
+
+	// Close the open issue → still true because in-progress remains
+	openIss.Status = issue.StatusClosed
+	store.Update(openIss)
+	if !w.hasOpenIssues() {
+		t.Error("expected open issues because in-progress issue remains")
+	}
+
+	// Resolve the in-progress issue → false
+	inProgressIss.Status = issue.StatusResolved
+	store.Update(inProgressIss)
+	if w.hasOpenIssues() {
+		t.Error("expected no open issues after all issues resolved/closed")
+	}
+}
+
+// TestEventWatcherWithIdleThreshold verifies that WithIdleThreshold sets the field.
+func TestEventWatcherWithIdleThreshold(t *testing.T) {
+	dir := t.TempDir()
+	store := issue.NewStore(dir)
+	w := NewEventWatcher(store, "owner", []string{"repo"}, time.Minute, nil)
+
+	w.WithIdleThreshold(5 * time.Minute)
+	if w.idleThreshold != 5*time.Minute {
+		t.Errorf("expected idleThreshold 5m, got %v", w.idleThreshold)
+	}
+}
+
+// TestEventWatcherSignalActive verifies that signalActive sends to activateCh
+// and that duplicate signals do not block.
+func TestEventWatcherSignalActive(t *testing.T) {
+	dir := t.TempDir()
+	store := issue.NewStore(dir)
+	w := NewEventWatcher(store, "owner", []string{"repo"}, time.Minute, nil)
+
+	// Initially the channel is empty
+	select {
+	case <-w.activateCh:
+		t.Fatal("expected activateCh to be empty initially")
+	default:
+	}
+
+	// First signal should succeed
+	w.signalActive()
+	select {
+	case <-w.activateCh:
+		// OK
+	default:
+		t.Fatal("expected activateCh to have a value after signalActive()")
+	}
+
+	// Multiple signals should not block (buffered channel capacity = 1)
+	w.signalActive()
+	w.signalActive()
+	// Channel should have at most one value
+	count := 0
+	for {
+		select {
+		case <-w.activateCh:
+			count++
+		default:
+			goto done
+		}
+	}
+done:
+	if count != 1 {
+		t.Errorf("expected 1 buffered signal, got %d", count)
+	}
+}
+
+// TestEventWatcherSignalActiveOnIssueEvent verifies that processing an IssuesEvent
+// sends a signal to activateCh.
+func TestEventWatcherSignalActiveOnIssueEvent(t *testing.T) {
+	dir := t.TempDir()
+	store := issue.NewStore(dir)
+	w := NewEventWatcher(store, "owner", []string{"repo"}, time.Minute, nil)
+
+	payload := ghEventPayloadIssue{
+		Action: "opened",
+		Issue:  ghIssue{Number: 1, Title: "Test", Body: "Body"},
+	}
+	payloadBytes, _ := json.Marshal(payload)
+	ev := ghEvent{ID: "evt-active-1", Type: "IssuesEvent", Payload: payloadBytes}
+
+	w.processEvent("repo", ev)
+
+	select {
+	case <-w.activateCh:
+		// OK - signal was sent
+	default:
+		t.Error("expected activateCh to receive signal after IssuesEvent")
+	}
+}
+
+// TestEventWatcherSignalActiveOnCommentEvent verifies that processing an IssueCommentEvent
+// sends a signal to activateCh.
+func TestEventWatcherSignalActiveOnCommentEvent(t *testing.T) {
+	dir := t.TempDir()
+	store := issue.NewStore(dir)
+
+	// Pre-create the issue so the comment event can be processed
+	iss := &issue.Issue{ID: "owner-repo-001", Title: "Test", Status: issue.StatusOpen}
+	store.Update(iss)
+
+	w := NewEventWatcher(store, "owner", []string{"repo"}, time.Minute, nil)
+
+	payload := ghEventPayloadComment{
+		Action:  "created",
+		Issue:   ghIssue{Number: 1},
+		Comment: ghEventComment{ID: 99, Body: "Hello", CreatedAt: "2026-02-22T00:00:00Z", UpdatedAt: "2026-02-22T00:00:00Z"},
+	}
+	payload.Comment.User.Login = "bot"
+	payloadBytes, _ := json.Marshal(payload)
+	ev := ghEvent{ID: "evt-active-2", Type: "IssueCommentEvent", Payload: payloadBytes}
+
+	w.processEvent("repo", ev)
+
+	select {
+	case <-w.activateCh:
+		// OK - signal was sent
+	default:
+		t.Error("expected activateCh to receive signal after IssueCommentEvent")
+	}
+}
+
+// TestEventWatcherIdleModeEnabled verifies the idle mode flag calculation.
+func TestEventWatcherIdleModeEnabled(t *testing.T) {
+	dir := t.TempDir()
+	store := issue.NewStore(dir)
+
+	// idle mode disabled: idleInterval <= interval
+	w1 := NewEventWatcher(store, "owner", []string{"repo"}, 5*time.Minute, nil).
+		WithIdleDetector(NewIdleDetector(), 1*time.Minute). // idleInterval < interval
+		WithIdleThreshold(1 * time.Minute)
+	enabled1 := w1.idleInterval > w1.interval && w1.idleThreshold > 0
+	if enabled1 {
+		t.Error("idle mode should be disabled when idleInterval <= interval")
+	}
+
+	// idle mode disabled: threshold == 0
+	w2 := NewEventWatcher(store, "owner", []string{"repo"}, time.Minute, nil).
+		WithIdleDetector(NewIdleDetector(), 15*time.Minute)
+	// idleThreshold not set → 0
+	enabled2 := w2.idleInterval > w2.interval && w2.idleThreshold > 0
+	if enabled2 {
+		t.Error("idle mode should be disabled when idleThreshold == 0")
+	}
+
+	// idle mode enabled: idleInterval > interval and threshold > 0
+	w3 := NewEventWatcher(store, "owner", []string{"repo"}, time.Minute, nil).
+		WithIdleDetector(NewIdleDetector(), 15*time.Minute).
+		WithIdleThreshold(5 * time.Minute)
+	enabled3 := w3.idleInterval > w3.interval && w3.idleThreshold > 0
+	if !enabled3 {
+		t.Error("idle mode should be enabled when idleInterval > interval and threshold > 0")
+	}
+}

@@ -71,8 +71,16 @@ type EventWatcher struct {
 	interval time.Duration
 	callback EventCallback
 
-	idleDetector *IdleDetector // nil = no adaptive behavior
-	idleInterval time.Duration // effective only when idleDetector is set
+	// idleDetector is optional; when set, SetHasIssues(true) is called on new events.
+	idleDetector *IdleDetector
+	// idleInterval is the slow polling interval used during idle mode.
+	// Idle mode is active when idleInterval > interval and idleThreshold > 0.
+	idleInterval time.Duration
+	// idleThreshold is how long there must be no open issues before entering idle mode.
+	idleThreshold time.Duration
+	// activateCh receives a signal whenever a new issue or comment event is processed,
+	// allowing Run to immediately restore the active polling interval.
+	activateCh chan struct{}
 
 	mu         sync.Mutex
 	seenEvents map[string]struct{}
@@ -87,30 +95,58 @@ func NewEventWatcher(store *issue.Store, owner string, repos []string, interval 
 		interval:   interval,
 		callback:   cb,
 		seenEvents: make(map[string]struct{}),
+		activateCh: make(chan struct{}, 1),
 	}
 }
 
-// WithIdleDetector attaches an IdleDetector to the EventWatcher, enabling adaptive polling.
-// When the detector reports no active issues, the watcher uses idleInterval instead
-// of the normal interval. Returns the EventWatcher for method chaining.
+// WithIdleDetector attaches an IdleDetector to the EventWatcher.
+// When a new issue or comment event is processed, SetHasIssues(true) is called
+// on the detector. Returns the EventWatcher for method chaining.
 func (w *EventWatcher) WithIdleDetector(d *IdleDetector, idleInterval time.Duration) *EventWatcher {
 	w.idleDetector = d
 	w.idleInterval = idleInterval
 	return w
 }
 
-// currentInterval returns the interval to use for the next sleep, taking idle state into account.
-func (w *EventWatcher) currentInterval() time.Duration {
-	if w.idleDetector != nil {
-		return w.idleDetector.AdaptInterval(w.interval, w.idleInterval)
+// WithIdleThreshold sets how long there must be no open issues before idle mode is entered.
+// Returns the EventWatcher for method chaining.
+func (w *EventWatcher) WithIdleThreshold(threshold time.Duration) *EventWatcher {
+	w.idleThreshold = threshold
+	return w
+}
+
+// signalActive sends a non-blocking notification on activateCh, indicating that
+// an event was processed and the watcher should restore its active polling interval.
+func (w *EventWatcher) signalActive() {
+	if w.activateCh == nil {
+		return
 	}
-	return w.interval
+	select {
+	case w.activateCh <- struct{}{}:
+	default:
+	}
+}
+
+// hasOpenIssues reports whether the issue store contains any open or in-progress issues.
+func (w *EventWatcher) hasOpenIssues() bool {
+	issues, err := w.store.List(issue.StatusFilter{})
+	if err != nil {
+		return true // assume active on error
+	}
+	for _, iss := range issues {
+		if iss.Status == issue.StatusOpen || iss.Status == issue.StatusInProgress {
+			return true
+		}
+	}
+	return false
 }
 
 // Run starts the event polling loop. Blocks until ctx is cancelled.
-// If an IdleDetector is attached (via WithIdleDetector), the poll interval
-// automatically increases to idleInterval when no active issues are present,
-// and reverts to the normal interval when an issue event is detected.
+//
+// When idle mode is configured (idleInterval > interval and idleThreshold > 0),
+// the polling interval automatically increases to idleInterval after there have
+// been no open issues for idleThreshold. When a new event is detected, the
+// interval is immediately restored to the normal value.
 func (w *EventWatcher) Run(ctx context.Context) error {
 	log.Printf("[event-watcher] started (interval: %v, repos: %v)", w.interval, w.repos)
 
@@ -122,15 +158,63 @@ func (w *EventWatcher) Run(ctx context.Context) error {
 		etags[repo] = w.pollRepo(repo, etags[repo])
 	}
 
+	ticker := time.NewTicker(w.interval)
+	defer ticker.Stop()
+
+	idleModeEnabled := w.idleInterval > w.interval && w.idleThreshold > 0
+	currentInterval := w.interval
+	var noIssuesSince time.Time // zero means issues are (or were) present
+
 	for {
-		interval := w.currentInterval()
 		select {
 		case <-ctx.Done():
 			log.Println("[event-watcher] stopped")
 			return ctx.Err()
-		case <-time.After(interval):
+
+		case <-w.activateCh:
+			// A new event was processed: immediately restore the active interval.
+			if idleModeEnabled {
+				noIssuesSince = time.Time{}
+				if currentInterval != w.interval {
+					log.Printf("[event-watcher] event received: restoring active interval %v -> %v",
+						currentInterval, w.interval)
+					currentInterval = w.interval
+					ticker.Reset(currentInterval)
+				}
+			}
+
+		case <-ticker.C:
 			for _, repo := range w.repos {
 				etags[repo] = w.pollRepo(repo, etags[repo])
+			}
+
+			if !idleModeEnabled {
+				continue
+			}
+
+			// Update no-issues tracking.
+			if w.hasOpenIssues() {
+				noIssuesSince = time.Time{}
+			} else if noIssuesSince.IsZero() {
+				noIssuesSince = time.Now()
+			}
+
+			// Determine target interval.
+			target := w.interval
+			if !noIssuesSince.IsZero() && time.Since(noIssuesSince) >= w.idleThreshold {
+				target = w.idleInterval
+			}
+
+			if target != currentInterval {
+				if target == w.idleInterval {
+					log.Printf("[event-watcher] entering idle mode: interval %v -> %v",
+						currentInterval, target)
+				} else {
+					log.Printf("[event-watcher] leaving idle mode: interval %v -> %v",
+						currentInterval, target)
+				}
+				currentInterval = target
+				ticker.Reset(currentInterval)
 			}
 		}
 	}
@@ -371,10 +455,11 @@ func (w *EventWatcher) handleIssuesEvent(repo string, ev ghEvent) {
 		}
 	}
 
-	// Notify idle detector that there is an active issue
+	// Notify idle detector and signal that there is active work.
 	if w.idleDetector != nil {
 		w.idleDetector.SetHasIssues(true)
 	}
+	w.signalActive()
 
 	if w.callback != nil {
 		w.callback(EventTypeIssues, localID, nil)
@@ -419,6 +504,9 @@ func (w *EventWatcher) handleIssueCommentEvent(repo string, ev ghEvent) {
 		}
 		log.Printf("[event-watcher] comment #%d added to %s", comment.ID, localID)
 	}
+
+	// Signal that there is active work (new comment = someone is engaged).
+	w.signalActive()
 
 	if w.callback != nil {
 		w.callback(EventTypeIssueComment, localID, &comment)

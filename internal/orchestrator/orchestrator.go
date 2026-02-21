@@ -49,9 +49,6 @@ func New(cfg *config.Config, dataDir, promptDir string) *Orchestrator {
 	}
 
 	idleDetector := github.NewIdleDetector()
-	if cfg.GitHub != nil && cfg.GitHub.IdleThresholdMinutes > 0 {
-		idleDetector.SetIdleThreshold(time.Duration(cfg.GitHub.IdleThresholdMinutes) * time.Minute)
-	}
 
 	orc := &Orchestrator{
 		cfg:          cfg,
@@ -434,8 +431,12 @@ func (o *Orchestrator) runEventWatcher(ctx context.Context) {
 	}
 
 	idleInterval := time.Duration(gh.IdlePollMinutes) * time.Minute
+	idleThreshold := time.Duration(gh.IdleThresholdMinutes) * time.Minute
+
 	watcher := github.NewEventWatcher(o.store, gh.Owner, gh.Repos, interval, callback).
-		WithIdleDetector(o.idleDetector, idleInterval)
+		WithIdleDetector(o.idleDetector, idleInterval).
+		WithIdleThreshold(idleThreshold)
+
 	if err := watcher.Run(ctx); err != nil && ctx.Err() == nil {
 		log.Printf("[orchestrator] event watcher stopped: %v", err)
 	}
