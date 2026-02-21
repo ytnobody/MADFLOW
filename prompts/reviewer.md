@@ -88,11 +88,29 @@ gh issue comment <イシュー番号> -R <owner>/<repo> --body "**[レビュー�
 
 `url` フィールドがない場合はコメント投稿をスキップしてください。
 
-### 4-B. 差し戻し → エンジニアに修正依頼
+### 4-B. 差し戻し → PR にレビューコメント投稿 & エンジニアに修正依頼
 
-レビューが NG の場合、具体的な指摘を含めて差し戻します:
+レビューが NG の場合、まず PR にレビューコメントを投稿し、その後チャットログでエンジニアに通知します:
+
+#### 4-B-1. PR にレビューコメントを投稿
+
 ```bash
-echo "[$(date +%Y-%m-%dT%H:%M:%S)] [@engineer-{{TEAM_NUM}}] {{AGENT_ID}}: レビュー NG。以下を修正してください: <具体的な指摘内容>" >> {{CHATLOG_PATH}}
+cd <リポジトリパス>
+gh pr comment {{FEATURE_PREFIX}}<イシューID> --body "## Review: Changes Requested
+
+<具体的な指摘内容を箇条書きで記載>
+
+Reviewed-by: {{AGENT_ID}}
+Issue: <イシューID>
+Branch: {{FEATURE_PREFIX}}<イシューID>"
+```
+
+**重要**: レビュー結果は必ず PR コメントとして記録してください。これにより、レビュー履歴が PR 上で追跡可能になります。
+
+#### 4-B-2. チャットログでエンジニアに通知
+
+```bash
+echo "[$(date +%Y-%m-%dT%H:%M:%S)] [@engineer-{{TEAM_NUM}}] {{AGENT_ID}}: レビュー NG。PRにレビューコメントを投稿しました。指摘内容を確認し修正してください。" >> {{CHATLOG_PATH}}
 ```
 
 GitHub Issueにレビュー差し戻しをコメントします（`url` フィールドがある場合のみ）:

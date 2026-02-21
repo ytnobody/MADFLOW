@@ -64,16 +64,24 @@ git add <変更ファイル>
 git commit -m "feat: <変更内容の説明>"
 ```
 
-### 3. PR の作成
+### 3. PR の作成（必須）
 
-実装が完了したら、feature ブランチをリモートにプッシュし、PR を作成します:
+実装が完了したら、**必ず** feature ブランチをリモートにプッシュし、develop ブランチ向けの PR を作成します。
+PR はレビュープロセスの基盤であり、PR が存在しない状態でレビュー依頼を出してはなりません。
+
 ```bash
 cd <リポジトリパス>
 git push -u origin {{FEATURE_PREFIX}}<イシューID>
 gh pr create --base {{DEVELOP_BRANCH}} --title "<イシューID>: <変更内容の要約>" --body "Issue: <イシューID>"
 ```
 
-既に PR が存在する場合はこのステップをスキップしてください。
+既に PR が存在する場合は新規作成をスキップしてください。
+PR が存在するかの確認方法:
+```bash
+gh pr list --head {{FEATURE_PREFIX}}<イシューID> --state open
+```
+
+**重要**: レビュー依頼（ステップ4）は、PR が作成済みであることを確認してから行ってください。
 
 ### 4. レビュー依頼
 
