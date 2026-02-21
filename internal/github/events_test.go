@@ -2,6 +2,7 @@ package github
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -294,4 +295,126 @@ func TestNilCallback(t *testing.T) {
 
 	ev := ghEvent{ID: "evt-nil", Type: "IssuesEvent", Payload: payloadBytes}
 	w.processEvent("repo", ev) // should not panic
+}
+
+// --- ParseGHResponseWithStatus tests ---
+
+func TestParseGHResponseWithStatus_Normal(t *testing.T) {
+	raw := "HTTP/2.0 200 OK\nETag: \"abc123\"\nContent-Type: application/json\n\n[{\"id\":\"1\",\"type\":\"IssuesEvent\"}]"
+	statusCode, etag, body := ParseGHResponseWithStatus(raw)
+
+	if statusCode != 200 {
+		t.Errorf("expected status code 200, got %d", statusCode)
+	}
+	if etag != "\"abc123\"" {
+		t.Errorf("expected etag '\"abc123\"', got %q", etag)
+	}
+	if body != "[{\"id\":\"1\",\"type\":\"IssuesEvent\"}]" {
+		t.Errorf("unexpected body: %s", body)
+	}
+}
+
+func TestParseGHResponseWithStatus_304(t *testing.T) {
+	raw := "HTTP/2.0 304 Not Modified\nETag: \"abc123\"\n\n"
+	statusCode, etag, body := ParseGHResponseWithStatus(raw)
+
+	if statusCode != 304 {
+		t.Errorf("expected status code 304, got %d", statusCode)
+	}
+	if etag != "\"abc123\"" {
+		t.Errorf("expected etag '\"abc123\"', got %q", etag)
+	}
+	if body != "" {
+		t.Errorf("expected empty body, got %q", body)
+	}
+}
+
+func TestParseGHResponseWithStatus_403(t *testing.T) {
+	raw := "HTTP/1.1 403 Forbidden\nContent-Type: application/json\n\n{\"message\":\"Forbidden\"}"
+	statusCode, etag, body := ParseGHResponseWithStatus(raw)
+
+	if statusCode != 403 {
+		t.Errorf("expected status code 403, got %d", statusCode)
+	}
+	if etag != "" {
+		t.Errorf("expected empty etag, got %q", etag)
+	}
+	if body != "{\"message\":\"Forbidden\"}" {
+		t.Errorf("unexpected body: %s", body)
+	}
+}
+
+func TestParseGHResponseWithStatus_HeadersOnly(t *testing.T) {
+	// Headers only, no body (no blank line separator)
+	raw := "HTTP/2.0 304 Not Modified\nETag: \"xyz\""
+	statusCode, etag, body := ParseGHResponseWithStatus(raw)
+
+	if statusCode != 304 {
+		t.Errorf("expected status code 304, got %d", statusCode)
+	}
+	_ = etag // ETag may or may not be parsed without the separator
+	if body != "" {
+		t.Errorf("expected empty body for headers-only response, got %q", body)
+	}
+}
+
+func TestParseGHResponseWithStatus_HTMLBody(t *testing.T) {
+	// CDN or proxy returning HTML error page
+	raw := "HTTP/1.1 503 Service Unavailable\nContent-Type: text/html\n\n<html><body>Service Unavailable</body></html>"
+	statusCode, etag, body := ParseGHResponseWithStatus(raw)
+
+	if statusCode != 503 {
+		t.Errorf("expected status code 503, got %d", statusCode)
+	}
+	if etag != "" {
+		t.Errorf("expected empty etag, got %q", etag)
+	}
+	if !strings.HasPrefix(body, "<html>") {
+		t.Errorf("expected HTML body, got %q", body)
+	}
+}
+
+func TestParseGHResponseWithStatus_NoHeaders(t *testing.T) {
+	// Raw JSON with no headers
+	raw := `[{"id":"1","type":"IssuesEvent"}]`
+	statusCode, etag, body := ParseGHResponseWithStatus(raw)
+
+	if statusCode != 0 {
+		t.Errorf("expected status code 0 for headerless response, got %d", statusCode)
+	}
+	if etag != "" {
+		t.Errorf("expected empty etag, got %q", etag)
+	}
+	if body != raw {
+		t.Errorf("expected body to be the raw JSON, got %q", body)
+	}
+}
+
+func TestParseGHResponseWithStatus_BackwardCompat(t *testing.T) {
+	// ParseGHResponse should still work as before (calls ParseGHResponseWithStatus internally)
+	raw := "HTTP/2.0 200 OK\nETag: \"test-etag\"\nContent-Type: application/json\n\n[{\"id\":\"2\"}]"
+	etag, body := ParseGHResponse(raw)
+
+	if etag != "\"test-etag\"" {
+		t.Errorf("expected etag '\"test-etag\"', got %q", etag)
+	}
+	if body != "[{\"id\":\"2\"}]" {
+		t.Errorf("unexpected body: %s", body)
+	}
+}
+
+func TestParseGHResponseWithStatus_InvalidHTTPStartsWithH(t *testing.T) {
+	// This was the root cause of MADFLOW-002:
+	// When gh api returns a non-JSON response starting with "HTTP/",
+	// and there's no \n\n separator, the whole thing was treated as body.
+	// Now it should be recognized as headers-only and return empty body.
+	raw := "HTTP/2.0 403 Forbidden"
+	statusCode, _, body := ParseGHResponseWithStatus(raw)
+
+	if statusCode != 403 {
+		t.Errorf("expected status code 403, got %d", statusCode)
+	}
+	if body != "" {
+		t.Errorf("expected empty body (headers-only response), got %q", body)
+	}
 }
