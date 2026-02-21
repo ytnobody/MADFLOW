@@ -73,7 +73,14 @@ feature ブランチを develop にマージしました。イシューステー
 
 `url` フィールドがない場合はコメント投稿をスキップしてください。
 
-4. feature ブランチを削除:
+4. GitHub Issue をクローズします（`url` フィールドがある場合のみ）:
+```bash
+gh issue close <イシュー番号> -R <owner>/<repo>
+```
+
+`url` フィールドがない場合はこのステップをスキップしてください。
+
+5. feature ブランチを削除:
 ```bash
 git branch -d {{FEATURE_PREFIX}}<イシューID>
 ```
@@ -99,6 +106,21 @@ git checkout {{MAIN_BRANCH}}
 git pull
 git merge --no-ff {{DEVELOP_BRANCH}}
 ```
+
+## GitHub 運用ルール
+
+### @メンションの禁止
+
+GitHub の Issue コメント・PR コメント・PR 説明文において、`@username` 形式のメンションを**使用しないでください**。
+
+理由: 全エージェントは同一の GitHub アカウントで操作しているため、@メンションはセルフメンションとなり意味をなしません。また、外部ユーザーへの意図しない通知を引き起こす可能性があります。
+
+**OK 例**: `engineer-1 が実装を完了しました`
+**NG 例**: `@ytnobody が実装を完了しました`
+
+`gh issue comment`、`gh pr comment`、`gh pr create` の `--body` 引数内に `@` で始まるユーザー名やチーム名を含めないでください。
+
+※ チャットログ内の `[@宛先]` 記法はMADFLOW内部の通信ルーティング用であり、GitHub のメンション機能とは無関係です。チャットログでの `[@宛先]` 使用は引き続き必須です。
 
 ## 行動指針
 
