@@ -73,7 +73,14 @@ feature ブランチを develop にマージしました。イシューステー
 
 `url` フィールドがない場合はコメント投稿をスキップしてください。
 
-4. feature ブランチを削除:
+4. GitHub Issue をクローズします（`url` フィールドがある場合のみ）:
+```bash
+gh issue close <イシュー番号> -R <owner>/<repo>
+```
+
+`url` フィールドがない場合はこのステップをスキップしてください。
+
+5. feature ブランチを削除:
 ```bash
 git branch -d {{FEATURE_PREFIX}}<イシューID>
 ```
