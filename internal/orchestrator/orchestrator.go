@@ -85,6 +85,9 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 		return fmt.Errorf("wait for agents ready: %w", err)
 	}
 
+	// Restore teams for in-progress issues
+	o.restoreTeams(ctx)
+
 	// Start GitHub sync if configured
 	if o.cfg.GitHub != nil {
 		wg.Add(1)
@@ -183,6 +186,38 @@ func (o *Orchestrator) waitForAgentsReady(ctx context.Context) error {
 
 	log.Println("[orchestrator] all resident agents ready")
 	return nil
+}
+
+// restoreTeams creates teams for all issues that are currently in_progress.
+// This is called on startup to resume work that was interrupted by a restart.
+func (o *Orchestrator) restoreTeams(ctx context.Context) {
+	inProgress := issue.StatusInProgress
+	issues, err := o.store.List(issue.StatusFilter{Status: &inProgress})
+	if err != nil {
+		log.Printf("[orchestrator] restore teams: list issues: %v", err)
+		return
+	}
+
+	if len(issues) == 0 {
+		log.Println("[orchestrator] no in-progress issues to restore")
+		return
+	}
+
+	for _, iss := range issues {
+		if ctx.Err() != nil {
+			return
+		}
+		t, err := o.teams.Create(ctx, iss.ID)
+		if err != nil {
+			log.Printf("[orchestrator] restore teams: create team for %s: %v", iss.ID, err)
+			continue
+		}
+		iss.AssignedTeam = t.ID
+		o.store.Update(iss)
+		log.Printf("[orchestrator] restored team %d for issue %s", t.ID, iss.ID)
+	}
+
+	log.Printf("[orchestrator] restored %d teams", o.teams.Count())
 }
 
 // runAgentWithRestart runs an agent and restarts it if it exits unexpectedly.

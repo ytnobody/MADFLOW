@@ -1,13 +1,19 @@
 package orchestrator
 
 import (
+	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/ytnobody/madflow/internal/agent"
 	"github.com/ytnobody/madflow/internal/chatlog"
 	"github.com/ytnobody/madflow/internal/config"
+	"github.com/ytnobody/madflow/internal/issue"
+	"github.com/ytnobody/madflow/internal/team"
 )
 
 func testConfig(repoPath string) *config.Config {
@@ -239,6 +245,136 @@ func TestCreateTeamAgentsWithIssue(t *testing.T) {
 	if !strings.Contains(architect.OriginalTask, "Test Issue") {
 		t.Errorf("expected original task to contain issue title, got: %s", architect.OriginalTask)
 	}
+}
+
+// mockProcess is a test double for agent.Process.
+type mockProcess struct{}
+
+func (m *mockProcess) Send(_ context.Context, _ string) (string, error) {
+	return "ok", nil
+}
+
+// mockTeamFactory creates agents with mock processes for testing.
+type mockTeamFactory struct {
+	tmpDir string
+}
+
+func newMockTeamFactory(t *testing.T) *mockTeamFactory {
+	t.Helper()
+	return &mockTeamFactory{tmpDir: t.TempDir()}
+}
+
+func (f *mockTeamFactory) CreateTeamAgents(teamNum int, issueID string) (architect, engineer, reviewer *agent.Agent, err error) {
+	makeAgent := func(role agent.Role) *agent.Agent {
+		id := agent.AgentID{Role: role, TeamNum: teamNum}
+		logPath := filepath.Join(f.tmpDir, fmt.Sprintf("chatlog-%s-%d.txt", role, teamNum))
+		os.WriteFile(logPath, nil, 0644)
+		return agent.NewAgent(agent.AgentConfig{
+			ID:            id,
+			Role:          role,
+			SystemPrompt:  "test",
+			Model:         "test",
+			ChatLogPath:   logPath,
+			MemosDir:      f.tmpDir,
+			ResetInterval: time.Hour,
+			OriginalTask:  issueID,
+			Process:       &mockProcess{},
+		})
+	}
+	return makeAgent(agent.RoleArchitect),
+		makeAgent(agent.RoleEngineer),
+		makeAgent(agent.RoleReviewer),
+		nil
+}
+
+func TestRestoreTeamsNoIssues(t *testing.T) {
+	dir := t.TempDir()
+	cfg := testConfig(dir)
+	os.MkdirAll(filepath.Join(dir, "issues"), 0755)
+
+	orc := New(cfg, dir, t.TempDir())
+
+	// Should be a no-op without panicking
+	orc.restoreTeams(t.Context())
+
+	if orc.Teams().Count() != 0 {
+		t.Errorf("expected 0 teams, got %d", orc.Teams().Count())
+	}
+}
+
+func TestRestoreTeamsSkipsNonInProgress(t *testing.T) {
+	dir := t.TempDir()
+	cfg := testConfig(dir)
+	os.MkdirAll(filepath.Join(dir, "issues"), 0755)
+
+	orc := New(cfg, dir, t.TempDir())
+
+	// Create issues with non-in_progress statuses
+	for _, title := range []string{"Open Issue", "Resolved Issue", "Closed Issue"} {
+		iss, err := orc.Store().Create(title, "body")
+		if err != nil {
+			t.Fatalf("create issue: %v", err)
+		}
+		switch title {
+		case "Resolved Issue":
+			iss.Status = "resolved"
+		case "Closed Issue":
+			iss.Status = "closed"
+		}
+		orc.Store().Update(iss)
+	}
+
+	orc.restoreTeams(t.Context())
+
+	if orc.Teams().Count() != 0 {
+		t.Errorf("expected 0 teams for non-in_progress issues, got %d", orc.Teams().Count())
+	}
+}
+
+func TestRestoreTeamsCreatesTeamsForInProgress(t *testing.T) {
+	dir := t.TempDir()
+	cfg := testConfig(dir)
+	cfg.Agent.MaxTeams = 4
+	os.MkdirAll(filepath.Join(dir, "issues"), 0755)
+	os.WriteFile(filepath.Join(dir, "chatlog.txt"), nil, 0644)
+
+	orc := New(cfg, dir, t.TempDir())
+	// Replace team manager with one using mock factory
+	orc.teams = team.NewManager(newMockTeamFactory(t), 4)
+
+	// Create 2 in-progress issues and 1 open issue
+	for i, title := range []string{"Task A", "Task B", "Task C"} {
+		iss, err := orc.Store().Create(title, "body")
+		if err != nil {
+			t.Fatalf("create issue: %v", err)
+		}
+		if i < 2 {
+			iss.Status = "in_progress"
+			orc.Store().Update(iss)
+		}
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	orc.restoreTeams(ctx)
+
+	if orc.Teams().Count() != 2 {
+		t.Errorf("expected 2 teams for in_progress issues, got %d", orc.Teams().Count())
+	}
+
+	// Verify team assignments were updated
+	issues, _ := orc.Store().List(issue.StatusFilter{})
+	for _, iss := range issues {
+		if iss.Status == "in_progress" && iss.AssignedTeam == 0 {
+			t.Errorf("in_progress issue %s should have assigned team", iss.ID)
+		}
+		if iss.Status == "open" && iss.AssignedTeam != 0 {
+			t.Errorf("open issue %s should not have assigned team", iss.ID)
+		}
+	}
+
+	cancel()
 }
 
 func TestCreateTeamAgentsMissingPrompt(t *testing.T) {
