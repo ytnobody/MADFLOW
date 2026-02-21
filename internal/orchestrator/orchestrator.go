@@ -53,7 +53,7 @@ func New(cfg *config.Config, dataDir, promptDir string) *Orchestrator {
 		repos:     repos,
 	}
 
-	orc.teams = team.NewManager(orc)
+	orc.teams = team.NewManagerWithState(orc, filepath.Join(dataDir, "teams.toml"))
 	return orc
 }
 
@@ -70,6 +70,11 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	}
 
 	log.Println("[orchestrator] starting")
+
+	// Restore teams from previous run
+	if err := o.teams.Restore(ctx, o); err != nil {
+		log.Printf("[orchestrator] team restore failed: %v", err)
+	}
 
 	var wg sync.WaitGroup
 
@@ -401,6 +406,16 @@ func (o *Orchestrator) ChatLogPath() string {
 // HandleCommandForTest exposes handleCommand for integration testing.
 func (o *Orchestrator) HandleCommandForTest(ctx context.Context, msg chatlog.Message) {
 	o.handleCommand(ctx, msg)
+}
+
+// IsFinished implements team.IssueChecker.
+// Returns true if the issue is resolved or closed.
+func (o *Orchestrator) IsFinished(issueID string) bool {
+	iss, err := o.store.Get(issueID)
+	if err != nil {
+		return false // can't determine, assume not finished
+	}
+	return iss.Status == issue.StatusResolved || iss.Status == issue.StatusClosed
 }
 
 func (o *Orchestrator) firstRepoPath() string {

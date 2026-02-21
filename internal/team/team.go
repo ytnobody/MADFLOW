@@ -4,8 +4,12 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
 	"sync"
+	"time"
 
+	"github.com/BurntSushi/toml"
 	"github.com/ytnobody/madflow/internal/agent"
 )
 
@@ -19,12 +23,31 @@ type Team struct {
 	cancel    context.CancelFunc
 }
 
+// teamState is the TOML-serializable state of the Manager.
+type teamState struct {
+	NextID int         `toml:"next_id"`
+	Teams  []teamEntry `toml:"teams"`
+}
+
+// teamEntry is a single team in the persisted state.
+type teamEntry struct {
+	ID      int    `toml:"id"`
+	IssueID string `toml:"issue_id"`
+}
+
+// IssueChecker checks whether an issue has been finished.
+// Used during Restore to skip completed issues.
+type IssueChecker interface {
+	IsFinished(issueID string) bool
+}
+
 // Manager manages the lifecycle of task force teams.
 type Manager struct {
-	mu      sync.Mutex
-	teams   map[int]*Team
-	nextID  int
-	factory TeamFactory
+	mu        sync.Mutex
+	teams     map[int]*Team
+	nextID    int
+	factory   TeamFactory
+	stateFile string // empty means no persistence
 }
 
 // TeamFactory creates agents for a team. Provided by the orchestrator.
@@ -38,6 +61,144 @@ func NewManager(factory TeamFactory) *Manager {
 		nextID:  1,
 		factory: factory,
 	}
+}
+
+// NewManagerWithState creates a Manager that persists state to stateFile.
+func NewManagerWithState(factory TeamFactory, stateFile string) *Manager {
+	return &Manager{
+		teams:     make(map[int]*Team),
+		nextID:    1,
+		factory:   factory,
+		stateFile: stateFile,
+	}
+}
+
+// save persists the current team state to disk atomically.
+// Must be called with m.mu held.
+func (m *Manager) save() {
+	if m.stateFile == "" {
+		return
+	}
+
+	state := teamState{NextID: m.nextID}
+	for _, t := range m.teams {
+		state.Teams = append(state.Teams, teamEntry{
+			ID:      t.ID,
+			IssueID: t.IssueID,
+		})
+	}
+
+	// Atomic write: temp file + rename
+	dir := filepath.Dir(m.stateFile)
+	tmp, err := os.CreateTemp(dir, "teams-*.toml.tmp")
+	if err != nil {
+		log.Printf("[team] save state: create temp: %v", err)
+		return
+	}
+	tmpName := tmp.Name()
+
+	enc := toml.NewEncoder(tmp)
+	if err := enc.Encode(state); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		log.Printf("[team] save state: encode: %v", err)
+		return
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpName)
+		log.Printf("[team] save state: close: %v", err)
+		return
+	}
+	if err := os.Rename(tmpName, m.stateFile); err != nil {
+		os.Remove(tmpName)
+		log.Printf("[team] save state: rename: %v", err)
+		return
+	}
+}
+
+// Restore loads team state from the state file and recreates teams.
+// Teams whose issues are finished (per checker) are skipped.
+func (m *Manager) Restore(ctx context.Context, checker IssueChecker) error {
+	if m.stateFile == "" {
+		return nil
+	}
+
+	data, err := os.ReadFile(m.stateFile)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("read state file: %w", err)
+	}
+
+	var state teamState
+	if err := toml.Unmarshal(data, &state); err != nil {
+		return fmt.Errorf("parse state file: %w", err)
+	}
+
+	m.mu.Lock()
+	if state.NextID > m.nextID {
+		m.nextID = state.NextID
+	}
+	m.mu.Unlock()
+
+	for _, entry := range state.Teams {
+		if checker != nil && checker.IsFinished(entry.IssueID) {
+			log.Printf("[team] restore: skipping finished issue %s (team %d)", entry.IssueID, entry.ID)
+			continue
+		}
+
+		architect, engineer, reviewer, err := m.factory.CreateTeamAgents(entry.ID, entry.IssueID)
+		if err != nil {
+			log.Printf("[team] restore: create agents for team %d failed: %v", entry.ID, err)
+			continue
+		}
+
+		teamCtx, cancel := context.WithCancel(ctx)
+		t := &Team{
+			ID:        entry.ID,
+			IssueID:   entry.IssueID,
+			Architect: architect,
+			Engineer:  engineer,
+			Reviewer:  reviewer,
+			cancel:    cancel,
+		}
+
+		m.mu.Lock()
+		m.teams[entry.ID] = t
+		m.mu.Unlock()
+
+		m.launchWithRestart(teamCtx, entry.ID, architect)
+		m.launchWithRestart(teamCtx, entry.ID, engineer)
+		m.launchWithRestart(teamCtx, entry.ID, reviewer)
+
+		log.Printf("[team-%d] restored for issue %s", entry.ID, entry.IssueID)
+	}
+
+	// Re-save to reflect any skipped teams
+	m.mu.Lock()
+	m.save()
+	m.mu.Unlock()
+
+	return nil
+}
+
+// launchWithRestart starts an agent in a goroutine with automatic restart on failure.
+func (m *Manager) launchWithRestart(ctx context.Context, teamNum int, ag *agent.Agent) {
+	go func() {
+		for {
+			err := ag.Run(ctx)
+			if ctx.Err() != nil {
+				return
+			}
+			log.Printf("[team-%d] %s exited: %v, restarting in 5s", teamNum, ag.ID.String(), err)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(5 * time.Second):
+			}
+		}
+	}()
 }
 
 // Create creates and starts a new team for the given issue.
@@ -65,24 +226,13 @@ func (m *Manager) Create(ctx context.Context, issueID string) (*Team, error) {
 
 	m.mu.Lock()
 	m.teams[teamNum] = team
+	m.save()
 	m.mu.Unlock()
 
-	// Start all three agents
-	go func() {
-		if err := architect.Run(teamCtx); err != nil && teamCtx.Err() == nil {
-			log.Printf("[team-%d] architect stopped: %v", teamNum, err)
-		}
-	}()
-	go func() {
-		if err := engineer.Run(teamCtx); err != nil && teamCtx.Err() == nil {
-			log.Printf("[team-%d] engineer stopped: %v", teamNum, err)
-		}
-	}()
-	go func() {
-		if err := reviewer.Run(teamCtx); err != nil && teamCtx.Err() == nil {
-			log.Printf("[team-%d] reviewer stopped: %v", teamNum, err)
-		}
-	}()
+	// Start all three agents with restart
+	m.launchWithRestart(teamCtx, teamNum, architect)
+	m.launchWithRestart(teamCtx, teamNum, engineer)
+	m.launchWithRestart(teamCtx, teamNum, reviewer)
 
 	log.Printf("[team-%d] created for issue %s", teamNum, issueID)
 	return team, nil
@@ -97,6 +247,7 @@ func (m *Manager) Disband(teamNum int) error {
 		return fmt.Errorf("team %d not found", teamNum)
 	}
 	delete(m.teams, teamNum)
+	m.save()
 	m.mu.Unlock()
 
 	team.cancel()

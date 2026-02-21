@@ -92,6 +92,50 @@ func LoadLatestMemo(memosDir, agentID string) (string, error) {
 	return string(data), nil
 }
 
+// LoadLatestMemoWithTime reads the most recent memo for the given agent
+// and also returns the timestamp parsed from the filename.
+// If no memo exists, returns ("", time.Time{}, nil).
+func LoadLatestMemoWithTime(memosDir, agentID string) (string, time.Time, error) {
+	entries, err := os.ReadDir(memosDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", time.Time{}, nil
+		}
+		return "", time.Time{}, fmt.Errorf("read memos dir: %w", err)
+	}
+
+	prefix := agentID + "-"
+	var latest string
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if len(name) > len(prefix) && name[:len(prefix)] == prefix {
+			latest = name
+		}
+	}
+
+	if latest == "" {
+		return "", time.Time{}, nil
+	}
+
+	data, err := os.ReadFile(filepath.Join(memosDir, latest))
+	if err != nil {
+		return "", time.Time{}, fmt.Errorf("read memo: %w", err)
+	}
+
+	// Parse timestamp from filename: agentID-20060102T150405.md
+	tsStr := latest[len(prefix) : len(latest)-len(".md")]
+	ts, err := time.Parse("20060102T150405", tsStr)
+	if err != nil {
+		// If we can't parse, return zero time but still return content
+		return string(data), time.Time{}, nil
+	}
+
+	return string(data), ts, nil
+}
+
 // Timer manages the context reset countdown.
 type Timer struct {
 	interval time.Duration

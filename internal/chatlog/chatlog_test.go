@@ -144,6 +144,77 @@ func TestAppendToExistingFile(t *testing.T) {
 	}
 }
 
+func TestPollSince(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "chatlog.txt")
+
+	content := `[2026-02-21T10:00:00] [@PM] 監督: メッセージ1
+[2026-02-21T10:05:00] [@PM] architect-1: メッセージ2
+[2026-02-21T10:10:00] [@PM] engineer-1: メッセージ3
+`
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cl := New(path)
+	since := time.Date(2026, 2, 21, 10, 5, 0, 0, time.UTC)
+	msgs, err := cl.PollSince("PM", since)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 2 {
+		t.Fatalf("expected 2 messages since 10:05, got %d", len(msgs))
+	}
+	if msgs[0].Body != "メッセージ2" {
+		t.Errorf("expected メッセージ2, got %s", msgs[0].Body)
+	}
+	if msgs[1].Body != "メッセージ3" {
+		t.Errorf("expected メッセージ3, got %s", msgs[1].Body)
+	}
+}
+
+func TestPollSinceZeroTime(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "chatlog.txt")
+
+	content := `[2026-02-21T10:00:00] [@PM] 監督: メッセージ1
+[2026-02-21T10:05:00] [@PM] architect-1: メッセージ2
+`
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cl := New(path)
+	msgs, err := cl.PollSince("PM", time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 2 {
+		t.Fatalf("expected 2 messages with zero time, got %d", len(msgs))
+	}
+}
+
+func TestPollSinceFuture(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "chatlog.txt")
+
+	content := `[2026-02-21T10:00:00] [@PM] 監督: メッセージ1
+`
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cl := New(path)
+	future := time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC)
+	msgs, err := cl.PollSince("PM", future)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 0 {
+		t.Fatalf("expected 0 messages with future time, got %d", len(msgs))
+	}
+}
+
 func TestWatch(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "chatlog.txt")

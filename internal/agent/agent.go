@@ -73,11 +73,14 @@ func (a *Agent) Run(ctx context.Context) error {
 
 	log.Printf("[%s] agent started", recipient)
 
-	// Load latest memo if resuming
-	memo, _ := reset.LoadLatestMemo(a.MemosDir, recipient)
+	// Load latest memo if resuming, with timestamp for replay
+	memo, memoTs, _ := reset.LoadLatestMemoWithTime(a.MemosDir, recipient)
+
+	// Retrieve messages that arrived while the agent was down
+	missed, _ := a.ChatLog.PollSince(recipient, memoTs)
 
 	// Initial prompt to start the agent
-	initialPrompt := a.buildInitialPrompt(memo)
+	initialPrompt := a.buildInitialPromptWithReplay(memo, missed)
 	if _, err := a.Process.Send(ctx, initialPrompt); err != nil {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -161,6 +164,10 @@ func (a *Agent) performReset(ctx context.Context, timer *reset.Timer) error {
 }
 
 func (a *Agent) buildInitialPrompt(memo string) string {
+	return a.buildInitialPromptWithReplay(memo, nil)
+}
+
+func (a *Agent) buildInitialPromptWithReplay(memo string, missed []chatlog.Message) string {
 	var sb strings.Builder
 	sb.WriteString("あなたは以下の役割で動作するエージェントです。\n\n")
 
@@ -174,6 +181,15 @@ func (a *Agent) buildInitialPrompt(memo string) string {
 		sb.WriteString("## 直近の作業メモ（前回のコンテキストリセットから引き継ぎ）\n")
 		sb.WriteString(memo)
 		sb.WriteString("\n\n")
+	}
+
+	if len(missed) > 0 {
+		sb.WriteString("## 未処理メッセージ（システム停止中に届いたメッセージ）\n")
+		for _, m := range missed {
+			sb.WriteString(m.Raw)
+			sb.WriteString("\n")
+		}
+		sb.WriteString("\n")
 	}
 
 	sb.WriteString("チャットログのパス: ")

@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/BurntSushi/toml"
 	"github.com/ytnobody/madflow/internal/agent"
 )
 
@@ -238,3 +239,206 @@ func TestDisbandByIssueNotFound(t *testing.T) {
 		t.Fatal("expected error for non-existent issue, got nil")
 	}
 }
+
+// --- Persistence tests ---
+
+// mockIssueChecker is a test double for IssueChecker.
+type mockIssueChecker struct {
+	finished map[string]bool
+}
+
+func (c *mockIssueChecker) IsFinished(issueID string) bool {
+	return c.finished[issueID]
+}
+
+func TestCreatePersistsState(t *testing.T) {
+	dir := t.TempDir()
+	stateFile := filepath.Join(dir, "teams.toml")
+	factory := newMockFactory(t)
+	m := NewManagerWithState(factory, stateFile)
+
+	createAndCancel(t, m, "issue-001")
+
+	// Verify the state file exists and has correct content
+	data, err := os.ReadFile(stateFile)
+	if err != nil {
+		t.Fatalf("read state file: %v", err)
+	}
+
+	var state teamState
+	if err := toml.Unmarshal(data, &state); err != nil {
+		t.Fatalf("parse state file: %v", err)
+	}
+
+	if state.NextID != 2 {
+		t.Errorf("expected next_id 2, got %d", state.NextID)
+	}
+	if len(state.Teams) != 1 {
+		t.Fatalf("expected 1 team entry, got %d", len(state.Teams))
+	}
+	if state.Teams[0].ID != 1 {
+		t.Errorf("expected team ID 1, got %d", state.Teams[0].ID)
+	}
+	if state.Teams[0].IssueID != "issue-001" {
+		t.Errorf("expected issue ID issue-001, got %s", state.Teams[0].IssueID)
+	}
+}
+
+func TestDisbandUpdatesState(t *testing.T) {
+	dir := t.TempDir()
+	stateFile := filepath.Join(dir, "teams.toml")
+	factory := newMockFactory(t)
+	m := NewManagerWithState(factory, stateFile)
+
+	createAndCancel(t, m, "issue-001")
+	createAndCancel(t, m, "issue-002")
+
+	if err := m.Disband(1); err != nil {
+		t.Fatalf("Disband failed: %v", err)
+	}
+
+	data, err := os.ReadFile(stateFile)
+	if err != nil {
+		t.Fatalf("read state file: %v", err)
+	}
+
+	var state teamState
+	if err := toml.Unmarshal(data, &state); err != nil {
+		t.Fatalf("parse state file: %v", err)
+	}
+
+	if len(state.Teams) != 1 {
+		t.Fatalf("expected 1 team entry after disband, got %d", len(state.Teams))
+	}
+	if state.Teams[0].IssueID != "issue-002" {
+		t.Errorf("expected remaining team issue-002, got %s", state.Teams[0].IssueID)
+	}
+}
+
+func TestRestoreRebuildsTeams(t *testing.T) {
+	dir := t.TempDir()
+	stateFile := filepath.Join(dir, "teams.toml")
+
+	// Write a state file manually
+	state := teamState{
+		NextID: 5,
+		Teams: []teamEntry{
+			{ID: 3, IssueID: "issue-A"},
+			{ID: 4, IssueID: "issue-B"},
+		},
+	}
+	f, err := os.Create(stateFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	toml.NewEncoder(f).Encode(state)
+	f.Close()
+
+	factory := newMockFactory(t)
+	m := NewManagerWithState(factory, stateFile)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // pre-cancel so agents exit immediately
+
+	checker := &mockIssueChecker{finished: map[string]bool{}}
+	if err := m.Restore(ctx, checker); err != nil {
+		t.Fatalf("Restore failed: %v", err)
+	}
+
+	if m.Count() != 2 {
+		t.Errorf("expected 2 teams after restore, got %d", m.Count())
+	}
+
+	// Check nextID was restored
+	m.mu.Lock()
+	nextID := m.nextID
+	m.mu.Unlock()
+	if nextID != 5 {
+		t.Errorf("expected nextID 5, got %d", nextID)
+	}
+
+	// Verify issue IDs
+	infos := m.List()
+	issueIDs := map[string]bool{}
+	for _, info := range infos {
+		issueIDs[info.IssueID] = true
+	}
+	if !issueIDs["issue-A"] {
+		t.Error("expected issue-A in restored teams")
+	}
+	if !issueIDs["issue-B"] {
+		t.Error("expected issue-B in restored teams")
+	}
+}
+
+func TestRestoreSkipsFinishedIssues(t *testing.T) {
+	dir := t.TempDir()
+	stateFile := filepath.Join(dir, "teams.toml")
+
+	state := teamState{
+		NextID: 4,
+		Teams: []teamEntry{
+			{ID: 1, IssueID: "issue-done"},
+			{ID: 2, IssueID: "issue-active"},
+			{ID: 3, IssueID: "issue-also-done"},
+		},
+	}
+	f, err := os.Create(stateFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	toml.NewEncoder(f).Encode(state)
+	f.Close()
+
+	factory := newMockFactory(t)
+	m := NewManagerWithState(factory, stateFile)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	checker := &mockIssueChecker{finished: map[string]bool{
+		"issue-done":      true,
+		"issue-also-done": true,
+	}}
+	if err := m.Restore(ctx, checker); err != nil {
+		t.Fatalf("Restore failed: %v", err)
+	}
+
+	if m.Count() != 1 {
+		t.Errorf("expected 1 team (only active), got %d", m.Count())
+	}
+
+	infos := m.List()
+	if len(infos) != 1 || infos[0].IssueID != "issue-active" {
+		t.Errorf("expected issue-active, got %v", infos)
+	}
+
+	// nextID should still be restored
+	m.mu.Lock()
+	nextID := m.nextID
+	m.mu.Unlock()
+	if nextID != 4 {
+		t.Errorf("expected nextID 4, got %d", nextID)
+	}
+}
+
+func TestRestoreNoFile(t *testing.T) {
+	dir := t.TempDir()
+	stateFile := filepath.Join(dir, "nonexistent-teams.toml")
+
+	factory := newMockFactory(t)
+	m := NewManagerWithState(factory, stateFile)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	checker := &mockIssueChecker{finished: map[string]bool{}}
+	if err := m.Restore(ctx, checker); err != nil {
+		t.Fatalf("Restore should not error on missing file: %v", err)
+	}
+
+	if m.Count() != 0 {
+		t.Errorf("expected 0 teams, got %d", m.Count())
+	}
+}
+

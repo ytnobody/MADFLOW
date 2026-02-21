@@ -108,6 +108,26 @@ func (c *ChatLog) Poll(recipient string) ([]Message, error) {
 	return messages, nil
 }
 
+// PollSince reads messages for the recipient filtered by timestamp.
+// Only messages with Timestamp >= since are returned.
+// If since is zero, all messages are returned (same as Poll).
+func (c *ChatLog) PollSince(recipient string, since time.Time) ([]Message, error) {
+	msgs, err := c.Poll(recipient)
+	if err != nil {
+		return nil, err
+	}
+	if since.IsZero() {
+		return msgs, nil
+	}
+	var filtered []Message
+	for _, m := range msgs {
+		if !m.Timestamp.Before(since) {
+			filtered = append(filtered, m)
+		}
+	}
+	return filtered, nil
+}
+
 // Watch monitors the chatlog file for new messages to the given recipient.
 // It yields messages on the returned channel until ctx is cancelled.
 func (c *ChatLog) Watch(ctx context.Context, recipient string) <-chan Message {
