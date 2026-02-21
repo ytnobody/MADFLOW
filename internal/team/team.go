@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/ytnobody/madflow/internal/agent"
 	"github.com/ytnobody/madflow/internal/chatlog"
@@ -121,9 +122,24 @@ func (m *Manager) Create(ctx context.Context, issueID string) (*Team, error) {
 		}
 	}()
 
+	// Wait for all agents to complete their initial startup
+	for _, ag := range []*agent.Agent{architect, engineer, reviewer} {
+		select {
+		case <-ag.Ready():
+		case <-ctx.Done():
+			// Context cancelled, but agents should signal Ready very soon.
+			select {
+			case <-ag.Ready():
+			case <-time.After(30 * time.Second):
+				log.Printf("[team-%d] timed out waiting for agents to be ready", teamNum)
+				return team, nil
+			}
+		}
+	}
+
 	announceStart(team)
 
-	log.Printf("[team-%d] created for issue %s", teamNum, issueID)
+	log.Printf("[team-%d] created for issue %s (all agents ready)", teamNum, issueID)
 	return team, nil
 }
 
