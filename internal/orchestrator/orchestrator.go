@@ -80,13 +80,17 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 		return fmt.Errorf("start resident agents: %w", err)
 	}
 
+	// Start teams for all open/in-progress issues (concurrently with resident agents)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		o.startAllTeams(ctx)
+	}()
+
 	// Wait for all resident agents to complete their initial startup
 	if err := o.waitForAgentsReady(ctx); err != nil {
 		return fmt.Errorf("wait for agents ready: %w", err)
 	}
-
-	// Start teams for all open/in-progress issues
-	o.startAllTeams(ctx)
 
 	// Start GitHub sync if configured
 	if o.cfg.GitHub != nil {
