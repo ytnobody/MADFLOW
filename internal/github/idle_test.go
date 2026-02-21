@@ -212,3 +212,156 @@ func TestIdleDetector_AdaptInterval_Transitions(t *testing.T) {
 		t.Errorf("step3: expected %v, got %v", normal, got)
 	}
 }
+
+// --- Dormancy tests ---
+
+func TestIdleDetector_IsDormant_DisabledByDefault(t *testing.T) {
+	d := NewIdleDetector()
+	d.SetHasIssues(false)
+
+	// dormancyThreshold is 0 by default → dormancy disabled
+	if d.IsDormant() {
+		t.Error("expected IsDormant()=false when dormancyThreshold is 0 (disabled)")
+	}
+}
+
+func TestIdleDetector_IsDormant_WithIssues(t *testing.T) {
+	d := NewIdleDetector()
+	d.SetDormancyThreshold(1 * time.Millisecond)
+	// hasIssues is true → never dormant
+
+	time.Sleep(5 * time.Millisecond)
+
+	if d.IsDormant() {
+		t.Error("expected IsDormant()=false when there are active issues")
+	}
+}
+
+func TestIdleDetector_IsDormant_ThresholdNotExpired(t *testing.T) {
+	d := NewIdleDetector()
+	d.SetDormancyThreshold(10 * time.Minute)
+	d.SetHasIssues(false)
+
+	// Threshold not yet reached → not dormant
+	if d.IsDormant() {
+		t.Error("expected IsDormant()=false when dormancy threshold not yet expired")
+	}
+}
+
+func TestIdleDetector_IsDormant_ThresholdExpired(t *testing.T) {
+	d := NewIdleDetector()
+	d.SetDormancyThreshold(1 * time.Millisecond)
+	d.SetHasIssues(false)
+
+	// Wait for threshold to expire
+	time.Sleep(5 * time.Millisecond)
+
+	if !d.IsDormant() {
+		t.Error("expected IsDormant()=true when dormancy threshold has expired")
+	}
+}
+
+func TestIdleDetector_IsDormant_RevertOnWake(t *testing.T) {
+	d := NewIdleDetector()
+	d.SetDormancyThreshold(1 * time.Millisecond)
+	d.SetHasIssues(false)
+	time.Sleep(5 * time.Millisecond)
+
+	// Confirm dormant
+	if !d.IsDormant() {
+		t.Fatal("expected dormant before wake")
+	}
+
+	// Wake → no longer dormant
+	d.Wake()
+	if d.IsDormant() {
+		t.Error("expected IsDormant()=false after Wake()")
+	}
+	if !d.HasIssues() {
+		t.Error("expected HasIssues()=true after Wake()")
+	}
+}
+
+func TestIdleDetector_Wake_ResetsIdleState(t *testing.T) {
+	d := NewIdleDetector()
+	d.SetIdleThreshold(1 * time.Millisecond)
+	d.SetDormancyThreshold(1 * time.Millisecond)
+	d.SetHasIssues(false)
+	time.Sleep(5 * time.Millisecond)
+
+	// Both idle and dormant
+	if !d.IsIdle() {
+		t.Fatal("expected idle")
+	}
+	if !d.IsDormant() {
+		t.Fatal("expected dormant")
+	}
+
+	// Wake resets both
+	d.Wake()
+	if d.IsIdle() {
+		t.Error("expected IsIdle()=false after Wake()")
+	}
+	if d.IsDormant() {
+		t.Error("expected IsDormant()=false after Wake()")
+	}
+}
+
+func TestIdleDetector_IsDormant_SetHasIssuesWakes(t *testing.T) {
+	d := NewIdleDetector()
+	d.SetDormancyThreshold(1 * time.Millisecond)
+	d.SetHasIssues(false)
+	time.Sleep(5 * time.Millisecond)
+
+	if !d.IsDormant() {
+		t.Fatal("expected dormant")
+	}
+
+	// SetHasIssues(true) exits dormancy
+	d.SetHasIssues(true)
+	if d.IsDormant() {
+		t.Error("expected IsDormant()=false after SetHasIssues(true)")
+	}
+}
+
+func TestIdleDetector_IsDormant_WithIdleThreshold(t *testing.T) {
+	// IsDormant uses the same issuesGoneAt as idle, so idle and dormancy share the timer.
+	// With idleThreshold=1ms and dormancyThreshold=10ms, at 5ms should be idle but not dormant.
+	d := NewIdleDetector()
+	d.SetIdleThreshold(1 * time.Millisecond)
+	d.SetDormancyThreshold(100 * time.Millisecond)
+	d.SetHasIssues(false)
+
+	time.Sleep(5 * time.Millisecond)
+
+	// Should be idle (1ms expired) but not dormant (100ms not yet expired)
+	if !d.IsIdle() {
+		t.Error("expected IsIdle()=true")
+	}
+	if d.IsDormant() {
+		t.Error("expected IsDormant()=false (dormancy threshold not yet expired)")
+	}
+}
+
+func TestIdleDetector_IsDormant_ConcurrencySafe(t *testing.T) {
+	d := NewIdleDetector()
+	d.SetDormancyThreshold(1 * time.Millisecond)
+
+	var wg sync.WaitGroup
+	for i := range 50 {
+		wg.Add(3)
+		go func(b bool) {
+			defer wg.Done()
+			d.SetHasIssues(b)
+		}(i%2 == 0)
+		go func() {
+			defer wg.Done()
+			_ = d.IsDormant()
+		}()
+		go func() {
+			defer wg.Done()
+			d.Wake()
+		}()
+	}
+	wg.Wait()
+}
