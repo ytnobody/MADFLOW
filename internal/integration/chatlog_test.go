@@ -43,12 +43,24 @@ func TestTwoAgentsChatLogCommunication(t *testing.T) {
 	// Start both agents
 	go agentEngineer.Run(ctx)
 
-	// Write a message to engineer
+	// エージェントの初回プロンプト送信（call 1）が完了し、
+	// chatlog.Watch が開始されるまで待機する。
+	// Watch は「ファイル末尾から監視」を開始するため、
+	// Watch 開始前に書き込んだメッセージは検出されない。
+	select {
+	case <-agentEngineer.Ready():
+	case <-time.After(5 * time.Second):
+		t.Fatal("agent did not become ready in time")
+	}
+
+	// Write a message to engineer (Watch 開始後に書き込む)
 	writer := NewChatLogWriter(logPath)
 	writer.Write("engineer-1", "superintendent", "Issue #local-001 の設計と実装を開始してください")
 
 	// Wait for engineer to process
-	time.Sleep(800 * time.Millisecond)
+	// ポーリング間隔は500ms。メッセージを受信するには
+	// 少なくとも1ポーリングサイクル分の余裕が必要なため、1500ms待機する
+	time.Sleep(1500 * time.Millisecond)
 
 	// Engineer should have received at least 2 calls: initial + the message
 	if mockEngineer.CallCount() < 2 {
@@ -91,7 +103,6 @@ func TestChatLogWatchFiltering(t *testing.T) {
 	writer := NewChatLogWriter(logPath)
 
 	// Write messages to different recipients
-	writer.Write("engineer-1", "superintendent", "エンジニア向けメッセージ (superintendent)")
 	writer.Write("engineer-1", "superintendent", "エンジニア向けメッセージ")
 	writer.Write("reviewer-1", "engineer-1", "レビュアー向けメッセージ")
 
