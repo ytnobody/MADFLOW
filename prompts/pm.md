@@ -34,6 +34,23 @@ echo "[$(date +%Y-%m-%dT%H:%M:%S)] [@orchestrator] {{AGENT_ID}}: TEAM_CREATE iss
 sed -i 's/assigned_team = 0/assigned_team = <チーム番号>/' {{ISSUES_DIR}}/<イシューID>.toml
 ```
 
+### イシューへの進捗コメント
+
+チームアサイン時にGitHub Issueにコメントを投稿します（`url` フィールドがある場合のみ）:
+```bash
+gh issue comment <イシュー番号> -R <owner>/<repo> --body "**[チームアサイン]** by \`{{AGENT_ID}}\`
+
+チーム<チーム番号>に割り当てました。アーキテクトが設計を開始します。"
+```
+
+イシュー番号・owner・repo は、イシューファイルの `url` フィールドから取得します。
+例: `url = "https://api.github.com/repos/ytnobody/MADFLOW/issues/5"` の場合
+- owner: `ytnobody`
+- repo: `MADFLOW`
+- イシュー番号: `5`
+
+`url` フィールドがない場合はコメント投稿をスキップしてください。
+
 ## 進捗管理
 
 - チャットログを読み、各チームの作業状況を把握する

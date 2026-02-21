@@ -58,7 +58,22 @@ sed -i 's/status = "in_progress"/status = "resolved"/' {{ISSUES_DIR}}/<イシュ
 echo "[$(date +%Y-%m-%dT%H:%M:%S)] [@orchestrator] {{AGENT_ID}}: TEAM_DISBAND issue_id=<イシューID>" >> {{CHATLOG_PATH}}
 ```
 
-3. feature ブランチを削除:
+3. GitHub Issueにマージ完了をコメントします（`url` フィールドがある場合のみ）:
+```bash
+gh issue comment <イシュー番号> -R <owner>/<repo> --body "**[マージ完了]** by \`{{AGENT_ID}}\`
+
+feature ブランチを develop にマージしました。イシューステータスを resolved に更新しました。"
+```
+
+イシュー番号・owner・repo は、イシューファイルの `url` フィールドから取得します。
+例: `url = "https://api.github.com/repos/ytnobody/MADFLOW/issues/5"` の場合
+- owner: `ytnobody`
+- repo: `MADFLOW`
+- イシュー番号: `5`
+
+`url` フィールドがない場合はコメント投稿をスキップしてください。
+
+4. feature ブランチを削除:
 ```bash
 git branch -d {{FEATURE_PREFIX}}<イシューID>
 ```

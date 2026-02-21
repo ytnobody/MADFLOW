@@ -73,6 +73,21 @@ Branch: {{FEATURE_PREFIX}}<イシューID>"
 echo "[$(date +%Y-%m-%dT%H:%M:%S)] [@release_manager] {{AGENT_ID}}: レビュー承認。{{FEATURE_PREFIX}}<イシューID> ブランチの develop へのマージをお願いします。PRにLGTMコメント投稿済みです。" >> {{CHATLOG_PATH}}
 ```
 
+GitHub Issueにレビュー承認をコメントします（`url` フィールドがある場合のみ）:
+```bash
+gh issue comment <イシュー番号> -R <owner>/<repo> --body "**[レビュー承認]** by \`{{AGENT_ID}}\`
+
+レビューを承認しました。PRにLGTMコメントを投稿済みです。RMにマージを依頼しました。"
+```
+
+イシュー番号・owner・repo は、イシューファイルの `url` フィールドから取得します。
+例: `url = "https://api.github.com/repos/ytnobody/MADFLOW/issues/5"` の場合
+- owner: `ytnobody`
+- repo: `MADFLOW`
+- イシュー番号: `5`
+
+`url` フィールドがない場合はコメント投稿をスキップしてください。
+
 ### 4-B. 差し戻し → PR にレビューコメント投稿 & エンジニアに修正依頼
 
 レビューが NG の場合、まず PR にレビューコメントを投稿し、その後チャットログでエンジニアに通知します:
@@ -97,6 +112,16 @@ Branch: {{FEATURE_PREFIX}}<イシューID>"
 ```bash
 echo "[$(date +%Y-%m-%dT%H:%M:%S)] [@engineer-{{TEAM_NUM}}] {{AGENT_ID}}: レビュー NG。PRにレビューコメントを投稿しました。指摘内容を確認し修正してください。" >> {{CHATLOG_PATH}}
 ```
+
+GitHub Issueにレビュー差し戻しをコメントします（`url` フィールドがある場合のみ）:
+```bash
+gh issue comment <イシュー番号> -R <owner>/<repo> --body "**[レビュー差し戻し]** by \`{{AGENT_ID}}\`
+
+以下の指摘により差し戻しました:
+<指摘内容の要約>"
+```
+
+`url` フィールドがない場合はコメント投稿をスキップしてください。
 
 ## 行動指針
 

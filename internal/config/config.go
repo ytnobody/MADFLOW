@@ -86,7 +86,7 @@ func setDefaults(cfg *Config) {
 		cfg.Agent.Models.Architect = "claude-opus-4-6"
 	}
 	if cfg.Agent.Models.Engineer == "" {
-		cfg.Agent.Models.Engineer = "claude-sonnet-4-6"
+		cfg.Agent.Models.Engineer = "gemini-pro"
 	}
 	if cfg.Agent.Models.Reviewer == "" {
 		cfg.Agent.Models.Reviewer = "claude-sonnet-4-6"
