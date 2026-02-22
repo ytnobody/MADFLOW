@@ -41,6 +41,9 @@ type BranchConfig struct {
 	Main          string `toml:"main"`
 	Develop       string `toml:"develop"`
 	FeaturePrefix string `toml:"feature_prefix"`
+	// CleanupIntervalMinutes specifies how often to delete merged feature branches
+	// from all configured repos. 0 (default) disables branch cleanup.
+	CleanupIntervalMinutes int `toml:"cleanup_interval_minutes"`
 }
 
 type GitHubConfig struct {
