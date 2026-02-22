@@ -23,13 +23,30 @@ type ghComment struct {
 	} `json:"user"`
 }
 
-// ghIssue represents a GitHub issue from `gh issue list --json`.
+// ghIssue represents a GitHub issue from `gh issue list --json` or Events API.
 type ghIssue struct {
 	Number int       `json:"number"`
 	Title  string    `json:"title"`
 	URL    string    `json:"url"`
 	Body   string    `json:"body"`
 	Labels []ghLabel `json:"labels"`
+	// User is populated from the GitHub Events API (issue.user.login).
+	User struct {
+		Login string `json:"login"`
+	} `json:"user"`
+	// Author is populated from `gh issue list --json author` (author.login).
+	Author struct {
+		Login string `json:"login"`
+	} `json:"author"`
+}
+
+// authorLogin returns the GitHub login of the issue author.
+// It checks User.Login first (Events API) and falls back to Author.Login (gh CLI).
+func (g *ghIssue) authorLogin() string {
+	if g.User.Login != "" {
+		return g.User.Login
+	}
+	return g.Author.Login
 }
 
 type ghLabel struct {
@@ -38,12 +55,13 @@ type ghLabel struct {
 
 // Syncer synchronizes GitHub Issues to local issue files.
 type Syncer struct {
-	store        *issue.Store
-	owner        string
-	repos        []string
-	interval     time.Duration
-	idleDetector *IdleDetector // nil = no adaptive behavior
-	idleInterval time.Duration // effective only when idleDetector is set
+	store           *issue.Store
+	owner           string
+	repos           []string
+	interval        time.Duration
+	idleDetector    *IdleDetector // nil = no adaptive behavior
+	idleInterval    time.Duration // effective only when idleDetector is set
+	authorizedUsers []string      // empty = all users trusted
 }
 
 // NewSyncer creates a new GitHub issue syncer.
@@ -54,6 +72,27 @@ func NewSyncer(store *issue.Store, owner string, repos []string, interval time.D
 		repos:    repos,
 		interval: interval,
 	}
+}
+
+// WithAuthorizedUsers restricts the Syncer to only process issues created by
+// the specified GitHub users. An empty slice (the default) allows all users.
+func (s *Syncer) WithAuthorizedUsers(users []string) *Syncer {
+	s.authorizedUsers = users
+	return s
+}
+
+// isAuthorized returns true if the given GitHub login is authorized.
+// When authorizedUsers is empty, all users are authorized.
+func isAuthorized(login string, authorizedUsers []string) bool {
+	if len(authorizedUsers) == 0 {
+		return true
+	}
+	for _, u := range authorizedUsers {
+		if u == login {
+			return true
+		}
+	}
+	return false
 }
 
 // WithIdleDetector attaches an IdleDetector to the Syncer, enabling adaptive polling.
@@ -161,6 +200,13 @@ func (s *Syncer) syncRepo(repo string) error {
 
 	for _, gh := range issues {
 		localID := formatID(s.owner, repo, gh.Number)
+
+		// Filter by authorized users if configured.
+		login := gh.authorLogin()
+		if !isAuthorized(login, s.authorizedUsers) {
+			log.Printf("[github-sync] skipping issue %s by unauthorized user %q", localID, login)
+			continue
+		}
 
 		existing, err := s.store.Get(localID)
 		if err != nil {
@@ -282,7 +328,7 @@ func (s *Syncer) fetchIssues(repo string) ([]ghIssue, error) {
 	cmd := exec.Command("gh", "issue", "list",
 		"-R", fullRepo,
 		"--state", "open",
-		"--json", "number,title,url,body,labels",
+		"--json", "number,title,url,body,labels,author",
 	)
 
 	out, err := cmd.Output()

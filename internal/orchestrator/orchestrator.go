@@ -449,7 +449,8 @@ func (o *Orchestrator) runEventWatcher(ctx context.Context) {
 
 	idleInterval := time.Duration(gh.IdlePollMinutes) * time.Minute
 	watcher := github.NewEventWatcher(o.store, gh.Owner, gh.Repos, interval, callback).
-		WithIdleDetector(o.idleDetector, idleInterval)
+		WithIdleDetector(o.idleDetector, idleInterval).
+		WithAuthorizedUsers(o.cfg.AuthorizedUsers)
 	if err := watcher.Run(ctx); err != nil && ctx.Err() == nil {
 		log.Printf("[orchestrator] event watcher stopped: %v", err)
 	}
@@ -488,7 +489,8 @@ func (o *Orchestrator) runGitHubSync(ctx context.Context) {
 	interval := time.Duration(gh.SyncIntervalMinutes) * time.Minute
 	idleInterval := time.Duration(gh.IdlePollMinutes) * time.Minute
 	syncer := github.NewSyncer(o.store, gh.Owner, gh.Repos, interval).
-		WithIdleDetector(o.idleDetector, idleInterval)
+		WithIdleDetector(o.idleDetector, idleInterval).
+		WithAuthorizedUsers(o.cfg.AuthorizedUsers)
 	if err := syncer.Run(ctx); err != nil && ctx.Err() == nil {
 		log.Printf("[orchestrator] github sync stopped: %v", err)
 	}
