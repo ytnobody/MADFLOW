@@ -115,10 +115,21 @@ echo "[$(date +%Y-%m-%dT%H:%M:%S)] [@engineer-<チーム番号>] {{AGENT_ID}}: �
 
 1. PRの内容を確認
 2. 必要に応じて修正指示
-3. 問題なければマージ承認とチーム解散を指示
+3. **CI/CDが全て通過していることを確認（必須）**
+4. 問題なければマージ承認とチーム解散を指示
+
+**重要: CI/CDが通過していないPRは絶対にマージしてはならない。**
+
+CI/CD確認コマンド:
+```bash
+gh pr view <PR番号> -R <owner>/<repo> --json statusCheckRollup
+```
+
+全てのチェックが `conclusion: SUCCESS` であることを確認してからマージしてください。
+CIが失敗している場合は、エンジニアに修正を依頼するか、ブランチを更新してCIを再実行してください。
 
 ```bash
-# レビューOKの場合
+# レビューOKかつCI/CD通過の場合
 gh pr review <PR番号> --approve --body "LGTM"
 gh pr merge <PR番号> --squash
 echo "[$(date +%Y-%m-%dT%H:%M:%S)] [@orchestrator] {{AGENT_ID}}: TEAM_DISBAND <イシューID>" >> {{CHATLOG_PATH}}
