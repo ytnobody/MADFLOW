@@ -179,6 +179,9 @@ func (o *Orchestrator) startResidentAgents(ctx context.Context, wg *sync.WaitGro
 		if err != nil {
 			return fmt.Errorf("load prompt for %s: %w", r.role, err)
 		}
+		if o.cfg.Agent.ExtraPrompt != "" {
+			systemPrompt += "\n\n" + o.cfg.Agent.ExtraPrompt
+		}
 
 		ag := agent.NewAgent(agent.AgentConfig{
 			ID:            agent.AgentID{Role: r.role},
@@ -528,6 +531,9 @@ func (o *Orchestrator) CreateTeamAgents(teamNum int, issueID string) (engineer *
 		systemPrompt, err := agent.LoadPrompt(o.promptDir, r.role, vars)
 		if err != nil {
 			return nil, fmt.Errorf("load prompt for %s: %w", r.role, err)
+		}
+		if o.cfg.Agent.ExtraPrompt != "" {
+			systemPrompt += "\n\n" + o.cfg.Agent.ExtraPrompt
 		}
 
 		agents[i] = agent.NewAgent(agent.AgentConfig{

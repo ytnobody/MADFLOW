@@ -34,6 +34,9 @@ type AgentConfig struct {
 	// check the main branch for bugs and improvement opportunities.
 	// 0 disables the periodic check. Defaults to 6 hours.
 	MainCheckIntervalHours int `toml:"main_check_interval_hours"`
+	// ExtraPrompt is appended to the system prompt of every agent.
+	// Use this to inject project-specific instructions that apply to all agents.
+	ExtraPrompt string `toml:"extra_prompt"`
 }
 
 type ModelConfig struct {
