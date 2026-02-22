@@ -451,3 +451,56 @@ path = "."
 		t.Errorf("expected [alice bob], got %v", cfg.AuthorizedUsers)
 	}
 }
+
+func TestDocCheckIntervalHoursDefault(t *testing.T) {
+	content := `
+[project]
+name = "test-app"
+
+[[project.repos]]
+name = "main"
+path = "."
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "madflow.toml")
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if cfg.Agent.DocCheckIntervalHours != 24 {
+		t.Errorf("expected default doc_check_interval_hours 24, got %d", cfg.Agent.DocCheckIntervalHours)
+	}
+}
+
+func TestDocCheckIntervalHoursCustom(t *testing.T) {
+	content := `
+[project]
+name = "test-app"
+
+[[project.repos]]
+name = "main"
+path = "."
+
+[agent]
+doc_check_interval_hours = 48
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "madflow.toml")
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if cfg.Agent.DocCheckIntervalHours != 48 {
+		t.Errorf("expected doc_check_interval_hours 48, got %d", cfg.Agent.DocCheckIntervalHours)
+	}
+}
