@@ -464,7 +464,7 @@ func loadProjectConfig() (*config.Config, *project.Project, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	
+
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		return nil, nil, err

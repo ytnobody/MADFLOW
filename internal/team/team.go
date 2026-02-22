@@ -35,10 +35,10 @@ func appendLine(path, line string) {
 
 // Team represents a task force team (engineer).
 type Team struct {
-	ID        int
-	IssueID   string
-	Engineer  *agent.Agent
-	cancel    context.CancelFunc
+	ID       int
+	IssueID  string
+	Engineer *agent.Agent
+	cancel   context.CancelFunc
 }
 
 // DefaultMaxTeams is the default maximum number of concurrent teams.
@@ -89,10 +89,10 @@ func (m *Manager) Create(ctx context.Context, issueID string) (*Team, error) {
 	teamCtx, cancel := context.WithCancel(ctx)
 
 	team := &Team{
-		ID:        teamNum,
-		IssueID:   issueID,
-		Engineer:  engineer,
-		cancel:    cancel,
+		ID:       teamNum,
+		IssueID:  issueID,
+		Engineer: engineer,
+		cancel:   cancel,
 	}
 
 	m.mu.Lock()

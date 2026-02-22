@@ -8,11 +8,11 @@ import (
 )
 
 type Config struct {
-	Project    ProjectConfig  `toml:"project"`
-	Agent      AgentConfig    `toml:"agent"`
-	Branches   BranchConfig   `toml:"branches"`
-	GitHub     *GitHubConfig  `toml:"github,omitempty"`
-	PromptsDir string         `toml:"prompts_dir,omitempty"`
+	Project    ProjectConfig `toml:"project"`
+	Agent      AgentConfig   `toml:"agent"`
+	Branches   BranchConfig  `toml:"branches"`
+	GitHub     *GitHubConfig `toml:"github,omitempty"`
+	PromptsDir string        `toml:"prompts_dir,omitempty"`
 	// AuthorizedUsers is a list of GitHub user logins that are allowed to create
 	// issues, PRs, and comments that MADFLOW will process. When empty (the default),
 	// all users are trusted. When non-empty, only listed users are trusted.

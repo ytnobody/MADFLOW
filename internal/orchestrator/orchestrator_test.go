@@ -193,11 +193,9 @@ func TestCreateTeamAgents(t *testing.T) {
 		t.Fatal("one or more agents is nil")
 	}
 
-
 	if engineer.ID.Role != "engineer" {
 		t.Errorf("expected engineer role, got %s", engineer.ID.Role)
 	}
-
 
 	// All agents should have team number 1
 	// if architect.ID.TeamNum != 1 {
@@ -230,7 +228,6 @@ func TestCreateTeamAgentsWithIssue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateTeamAgents failed: %v", err)
 	}
-
 
 }
 
