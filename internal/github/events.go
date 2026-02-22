@@ -351,11 +351,12 @@ func (w *EventWatcher) handleIssuesEvent(repo string, ev ghEvent) {
 		return
 	}
 
-	// Filter by authorized users if configured.
+	// Determine authorization - unauthorized issues are stored with PendingApproval=true
+	// instead of being skipped, so that an authorized user can later approve them.
 	login := payload.Issue.authorLogin()
-	if !isAuthorized(login, w.authorizedUsers) {
-		log.Printf("[event-watcher] skipping IssuesEvent for issue #%d by unauthorized user %q", payload.Issue.Number, login)
-		return
+	pendingApproval := !isAuthorized(login, w.authorizedUsers)
+	if pendingApproval {
+		log.Printf("[event-watcher] issue #%d by unauthorized user %q - stored as pending approval", payload.Issue.Number, login)
 	}
 
 	localID := FormatID(w.owner, repo, payload.Issue.Number)
@@ -363,14 +364,15 @@ func (w *EventWatcher) handleIssuesEvent(repo string, ev ghEvent) {
 	if err != nil {
 		// New issue
 		newIssue := &issue.Issue{
-			ID:           localID,
-			Title:        payload.Issue.Title,
-			URL:          payload.Issue.URL,
-			Status:       issue.StatusOpen,
-			AssignedTeam: 0,
-			Repos:        []string{repo},
-			Labels:       extractLabels(payload.Issue.Labels),
-			Body:         payload.Issue.Body,
+			ID:              localID,
+			Title:           payload.Issue.Title,
+			URL:             payload.Issue.URL,
+			Status:          issue.StatusOpen,
+			AssignedTeam:    0,
+			PendingApproval: pendingApproval,
+			Repos:           []string{repo},
+			Labels:          extractLabels(payload.Issue.Labels),
+			Body:            payload.Issue.Body,
 		}
 		if err := w.store.Update(newIssue); err != nil {
 			log.Printf("[event-watcher] create %s failed: %v", localID, err)
@@ -422,8 +424,9 @@ func (w *EventWatcher) handleIssueCommentEvent(repo string, ev ghEvent) {
 		return
 	}
 
-	// Filter by authorized users if configured.
 	commentLogin := payload.Comment.User.Login
+
+	// Only process comments from authorized users.
 	if !isAuthorized(commentLogin, w.authorizedUsers) {
 		log.Printf("[event-watcher] skipping IssueCommentEvent comment #%d by unauthorized user %q", payload.Comment.ID, commentLogin)
 		return
@@ -448,12 +451,21 @@ func (w *EventWatcher) handleIssueCommentEvent(repo string, ev ghEvent) {
 		UpdatedAt: updatedAt,
 	}
 
-	if existing.AddComment(comment) {
+	changed := existing.AddComment(comment)
+
+	// If an authorized user posts /approve on a pending-approval issue, clear the flag.
+	if existing.PendingApproval && strings.Contains(strings.ToLower(payload.Comment.Body), "/approve") {
+		existing.PendingApproval = false
+		changed = true
+		log.Printf("[event-watcher] issue %s approved by %s via comment #%d", localID, commentLogin, payload.Comment.ID)
+	}
+
+	if changed {
 		if err := w.store.Update(existing); err != nil {
 			log.Printf("[event-watcher] save comment on %s failed: %v", localID, err)
 			return
 		}
-		log.Printf("[event-watcher] comment #%d added to %s", comment.ID, localID)
+		log.Printf("[event-watcher] comment #%d processed for %s", comment.ID, localID)
 	}
 
 	if w.callback != nil {

@@ -201,32 +201,34 @@ func (s *Syncer) syncRepo(repo string) error {
 	for _, gh := range issues {
 		localID := formatID(s.owner, repo, gh.Number)
 
-		// Filter by authorized users if configured.
+		// Determine authorization - unauthorized issues are stored with PendingApproval=true
+		// instead of being skipped, so that an authorized user can later approve them.
 		login := gh.authorLogin()
-		if !isAuthorized(login, s.authorizedUsers) {
-			log.Printf("[github-sync] skipping issue %s by unauthorized user %q", localID, login)
-			continue
+		pendingApproval := !isAuthorized(login, s.authorizedUsers)
+		if pendingApproval {
+			log.Printf("[github-sync] issue %s by unauthorized user %q - stored as pending approval", localID, login)
 		}
 
 		existing, err := s.store.Get(localID)
 		if err != nil {
 			// New issue - create it
 			newIssue := &issue.Issue{
-				ID:           localID,
-				Title:        gh.Title,
-				URL:          gh.URL,
-				Status:       issue.StatusOpen,
-				AssignedTeam: 0,
-				Repos:        []string{repo},
-				Labels:       extractLabels(gh.Labels),
-				Body:         gh.Body,
+				ID:              localID,
+				Title:           gh.Title,
+				URL:             gh.URL,
+				Status:          issue.StatusOpen,
+				AssignedTeam:    0,
+				PendingApproval: pendingApproval,
+				Repos:           []string{repo},
+				Labels:          extractLabels(gh.Labels),
+				Body:            gh.Body,
 			}
 			if err := s.store.Update(newIssue); err != nil {
 				log.Printf("[github-sync] create %s failed: %v", localID, err)
 			} else {
 				log.Printf("[github-sync] imported %s: %s", localID, gh.Title)
 			}
-			// Sync comments for new issue
+			// Sync comments for new issue (may contain /approve)
 			s.syncComments(repo, gh.Number, localID)
 			continue
 		}
@@ -262,13 +264,12 @@ func (s *Syncer) syncRepo(repo string) error {
 }
 
 // syncComments fetches and persists comments for a single issue.
+// If the issue has PendingApproval=true and an authorized user's comment contains
+// "/approve", the PendingApproval flag is cleared.
 func (s *Syncer) syncComments(repo string, issueNumber int, localID string) {
 	comments, err := s.fetchComments(repo, issueNumber)
 	if err != nil {
 		log.Printf("[github-sync] fetch comments for %s failed: %v", localID, err)
-		return
-	}
-	if len(comments) == 0 {
 		return
 	}
 
@@ -293,10 +294,23 @@ func (s *Syncer) syncComments(repo string, issueNumber int, localID string) {
 		}
 	}
 
-	if added > 0 {
+	// Check for /approve from an authorized user to clear PendingApproval.
+	approvalChanged := false
+	if iss.PendingApproval {
+		for _, c := range iss.Comments {
+			if isAuthorized(c.Author, s.authorizedUsers) && strings.Contains(strings.ToLower(c.Body), "/approve") {
+				iss.PendingApproval = false
+				approvalChanged = true
+				log.Printf("[github-sync] issue %s approved by %s", localID, c.Author)
+				break
+			}
+		}
+	}
+
+	if added > 0 || approvalChanged {
 		if err := s.store.Update(iss); err != nil {
 			log.Printf("[github-sync] save comments for %s failed: %v", localID, err)
-		} else {
+		} else if added > 0 {
 			log.Printf("[github-sync] added %d comments to %s", added, localID)
 		}
 	}

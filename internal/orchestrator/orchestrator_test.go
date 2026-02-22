@@ -337,6 +337,51 @@ func TestStartAllTeamsAssignsIssues(t *testing.T) {
 	}
 }
 
+func TestStartAllTeamsSkipsPendingApproval(t *testing.T) {
+	dir := t.TempDir()
+	cfg := testConfig(dir)
+	cfg.Agent.MaxTeams = 3
+	os.MkdirAll(filepath.Join(dir, "issues"), 0755)
+	os.WriteFile(filepath.Join(dir, "chatlog.txt"), nil, 0644)
+
+	orc := New(cfg, dir, t.TempDir())
+	orc.teams = team.NewManager(newMockTeamFactory(t), 3)
+
+	// Create 1 regular open issue and 1 pending-approval issue.
+	regular, err := orc.Store().Create("Regular Issue", "body")
+	if err != nil {
+		t.Fatalf("create regular issue: %v", err)
+	}
+
+	pending, err := orc.Store().Create("Pending Issue", "body")
+	if err != nil {
+		t.Fatalf("create pending issue: %v", err)
+	}
+	pending.PendingApproval = true
+	orc.Store().Update(pending)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	orc.startAllTeams(ctx)
+
+	// 3 teams should be created (1 for regular + 2 standby)
+	if orc.Teams().Count() != 3 {
+		t.Errorf("expected 3 teams, got %d", orc.Teams().Count())
+	}
+
+	// Regular issue should be assigned, pending issue should NOT be assigned.
+	gotRegular, _ := orc.Store().Get(regular.ID)
+	if gotRegular.AssignedTeam == 0 {
+		t.Error("regular issue should have assigned team")
+	}
+
+	gotPending, _ := orc.Store().Get(pending.ID)
+	if gotPending.AssignedTeam != 0 {
+		t.Error("pending-approval issue should NOT have assigned team")
+	}
+}
+
 func TestCreateTeamAgentsMissingPrompt(t *testing.T) {
 	dir := t.TempDir()
 	cfg := testConfig(dir)

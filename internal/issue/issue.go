@@ -31,16 +31,20 @@ const (
 )
 
 type Issue struct {
-	ID           string    `toml:"id"`
-	Title        string    `toml:"title"`
-	URL          string    `toml:"url,omitempty"`
-	Status       Status    `toml:"status"`
-	AssignedTeam int       `toml:"assigned_team"`
-	Repos        []string  `toml:"repos,omitempty"`
-	Labels       []string  `toml:"labels,omitempty"`
-	Body         string    `toml:"body"`
-	Acceptance   string    `toml:"acceptance,omitempty"`
-	Comments     []Comment `toml:"comments,omitempty"`
+	ID           string `toml:"id"`
+	Title        string `toml:"title"`
+	URL          string `toml:"url,omitempty"`
+	Status       Status `toml:"status"`
+	AssignedTeam int    `toml:"assigned_team"`
+	// PendingApproval is set to true when an issue is created by a user not in
+	// authorized_users. The issue will not be assigned to a team until an
+	// authorized user posts a comment containing "/approve".
+	PendingApproval bool      `toml:"pending_approval,omitempty"`
+	Repos           []string  `toml:"repos,omitempty"`
+	Labels          []string  `toml:"labels,omitempty"`
+	Body            string    `toml:"body"`
+	Acceptance      string    `toml:"acceptance,omitempty"`
+	Comments        []Comment `toml:"comments,omitempty"`
 }
 
 // HasComment checks whether a comment with the given ID already exists.
