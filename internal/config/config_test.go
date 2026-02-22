@@ -342,3 +342,57 @@ main_check_interval_hours = 0
 		t.Errorf("expected default 6 when 0 is set, got %d", cfg.Agent.MainCheckIntervalHours)
 	}
 }
+
+func TestExtraPromptDefault(t *testing.T) {
+	content := `
+[project]
+name = "test-app"
+
+[[project.repos]]
+name = "main"
+path = "."
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "madflow.toml")
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if cfg.Agent.ExtraPrompt != "" {
+		t.Errorf("expected empty extra_prompt by default, got %q", cfg.Agent.ExtraPrompt)
+	}
+}
+
+func TestExtraPromptCustom(t *testing.T) {
+	content := `
+[project]
+name = "test-app"
+
+[[project.repos]]
+name = "main"
+path = "."
+
+[agent]
+extra_prompt = "このプロジェクトはGoで書かれています。コーディング規約を遵守してください。"
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "madflow.toml")
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	expected := "このプロジェクトはGoで書かれています。コーディング規約を遵守してください。"
+	if cfg.Agent.ExtraPrompt != expected {
+		t.Errorf("expected extra_prompt %q, got %q", expected, cfg.Agent.ExtraPrompt)
+	}
+}

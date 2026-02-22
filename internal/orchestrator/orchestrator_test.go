@@ -356,3 +356,44 @@ func TestCreateTeamAgentsMissingPrompt(t *testing.T) {
 		t.Fatal("expected error for missing prompt templates")
 	}
 }
+
+func TestCreateTeamAgentsExtraPrompt(t *testing.T) {
+	dir := t.TempDir()
+	cfg := testConfig(dir)
+	cfg.Agent.ExtraPrompt = "プロジェクト固有の追加指示です。"
+	os.MkdirAll(filepath.Join(dir, "issues"), 0755)
+	os.MkdirAll(filepath.Join(dir, "memos"), 0755)
+
+	// Create prompt templates
+	promptDir := t.TempDir()
+	basePrompt := "# engineer.md\nAgent: {{AGENT_ID}}"
+	os.WriteFile(filepath.Join(promptDir, "engineer.md"), []byte(basePrompt), 0644)
+
+	orc := New(cfg, dir, promptDir)
+
+	engineer, err := orc.CreateTeamAgents(1, "test-issue-extra")
+	if err != nil {
+		t.Fatalf("CreateTeamAgents failed: %v", err)
+	}
+
+	// The system prompt should contain both the base prompt and the extra prompt.
+	if !contains(engineer.SystemPrompt, "# engineer.md") {
+		t.Error("expected system prompt to contain base prompt content")
+	}
+	if !contains(engineer.SystemPrompt, cfg.Agent.ExtraPrompt) {
+		t.Errorf("expected system prompt to contain extra_prompt %q, got %q", cfg.Agent.ExtraPrompt, engineer.SystemPrompt)
+	}
+}
+
+func contains(s, sub string) bool {
+	return len(s) >= len(sub) && (s == sub || len(s) > 0 && containsStr(s, sub))
+}
+
+func containsStr(s, sub string) bool {
+	for i := 0; i <= len(s)-len(sub); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
+}
