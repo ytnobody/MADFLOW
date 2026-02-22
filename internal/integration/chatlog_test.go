@@ -53,14 +53,25 @@ func TestTwoAgentsChatLogCommunication(t *testing.T) {
 		t.Fatal("agent did not become ready in time")
 	}
 
+	// Wait for the agent's chatlog Watch goroutine to initialize.
+	// markReady() is called before Watch() is set up in agent.Run(), so we need
+	// to give the goroutine time to record the current file offset before writing.
+	// One full polling interval (500ms) plus margin is sufficient.
+	time.Sleep(700 * time.Millisecond)
+
 	// Write a message to engineer (Watch 開始後に書き込む)
 	writer := NewChatLogWriter(logPath)
 	writer.Write("engineer-1", "superintendent", "Issue #local-001 の設計と実装を開始してください")
 
-	// Wait for engineer to process
-	// ポーリング間隔は500ms。メッセージを受信するには
-	// 少なくとも1ポーリングサイクル分の余裕が必要なため、1500ms待機する
-	time.Sleep(1500 * time.Millisecond)
+	// Wait for engineer to process the message using polling instead of a fixed sleep.
+	// This is more robust in CI environments where timing can vary significantly.
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if mockEngineer.CallCount() >= 2 {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 
 	// Engineer should have received at least 2 calls: initial + the message
 	if mockEngineer.CallCount() < 2 {
