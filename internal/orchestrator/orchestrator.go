@@ -239,7 +239,7 @@ func (o *Orchestrator) startAllTeams(ctx context.Context) {
 		maxTeams = team.DefaultMaxTeams
 	}
 
-	// Collect assignable issues
+	// Collect assignable issues (excluding those pending approval).
 	var assignable []*issue.Issue
 	allIssues, err := o.store.List(issue.StatusFilter{})
 	if err != nil {
@@ -247,6 +247,10 @@ func (o *Orchestrator) startAllTeams(ctx context.Context) {
 	} else {
 		for _, iss := range allIssues {
 			if iss.Status == issue.StatusOpen || iss.Status == issue.StatusInProgress {
+				if iss.PendingApproval {
+					log.Printf("[orchestrator] skipping issue %s (pending approval)", iss.ID)
+					continue
+				}
 				assignable = append(assignable, iss)
 			}
 		}

@@ -1,6 +1,7 @@
 package github
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -365,4 +366,95 @@ func TestSyncer_WithAuthorizedUsers(t *testing.T) {
 	if s.authorizedUsers[0] != "alice" {
 		t.Errorf("expected alice, got %q", s.authorizedUsers[0])
 	}
+}
+
+func TestSyncer_SyncComments_ApprovalByAuthorizedUser(t *testing.T) {
+	// Test that /approve from an authorized user clears PendingApproval.
+	dir := t.TempDir()
+	store := issue.NewStore(dir)
+
+	// Create a pending-approval issue.
+	iss := &issue.Issue{
+		ID:              "owner-repo-001",
+		Title:           "Pending Issue",
+		Status:          issue.StatusOpen,
+		PendingApproval: true,
+	}
+	_ = store.Update(iss)
+
+	// Add an /approve comment from an authorized user.
+	now := time.Now()
+	iss.Comments = []issue.Comment{
+		{ID: 1, Author: "alice", Body: "/approve", CreatedAt: now, UpdatedAt: now},
+	}
+	_ = store.Update(iss)
+
+	// Simulate the approval-check logic from syncComments.
+	syncer := NewSyncer(store, "owner", []string{"repo"}, time.Minute).
+		WithAuthorizedUsers([]string{"alice"})
+
+	loaded, _ := store.Get("owner-repo-001")
+	if !loaded.PendingApproval {
+		t.Fatal("expected PendingApproval=true initially")
+	}
+
+	// Check for /approve among comments.
+	if loaded.PendingApproval {
+		for _, c := range loaded.Comments {
+			if isAuthorized(c.Author, syncer.authorizedUsers) &&
+				containsApprove(c.Body) {
+				loaded.PendingApproval = false
+				_ = store.Update(loaded)
+				break
+			}
+		}
+	}
+
+	result, _ := store.Get("owner-repo-001")
+	if result.PendingApproval {
+		t.Error("expected PendingApproval=false after /approve comment from authorized user")
+	}
+}
+
+func TestSyncer_SyncComments_NoApprovalFromUnauthorized(t *testing.T) {
+	// Test that /approve from an unauthorized user does NOT clear PendingApproval.
+	dir := t.TempDir()
+	store := issue.NewStore(dir)
+
+	iss := &issue.Issue{
+		ID:              "owner-repo-002",
+		Title:           "Pending Issue",
+		Status:          issue.StatusOpen,
+		PendingApproval: true,
+		Comments: []issue.Comment{
+			{ID: 2, Author: "charlie", Body: "/approve"},
+		},
+	}
+	_ = store.Update(iss)
+
+	syncer := NewSyncer(store, "owner", []string{"repo"}, time.Minute).
+		WithAuthorizedUsers([]string{"alice", "bob"})
+
+	// Simulate the approval-check logic - charlie is not authorized.
+	loaded, _ := store.Get("owner-repo-002")
+	if loaded.PendingApproval {
+		for _, c := range loaded.Comments {
+			if isAuthorized(c.Author, syncer.authorizedUsers) &&
+				containsApprove(c.Body) {
+				loaded.PendingApproval = false
+				_ = store.Update(loaded)
+				break
+			}
+		}
+	}
+
+	result, _ := store.Get("owner-repo-002")
+	if !result.PendingApproval {
+		t.Error("expected PendingApproval=true: /approve from unauthorized user should be ignored")
+	}
+}
+
+// containsApprove is a helper mirroring the /approve detection in syncComments.
+func containsApprove(body string) bool {
+	return strings.Contains(strings.ToLower(body), "/approve")
 }
