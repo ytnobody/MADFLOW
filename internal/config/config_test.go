@@ -256,3 +256,89 @@ chatlog_max_lines = 1000
 		t.Errorf("expected chatlog_max_lines 1000, got %d", cfg.Agent.ChatlogMaxLines)
 	}
 }
+
+func TestMainCheckIntervalHoursDefault(t *testing.T) {
+	content := `
+[project]
+name = "test-app"
+
+[[project.repos]]
+name = "main"
+path = "."
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "madflow.toml")
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if cfg.Agent.MainCheckIntervalHours != 6 {
+		t.Errorf("expected default main_check_interval_hours 6, got %d", cfg.Agent.MainCheckIntervalHours)
+	}
+}
+
+func TestMainCheckIntervalHoursCustom(t *testing.T) {
+	content := `
+[project]
+name = "test-app"
+
+[[project.repos]]
+name = "main"
+path = "."
+
+[agent]
+main_check_interval_hours = 12
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "madflow.toml")
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if cfg.Agent.MainCheckIntervalHours != 12 {
+		t.Errorf("expected main_check_interval_hours 12, got %d", cfg.Agent.MainCheckIntervalHours)
+	}
+}
+
+func TestMainCheckIntervalHoursDisabled(t *testing.T) {
+	// Setting to -1 is invalid but 0 would trigger the default (6).
+	// Users who want to disable must set a negative value... actually
+	// looking at the design, 0 triggers the default. Let's verify
+	// the default is applied correctly when not specified.
+	content := `
+[project]
+name = "test-app"
+
+[[project.repos]]
+name = "main"
+path = "."
+
+[agent]
+main_check_interval_hours = 0
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "madflow.toml")
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 0 triggers the default of 6
+	if cfg.Agent.MainCheckIntervalHours != 6 {
+		t.Errorf("expected default 6 when 0 is set, got %d", cfg.Agent.MainCheckIntervalHours)
+	}
+}
