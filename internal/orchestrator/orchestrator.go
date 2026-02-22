@@ -119,6 +119,15 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 		o.runChatlogCleanup(ctx)
 	}()
 
+	// Start branch cleanup goroutine if configured
+	if o.cfg.Branches.CleanupIntervalMinutes > 0 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			o.runBranchCleanup(ctx)
+		}()
+	}
+
 	// Watch chatlog for orchestrator commands
 	wg.Add(1)
 	go func() {
@@ -554,4 +563,36 @@ func (o *Orchestrator) firstRepoPath() string {
 		return o.cfg.Project.Repos[0].Path
 	}
 	return "."
+}
+
+// runBranchCleanup periodically deletes merged feature branches from all repos.
+func (o *Orchestrator) runBranchCleanup(ctx context.Context) {
+	interval := time.Duration(o.cfg.Branches.CleanupIntervalMinutes) * time.Minute
+	log.Printf("[branch-cleanup] started (interval: %v)", interval)
+
+	protected := []string{o.cfg.Branches.Main, o.cfg.Branches.Develop}
+	featurePrefix := o.cfg.Branches.FeaturePrefix
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			log.Println("[branch-cleanup] stopped")
+			return
+		case <-ticker.C:
+			for name, repo := range o.repos {
+				cleaner := git.NewBranchCleaner(repo, protected, featurePrefix)
+				deleted, err := cleaner.CleanMergedBranches(o.cfg.Branches.Develop)
+				if err != nil {
+					log.Printf("[branch-cleanup] %s: %v", name, err)
+					continue
+				}
+				if len(deleted) > 0 {
+					log.Printf("[branch-cleanup] %s: deleted %d merged branches: %v", name, len(deleted), deleted)
+				}
+			}
+		}
+	}
 }
