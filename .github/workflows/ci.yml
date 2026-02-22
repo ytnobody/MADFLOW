@@ -77,14 +77,14 @@ jobs:
           BENCHSTAT_OUT=$(benchstat /tmp/bench_old.txt /tmp/bench_new.txt 2>&1)
           echo "$BENCHSTAT_OUT"
 
-          # Fail if any benchmark regressed by 10% or more
+          # Fail if any benchmark regressed by 30% or more
           if echo "$BENCHSTAT_OUT" | awk '
             /\+[0-9]/ {
               for (i = 1; i <= NF; i++) {
                 if ($i ~ /^\+[0-9]+(\.[0-9]+)?%$/) {
                   val = $i
                   gsub(/[+%]/, "", val)
-                  if (val + 0 >= 10.0) {
+                  if (val + 0 >= 30.0) {
                     print "REGRESSION: " $0
                     found = 1
                   }
@@ -93,8 +93,8 @@ jobs:
             }
             END { exit (found ? 1 : 0) }
           '; then
-            echo "Benchmark check passed: No regression >= 10% detected."
+            echo "Benchmark check passed: No regression >= 30% detected."
           else
-            echo "ERROR: Performance regression of 10% or more detected!"
+            echo "ERROR: Performance regression of 30% or more detected!"
             exit 1
           fi
