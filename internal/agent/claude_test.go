@@ -18,11 +18,11 @@ func TestBuildArgs(t *testing.T) {
 
 	expected := map[string]bool{
 		"--print":                        false,
-		"--output-format":               false,
-		"--system-prompt":               false,
+		"--output-format":                false,
+		"--system-prompt":                false,
 		"--model":                        false,
 		"--allowedTools":                 false,
-		"--max-budget-usd":              false,
+		"--max-budget-usd":               false,
 		"--dangerously-skip-permissions": false,
 	}
 

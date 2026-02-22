@@ -18,11 +18,11 @@ import (
 //
 // The detector is concurrency-safe and can be shared between Syncer and EventWatcher.
 type IdleDetector struct {
-	mu                 sync.RWMutex
-	hasIssues          bool
-	issuesGoneAt       time.Time     // when hasIssues last became false
-	idleThreshold      time.Duration // how long with no issues before going idle (0 = immediately)
-	dormancyThreshold  time.Duration // how long with no issues before entering dormancy (0 = disabled)
+	mu                sync.RWMutex
+	hasIssues         bool
+	issuesGoneAt      time.Time     // when hasIssues last became false
+	idleThreshold     time.Duration // how long with no issues before going idle (0 = immediately)
+	dormancyThreshold time.Duration // how long with no issues before entering dormancy (0 = disabled)
 }
 
 // NewIdleDetector creates an IdleDetector that starts in an active state

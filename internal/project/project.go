@@ -9,9 +9,9 @@ import (
 )
 
 const (
-	madflowDir      = ".madflow"
-	projectsFile    = "projects.toml"
-	configFileName  = "madflow.toml"
+	madflowDir     = ".madflow"
+	projectsFile   = "projects.toml"
+	configFileName = "madflow.toml"
 )
 
 type Project struct {
