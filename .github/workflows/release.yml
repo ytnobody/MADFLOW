@@ -1,0 +1,48 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and Release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build binaries
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          LDFLAGS="-X main.version=${VERSION}"
+
+          GOOS=linux   GOARCH=amd64 go build -ldflags "${LDFLAGS}" -o dist/madflow-linux-amd64   ./cmd/madflow
+          GOOS=linux   GOARCH=arm64 go build -ldflags "${LDFLAGS}" -o dist/madflow-linux-arm64   ./cmd/madflow
+          GOOS=darwin  GOARCH=amd64 go build -ldflags "${LDFLAGS}" -o dist/madflow-darwin-amd64  ./cmd/madflow
+          GOOS=darwin  GOARCH=arm64 go build -ldflags "${LDFLAGS}" -o dist/madflow-darwin-arm64  ./cmd/madflow
+          GOOS=windows GOARCH=amd64 go build -ldflags "${LDFLAGS}" -o dist/madflow-windows-amd64.exe ./cmd/madflow
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            dist/madflow-linux-amd64
+            dist/madflow-linux-arm64
+            dist/madflow-darwin-amd64
+            dist/madflow-darwin-arm64
+            dist/madflow-windows-amd64.exe
