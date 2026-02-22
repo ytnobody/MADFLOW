@@ -137,6 +137,15 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 		}()
 	}
 
+	// Start document consistency check goroutine
+	if o.cfg.Agent.DocCheckIntervalHours > 0 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			o.runDocCheck(ctx)
+		}()
+	}
+
 	// Watch chatlog for orchestrator commands
 	wg.Add(1)
 	go func() {
@@ -615,6 +624,42 @@ func (o *Orchestrator) runMainCheck(ctx context.Context) {
 		case <-ticker.C:
 			log.Println("[main-check] sending main branch check request to superintendent")
 			o.chatLog.Append("superintendent", "orchestrator", mainCheckPrompt)
+		}
+	}
+}
+
+// docCheckPrompt is the message sent to the superintendent for periodic doc consistency checks.
+const docCheckPrompt = `定期ドキュメント整合性確認の時間です。
+
+以下の手順でドキュメントとコードの整合性を確認してください：
+
+1. README.md の内容と現在のコード構成・機能を比較する
+2. docs/ ディレクトリ配下のドキュメント（存在する場合）を確認する
+3. コマンドの使い方・設定項目・アーキテクチャ説明が現状と一致しているか確認する
+4. 差異が見つかった場合：
+   - feature ブランチを作成してドキュメントを修正する
+   - 修正内容を GitHub Pull Request として作成する（base: develop）
+   - PR の説明に差異の内容と修正理由を記載する
+5. 差異が見つからない場合は、その旨をチャットログに記録する
+
+注意: コードを修正するのではなく、ドキュメントをコードの現状に合わせて修正してください。`
+
+// runDocCheck periodically prompts the superintendent to check doc/code consistency.
+func (o *Orchestrator) runDocCheck(ctx context.Context) {
+	interval := time.Duration(o.cfg.Agent.DocCheckIntervalHours) * time.Hour
+	log.Printf("[doc-check] started (interval: %v)", interval)
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			log.Println("[doc-check] stopped")
+			return
+		case <-ticker.C:
+			log.Println("[doc-check] sending doc consistency check request to superintendent")
+			o.chatLog.Append("superintendent", "orchestrator", docCheckPrompt)
 		}
 	}
 }

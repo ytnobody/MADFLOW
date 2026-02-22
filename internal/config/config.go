@@ -38,6 +38,11 @@ type AgentConfig struct {
 	// check the main branch for bugs and improvement opportunities.
 	// 0 disables the periodic check. Defaults to 6 hours.
 	MainCheckIntervalHours int `toml:"main_check_interval_hours"`
+	// DocCheckIntervalHours specifies how often the superintendent is prompted to
+	// check that documentation is consistent with the current codebase and create
+	// fix PRs when discrepancies are found.
+	// 0 triggers the default of 24 hours.
+	DocCheckIntervalHours int `toml:"doc_check_interval_hours"`
 	// ExtraPrompt is appended to the system prompt of every agent.
 	// Use this to inject project-specific instructions that apply to all agents.
 	ExtraPrompt string `toml:"extra_prompt"`
@@ -114,6 +119,9 @@ func setDefaults(cfg *Config) {
 	}
 	if cfg.Agent.MainCheckIntervalHours == 0 {
 		cfg.Agent.MainCheckIntervalHours = 6
+	}
+	if cfg.Agent.DocCheckIntervalHours == 0 {
+		cfg.Agent.DocCheckIntervalHours = 24
 	}
 	if cfg.Branches.Main == "" {
 		cfg.Branches.Main = "main"
