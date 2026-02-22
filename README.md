@@ -16,7 +16,7 @@ MADFLOW（Multi-Agent Development Flow）は、複数の AI エージェント�
 - Git
 - 以下のいずれか:
   - [Claude Code](https://claude.com/claude-code)（`claude` コマンド）
-  - [gmn](https://github.com/yourusername/gmn)（`gmn` コマンド）- Gemini モデル使用時
+  - [gmn](https://github.com/tomohiro-owada/gmn)（`gmn` コマンド）- Gemini モデル使用時
 - GitHub CLI（`gh`）（GitHub Issue 同期を使用する場合）
 
 ## インストール
