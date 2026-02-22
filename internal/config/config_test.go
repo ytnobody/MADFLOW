@@ -396,3 +396,58 @@ extra_prompt = "このプロジェクトはGoで書かれています。コー�
 		t.Errorf("expected extra_prompt %q, got %q", expected, cfg.Agent.ExtraPrompt)
 	}
 }
+
+func TestAuthorizedUsersDefault(t *testing.T) {
+	content := `
+[project]
+name = "test-app"
+
+[[project.repos]]
+name = "main"
+path = "."
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "madflow.toml")
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(cfg.AuthorizedUsers) != 0 {
+		t.Errorf("expected empty authorized_users by default, got %v", cfg.AuthorizedUsers)
+	}
+}
+
+func TestAuthorizedUsersCustom(t *testing.T) {
+	content := `
+authorized_users = ["alice", "bob"]
+
+[project]
+name = "test-app"
+
+[[project.repos]]
+name = "main"
+path = "."
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "madflow.toml")
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(cfg.AuthorizedUsers) != 2 {
+		t.Fatalf("expected 2 authorized_users, got %d", len(cfg.AuthorizedUsers))
+	}
+	if cfg.AuthorizedUsers[0] != "alice" || cfg.AuthorizedUsers[1] != "bob" {
+		t.Errorf("expected [alice bob], got %v", cfg.AuthorizedUsers)
+	}
+}

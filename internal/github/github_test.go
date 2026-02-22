@@ -299,3 +299,70 @@ func TestSyncer_UpdateIdleState_NilDetector(t *testing.T) {
 	s := NewSyncer(store, "owner", []string{"repo"}, time.Minute)
 	s.updateIdleState() // should not panic
 }
+
+func TestIsAuthorized_EmptyList(t *testing.T) {
+	// Empty authorized users means everyone is authorized.
+	if !isAuthorized("alice", nil) {
+		t.Error("expected alice to be authorized when list is empty")
+	}
+	if !isAuthorized("", nil) {
+		t.Error("expected empty login to be authorized when list is empty")
+	}
+}
+
+func TestIsAuthorized_WithList(t *testing.T) {
+	authorized := []string{"alice", "bob"}
+
+	if !isAuthorized("alice", authorized) {
+		t.Error("expected alice to be authorized")
+	}
+	if !isAuthorized("bob", authorized) {
+		t.Error("expected bob to be authorized")
+	}
+	if isAuthorized("charlie", authorized) {
+		t.Error("expected charlie to be unauthorized")
+	}
+	if isAuthorized("", authorized) {
+		t.Error("expected empty login to be unauthorized when list is non-empty")
+	}
+}
+
+func TestGhIssueAuthorLogin_UserField(t *testing.T) {
+	g := &ghIssue{}
+	g.User.Login = "alice"
+	g.Author.Login = "bob"
+
+	// User.Login takes priority over Author.Login.
+	if got := g.authorLogin(); got != "alice" {
+		t.Errorf("expected alice, got %q", got)
+	}
+}
+
+func TestGhIssueAuthorLogin_FallbackAuthor(t *testing.T) {
+	g := &ghIssue{}
+	g.Author.Login = "bob"
+
+	// Falls back to Author.Login when User.Login is empty.
+	if got := g.authorLogin(); got != "bob" {
+		t.Errorf("expected bob, got %q", got)
+	}
+}
+
+func TestGhIssueAuthorLogin_Empty(t *testing.T) {
+	g := &ghIssue{}
+	if got := g.authorLogin(); got != "" {
+		t.Errorf("expected empty string, got %q", got)
+	}
+}
+
+func TestSyncer_WithAuthorizedUsers(t *testing.T) {
+	s := NewSyncer(nil, "owner", []string{"repo"}, time.Minute).
+		WithAuthorizedUsers([]string{"alice", "bob"})
+
+	if len(s.authorizedUsers) != 2 {
+		t.Fatalf("expected 2 authorized users, got %d", len(s.authorizedUsers))
+	}
+	if s.authorizedUsers[0] != "alice" {
+		t.Errorf("expected alice, got %q", s.authorizedUsers[0])
+	}
+}

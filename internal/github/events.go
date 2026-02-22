@@ -71,8 +71,9 @@ type EventWatcher struct {
 	interval time.Duration
 	callback EventCallback
 
-	idleDetector *IdleDetector // nil = no adaptive behavior
-	idleInterval time.Duration // effective only when idleDetector is set
+	idleDetector    *IdleDetector // nil = no adaptive behavior
+	idleInterval    time.Duration // effective only when idleDetector is set
+	authorizedUsers []string      // empty = all users trusted
 
 	mu         sync.Mutex
 	seenEvents map[string]struct{}
@@ -88,6 +89,13 @@ func NewEventWatcher(store *issue.Store, owner string, repos []string, interval 
 		callback:   cb,
 		seenEvents: make(map[string]struct{}),
 	}
+}
+
+// WithAuthorizedUsers restricts the EventWatcher to only process events from
+// the specified GitHub users. An empty slice (the default) allows all users.
+func (w *EventWatcher) WithAuthorizedUsers(users []string) *EventWatcher {
+	w.authorizedUsers = users
+	return w
 }
 
 // WithIdleDetector attaches an IdleDetector to the EventWatcher, enabling adaptive polling.
@@ -343,6 +351,13 @@ func (w *EventWatcher) handleIssuesEvent(repo string, ev ghEvent) {
 		return
 	}
 
+	// Filter by authorized users if configured.
+	login := payload.Issue.authorLogin()
+	if !isAuthorized(login, w.authorizedUsers) {
+		log.Printf("[event-watcher] skipping IssuesEvent for issue #%d by unauthorized user %q", payload.Issue.Number, login)
+		return
+	}
+
 	localID := FormatID(w.owner, repo, payload.Issue.Number)
 	existing, err := w.store.Get(localID)
 	if err != nil {
@@ -404,6 +419,13 @@ func (w *EventWatcher) handleIssueCommentEvent(repo string, ev ghEvent) {
 	}
 
 	if payload.Action != "created" {
+		return
+	}
+
+	// Filter by authorized users if configured.
+	commentLogin := payload.Comment.User.Login
+	if !isAuthorized(commentLogin, w.authorizedUsers) {
+		log.Printf("[event-watcher] skipping IssueCommentEvent comment #%d by unauthorized user %q", payload.Comment.ID, commentLogin)
 		return
 	}
 
