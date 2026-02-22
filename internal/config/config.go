@@ -30,6 +30,10 @@ type AgentConfig struct {
 	MaxTeams            int         `toml:"max_teams"`
 	ChatlogMaxLines     int         `toml:"chatlog_max_lines"`
 	Models              ModelConfig `toml:"models"`
+	// MainCheckIntervalHours specifies how often the superintendent is prompted to
+	// check the main branch for bugs and improvement opportunities.
+	// 0 disables the periodic check. Defaults to 6 hours.
+	MainCheckIntervalHours int `toml:"main_check_interval_hours"`
 }
 
 type ModelConfig struct {
@@ -100,6 +104,9 @@ func setDefaults(cfg *Config) {
 	}
 	if cfg.Agent.ChatlogMaxLines == 0 {
 		cfg.Agent.ChatlogMaxLines = 500
+	}
+	if cfg.Agent.MainCheckIntervalHours == 0 {
+		cfg.Agent.MainCheckIntervalHours = 6
 	}
 	if cfg.Branches.Main == "" {
 		cfg.Branches.Main = "main"

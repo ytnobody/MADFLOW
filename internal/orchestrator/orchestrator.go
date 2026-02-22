@@ -128,6 +128,15 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 		}()
 	}
 
+	// Start main branch check goroutine
+	if o.cfg.Agent.MainCheckIntervalHours > 0 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			o.runMainCheck(ctx)
+		}()
+	}
+
 	// Watch chatlog for orchestrator commands
 	wg.Add(1)
 	go func() {
@@ -563,6 +572,39 @@ func (o *Orchestrator) firstRepoPath() string {
 		return o.cfg.Project.Repos[0].Path
 	}
 	return "."
+}
+
+// mainCheckPrompt is the message sent to the superintendent for periodic main branch checks.
+const mainCheckPrompt = `定期メインブランチ動作確認の時間です。
+
+以下の手順でmainブランチを確認してください：
+
+1. mainブランチをチェックアウトして最新状態に更新
+2. ビルドエラーがないか確認（go build ./...）
+3. テストが通るか確認（go test ./...）
+4. 最近マージされた変更に潜在的な不具合・改善点がないかコードレビュー
+
+問題が見つかった場合は、GitHub Issueを作成してください。
+特に問題がなければ、その旨をチャットログに記録してください。`
+
+// runMainCheck periodically prompts the superintendent to verify the main branch.
+func (o *Orchestrator) runMainCheck(ctx context.Context) {
+	interval := time.Duration(o.cfg.Agent.MainCheckIntervalHours) * time.Hour
+	log.Printf("[main-check] started (interval: %v)", interval)
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			log.Println("[main-check] stopped")
+			return
+		case <-ticker.C:
+			log.Println("[main-check] sending main branch check request to superintendent")
+			o.chatLog.Append("superintendent", "orchestrator", mainCheckPrompt)
+		}
+	}
 }
 
 // runBranchCleanup periodically deletes merged feature branches from all repos.
