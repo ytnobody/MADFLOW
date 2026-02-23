@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os/exec"
+	"regexp"
 	"strings"
 	"time"
 
@@ -31,6 +32,41 @@ type ghComment struct {
 // (e.g. "github-actions[bot]", "dependabot[bot]").
 func isBotUser(login, userType string) bool {
 	return userType == "Bot" || issue.IsBotLogin(login)
+}
+
+// CompileBotPatterns compiles a slice of regular-expression strings into
+// []*regexp.Regexp.  The first invalid pattern causes an error; all compiled
+// patterns up to that point are also returned so callers can decide how to
+// handle a partial result.
+func CompileBotPatterns(patterns []string) ([]*regexp.Regexp, error) {
+	compiled := make([]*regexp.Regexp, 0, len(patterns))
+	for _, p := range patterns {
+		re, err := regexp.Compile(p)
+		if err != nil {
+			return compiled, fmt.Errorf("invalid bot_comment_pattern %q: %w", p, err)
+		}
+		compiled = append(compiled, re)
+	}
+	return compiled, nil
+}
+
+// matchesBotPattern reports whether the given comment body matches any of the
+// compiled bot-comment patterns.
+func matchesBotPattern(body string, patterns []*regexp.Regexp) bool {
+	for _, re := range patterns {
+		if re.MatchString(body) {
+			return true
+		}
+	}
+	return false
+}
+
+// isBot combines account-level and body-pattern-level bot detection.
+// It returns true if the commenter is a known bot account (GitHub Apps /
+// accounts whose login ends with "[bot]") OR if the comment body matches any
+// of the supplied compiled patterns.
+func isBot(login, userType, body string, patterns []*regexp.Regexp) bool {
+	return isBotUser(login, userType) || matchesBotPattern(body, patterns)
 }
 
 // ghIssue represents a GitHub issue from `gh issue list --json` or Events API.
@@ -72,6 +108,7 @@ type Syncer struct {
 	idleDetector    *IdleDetector // nil = no adaptive behavior
 	idleInterval    time.Duration // effective only when idleDetector is set
 	authorizedUsers []string      // empty = all users trusted
+	botPatterns     []*regexp.Regexp // compiled bot comment patterns; nil = no pattern check
 }
 
 // NewSyncer creates a new GitHub issue syncer.
@@ -88,6 +125,16 @@ func NewSyncer(store *issue.Store, owner string, repos []string, interval time.D
 // the specified GitHub users. An empty slice (the default) allows all users.
 func (s *Syncer) WithAuthorizedUsers(users []string) *Syncer {
 	s.authorizedUsers = users
+	return s
+}
+
+// WithBotCommentPatterns attaches pre-compiled bot comment patterns to the
+// Syncer.  When a fetched comment body matches any of these patterns, the
+// comment is stored with IsBot=true, allowing consumers (e.g. the orchestrator)
+// to distinguish bot-generated status updates from human discussion comments.
+// Use CompileBotPatterns to compile the raw string patterns from the config.
+func (s *Syncer) WithBotCommentPatterns(patterns []*regexp.Regexp) *Syncer {
+	s.botPatterns = patterns
 	return s
 }
 
@@ -298,7 +345,7 @@ func (s *Syncer) syncComments(repo string, issueNumber int, localID string) {
 			Body:      c.Body,
 			CreatedAt: createdAt,
 			UpdatedAt: updatedAt,
-			IsBot:     isBotUser(c.User.Login, c.User.Type),
+			IsBot:     isBot(c.User.Login, c.User.Type, c.Body, s.botPatterns),
 		}
 		if iss.AddComment(comment) {
 			added++

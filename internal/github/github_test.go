@@ -485,3 +485,172 @@ func TestIsBotUser_HumanUser(t *testing.T) {
 		t.Error("expected isBotUser=false for user with empty type")
 	}
 }
+
+// --- CompileBotPatterns / matchesBotPattern / isBot tests ---
+
+func TestCompileBotPatterns_Valid(t *testing.T) {
+	patterns, err := CompileBotPatterns([]string{`^\*\*\[`, `\[bot\]$`})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(patterns) != 2 {
+		t.Errorf("expected 2 compiled patterns, got %d", len(patterns))
+	}
+}
+
+func TestCompileBotPatterns_Empty(t *testing.T) {
+	patterns, err := CompileBotPatterns(nil)
+	if err != nil {
+		t.Fatalf("unexpected error for nil input: %v", err)
+	}
+	if len(patterns) != 0 {
+		t.Errorf("expected 0 compiled patterns, got %d", len(patterns))
+	}
+}
+
+func TestCompileBotPatterns_Invalid(t *testing.T) {
+	_, err := CompileBotPatterns([]string{`^\*\*\[`, `[invalid`})
+	if err == nil {
+		t.Error("expected error for invalid regex, got nil")
+	}
+}
+
+func TestMatchesBotPattern_Match(t *testing.T) {
+	patterns, _ := CompileBotPatterns([]string{`^\*\*\[`})
+
+	bodies := []string{
+		"**[実装開始]** by `engineer-1`\n実装を開始しました。",
+		"**[実装完了]** by `engineer-1`",
+		"**[質問]** by `engineer-1`",
+		"**[エンジニアアサイン]** by `superintendent`",
+	}
+	for _, body := range bodies {
+		if !matchesBotPattern(body, patterns) {
+			t.Errorf("expected matchesBotPattern=true for body: %q", body)
+		}
+	}
+}
+
+func TestMatchesBotPattern_NoMatch(t *testing.T) {
+	patterns, _ := CompileBotPatterns([]string{`^\*\*\[`})
+
+	humanBodies := []string{
+		"This looks great, please review.",
+		"Can we discuss the approach?",
+		"LGTM",
+	}
+	for _, body := range humanBodies {
+		if matchesBotPattern(body, patterns) {
+			t.Errorf("expected matchesBotPattern=false for human body: %q", body)
+		}
+	}
+}
+
+func TestMatchesBotPattern_NilPatterns(t *testing.T) {
+	// With nil patterns no body should be considered a bot comment.
+	if matchesBotPattern("**[実装開始]**", nil) {
+		t.Error("expected matchesBotPattern=false when patterns is nil")
+	}
+}
+
+func TestIsBot_PatternOnly(t *testing.T) {
+	// Regular user login but bot-formatted body should be detected.
+	patterns, _ := CompileBotPatterns([]string{`^\*\*\[`})
+
+	if !isBot("ytnobody", "User", "**[実装完了]** by `engineer-1`", patterns) {
+		t.Error("expected isBot=true for bot-formatted body from regular user")
+	}
+}
+
+func TestIsBot_HumanComment(t *testing.T) {
+	// Regular user login and human body: should NOT be detected as bot.
+	patterns, _ := CompileBotPatterns([]string{`^\*\*\[`})
+
+	if isBot("ytnobody", "User", "This is a human comment", patterns) {
+		t.Error("expected isBot=false for human comment")
+	}
+}
+
+func TestSyncer_CommentIsBot_Pattern(t *testing.T) {
+	// End-to-end: Syncer should mark comments matching bot patterns as IsBot=true.
+	dir := t.TempDir()
+	store := issue.NewStore(dir)
+
+	// Pre-create the issue
+	iss := &issue.Issue{
+		ID:     "owner-repo-001",
+		Title:  "Test issue",
+		Status: issue.StatusOpen,
+	}
+	if err := store.Update(iss); err != nil {
+		t.Fatal(err)
+	}
+
+	patterns, err := CompileBotPatterns([]string{`^\*\*\[`})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	syncer := NewSyncer(store, "owner", []string{"repo"}, time.Minute).
+		WithBotCommentPatterns(patterns)
+
+	// Simulate raw comments
+	humanComment := ghComment{
+		ID:        1,
+		Body:      "This is a human comment",
+		CreatedAt: "2026-01-01T00:00:00Z",
+		UpdatedAt: "2026-01-01T00:00:00Z",
+	}
+	humanComment.User.Login = "alice"
+	humanComment.User.Type = "User"
+
+	botComment := ghComment{
+		ID:        2,
+		Body:      "**[実装完了]** by `engineer-1`\n実装が完了しました。",
+		CreatedAt: "2026-01-01T01:00:00Z",
+		UpdatedAt: "2026-01-01T01:00:00Z",
+	}
+	botComment.User.Login = "ytnobody"
+	botComment.User.Type = "User"
+
+	// Inject comments directly via the internal helper (calling syncComments
+	// would require a live gh CLI, so we call the store directly here).
+	issLoaded, _ := store.Get("owner-repo-001")
+	createdAt1, _ := time.Parse(time.RFC3339, humanComment.CreatedAt)
+	updatedAt1, _ := time.Parse(time.RFC3339, humanComment.UpdatedAt)
+	createdAt2, _ := time.Parse(time.RFC3339, botComment.CreatedAt)
+	updatedAt2, _ := time.Parse(time.RFC3339, botComment.UpdatedAt)
+	issLoaded.AddComment(issue.Comment{
+		ID:        humanComment.ID,
+		Author:    humanComment.User.Login,
+		Body:      humanComment.Body,
+		CreatedAt: createdAt1,
+		UpdatedAt: updatedAt1,
+		IsBot:     isBot(humanComment.User.Login, humanComment.User.Type, humanComment.Body, syncer.botPatterns),
+	})
+	issLoaded.AddComment(issue.Comment{
+		ID:        botComment.ID,
+		Author:    botComment.User.Login,
+		Body:      botComment.Body,
+		CreatedAt: createdAt2,
+		UpdatedAt: updatedAt2,
+		IsBot:     isBot(botComment.User.Login, botComment.User.Type, botComment.Body, syncer.botPatterns),
+	})
+	if err := store.Update(issLoaded); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := store.Get("owner-repo-001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.Comments) != 2 {
+		t.Fatalf("expected 2 comments, got %d", len(loaded.Comments))
+	}
+	if loaded.Comments[0].IsBot {
+		t.Errorf("human comment should have IsBot=false")
+	}
+	if !loaded.Comments[1].IsBot {
+		t.Errorf("bot comment (pattern match) should have IsBot=true")
+	}
+}

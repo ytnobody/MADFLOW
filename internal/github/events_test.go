@@ -538,3 +538,93 @@ func TestProcessIssueCommentEvent_HumanComment(t *testing.T) {
 		t.Errorf("expected IsBot=false for human comment, got true")
 	}
 }
+
+func TestProcessIssueCommentEvent_BotPatternDetection(t *testing.T) {
+	// A comment from a regular user whose body matches a bot pattern should
+	// have IsBot=true.  This covers the MADFLOW single-account scenario where
+	// agents share the same GitHub account as the human owner but always post
+	// comments with a predictable prefix like "**[実装開始]**".
+	dir := t.TempDir()
+	store := issue.NewStore(dir)
+
+	store.Update(&issue.Issue{ID: "owner-repo-004", Title: "Test", Status: issue.StatusOpen})
+
+	var gotComment *issue.Comment
+	cb := func(et EventType, id string, c *issue.Comment) {
+		gotComment = c
+	}
+
+	patterns, err := CompileBotPatterns([]string{`^\*\*\[`})
+	if err != nil {
+		t.Fatalf("CompileBotPatterns: %v", err)
+	}
+
+	w := NewEventWatcher(store, "owner", []string{"repo"}, time.Minute, cb).
+		WithBotCommentPatterns(patterns)
+
+	payload := ghEventPayloadComment{
+		Action: "created",
+		Issue:  ghIssue{Number: 4},
+		Comment: ghEventComment{
+			ID:        200,
+			Body:      "**[実装完了]** by `engineer-1`\n実装が完了しました。",
+			CreatedAt: "2026-02-24T12:00:00Z",
+			UpdatedAt: "2026-02-24T12:00:00Z",
+		},
+	}
+	payload.Comment.User.Login = "ytnobody" // regular user login, same as human
+	payload.Comment.User.Type = "User"
+	payloadBytes, _ := json.Marshal(payload)
+
+	ev := ghEvent{ID: "evt-pattern-bot", Type: "IssueCommentEvent", Payload: payloadBytes}
+	w.processEvent("repo", ev)
+
+	if gotComment == nil {
+		t.Fatal("expected comment callback")
+	}
+	if !gotComment.IsBot {
+		t.Errorf("expected IsBot=true for comment matching bot pattern, got false")
+	}
+}
+
+func TestEventWatcher_WithBotCommentPatterns_HumanComment(t *testing.T) {
+	// Even with bot patterns configured, a comment that does NOT match them
+	// from a regular user should have IsBot=false.
+	dir := t.TempDir()
+	store := issue.NewStore(dir)
+
+	store.Update(&issue.Issue{ID: "owner-repo-005", Title: "Test", Status: issue.StatusOpen})
+
+	var gotComment *issue.Comment
+	cb := func(et EventType, id string, c *issue.Comment) {
+		gotComment = c
+	}
+
+	patterns, _ := CompileBotPatterns([]string{`^\*\*\[`})
+	w := NewEventWatcher(store, "owner", []string{"repo"}, time.Minute, cb).
+		WithBotCommentPatterns(patterns)
+
+	payload := ghEventPayloadComment{
+		Action: "created",
+		Issue:  ghIssue{Number: 5},
+		Comment: ghEventComment{
+			ID:        201,
+			Body:      "I think we should refactor this module.",
+			CreatedAt: "2026-02-24T13:00:00Z",
+			UpdatedAt: "2026-02-24T13:00:00Z",
+		},
+	}
+	payload.Comment.User.Login = "ytnobody"
+	payload.Comment.User.Type = "User"
+	payloadBytes, _ := json.Marshal(payload)
+
+	ev := ghEvent{ID: "evt-pattern-human", Type: "IssueCommentEvent", Payload: payloadBytes}
+	w.processEvent("repo", ev)
+
+	if gotComment == nil {
+		t.Fatal("expected comment callback")
+	}
+	if gotComment.IsBot {
+		t.Errorf("expected IsBot=false for human comment even with bot patterns, got true")
+	}
+}

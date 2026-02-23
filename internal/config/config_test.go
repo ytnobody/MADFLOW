@@ -504,3 +504,72 @@ doc_check_interval_hours = 48
 		t.Errorf("expected doc_check_interval_hours 48, got %d", cfg.Agent.DocCheckIntervalHours)
 	}
 }
+
+func TestGitHubBotCommentPatterns(t *testing.T) {
+	content := `
+[project]
+name = "test-app"
+
+[[project.repos]]
+name = "main"
+path = "."
+
+[github]
+owner = "testowner"
+repos = ["testrepo"]
+bot_comment_patterns = ["^\\*\\*\\[", "\\[bot\\]$"]
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "madflow.toml")
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if cfg.GitHub == nil {
+		t.Fatal("expected GitHub config, got nil")
+	}
+	if len(cfg.GitHub.BotCommentPatterns) != 2 {
+		t.Fatalf("expected 2 bot_comment_patterns, got %d", len(cfg.GitHub.BotCommentPatterns))
+	}
+	if cfg.GitHub.BotCommentPatterns[0] != `^\*\*\[` {
+		t.Errorf("unexpected first pattern: %q", cfg.GitHub.BotCommentPatterns[0])
+	}
+}
+
+func TestGitHubBotCommentPatterns_Empty(t *testing.T) {
+	// When bot_comment_patterns is not configured, it should default to nil/empty.
+	content := `
+[project]
+name = "test-app"
+
+[[project.repos]]
+name = "main"
+path = "."
+
+[github]
+owner = "testowner"
+repos = ["testrepo"]
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "madflow.toml")
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if cfg.GitHub == nil {
+		t.Fatal("expected GitHub config, got nil")
+	}
+	if len(cfg.GitHub.BotCommentPatterns) != 0 {
+		t.Errorf("expected empty bot_comment_patterns, got %v", cfg.GitHub.BotCommentPatterns)
+	}
+}

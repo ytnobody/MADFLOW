@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -471,10 +472,26 @@ func (o *Orchestrator) handleRelease(_ string) {
 	}
 }
 
+// compileBotPatterns compiles the bot_comment_patterns from the GitHub config.
+// If any pattern is invalid it is logged and skipped; the valid ones are returned.
+func (o *Orchestrator) compileBotPatterns() []*regexp.Regexp {
+	cfg := o.Config()
+	if cfg.GitHub == nil || len(cfg.GitHub.BotCommentPatterns) == 0 {
+		return nil
+	}
+	patterns, err := github.CompileBotPatterns(cfg.GitHub.BotCommentPatterns)
+	if err != nil {
+		log.Printf("[orchestrator] invalid bot_comment_patterns (using patterns compiled so far): %v", err)
+	}
+	return patterns
+}
+
 // runEventWatcher starts the GitHub Events API watcher for real-time updates.
 func (o *Orchestrator) runEventWatcher(ctx context.Context) {
 	gh := o.cfg.GitHub
 	interval := time.Duration(gh.EventPollSeconds) * time.Second
+
+	botPatterns := o.compileBotPatterns()
 
 	callback := func(eventType github.EventType, issueID string, comment *issue.Comment) {
 		switch eventType {
@@ -484,6 +501,11 @@ func (o *Orchestrator) runEventWatcher(ctx context.Context) {
 				fmt.Sprintf("GitHub Issue updated: %s", issueID))
 		case github.EventTypeIssueComment:
 			if comment == nil {
+				return
+			}
+			// Skip notifications for bot-generated comments (e.g. agent status
+			// updates) to avoid flooding chatlog with non-human traffic.
+			if comment.IsBot {
 				return
 			}
 			// Skip notifications for closed issues to avoid delayed-notification spam.
@@ -507,7 +529,8 @@ func (o *Orchestrator) runEventWatcher(ctx context.Context) {
 	idleInterval := time.Duration(gh.IdlePollMinutes) * time.Minute
 	watcher := github.NewEventWatcher(o.store, gh.Owner, gh.Repos, interval, callback).
 		WithIdleDetector(o.idleDetector, idleInterval).
-		WithAuthorizedUsers(o.cfg.AuthorizedUsers)
+		WithAuthorizedUsers(o.cfg.AuthorizedUsers).
+		WithBotCommentPatterns(botPatterns)
 	if err := watcher.Run(ctx); err != nil && ctx.Err() == nil {
 		log.Printf("[orchestrator] event watcher stopped: %v", err)
 	}
@@ -545,9 +568,11 @@ func (o *Orchestrator) runGitHubSync(ctx context.Context) {
 	gh := o.cfg.GitHub
 	interval := time.Duration(gh.SyncIntervalMinutes) * time.Minute
 	idleInterval := time.Duration(gh.IdlePollMinutes) * time.Minute
+	botPatterns := o.compileBotPatterns()
 	syncer := github.NewSyncer(o.store, gh.Owner, gh.Repos, interval).
 		WithIdleDetector(o.idleDetector, idleInterval).
-		WithAuthorizedUsers(o.cfg.AuthorizedUsers)
+		WithAuthorizedUsers(o.cfg.AuthorizedUsers).
+		WithBotCommentPatterns(botPatterns)
 	if err := syncer.Run(ctx); err != nil && ctx.Err() == nil {
 		log.Printf("[orchestrator] github sync stopped: %v", err)
 	}
