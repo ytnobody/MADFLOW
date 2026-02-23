@@ -473,14 +473,18 @@ func (o *Orchestrator) runEventWatcher(ctx context.Context) {
 			if comment == nil {
 				return
 			}
+			// Skip notifications for closed issues to avoid delayed-notification spam.
+			iss, err := o.store.Get(issueID)
+			if err != nil || iss.Status == issue.StatusClosed {
+				return
+			}
 			// Notify superintendent and the assigned team's engineer
 			msg := fmt.Sprintf("New comment on %s by @%s: %s", issueID, comment.Author, comment.Body)
 
 			o.chatLog.Append("superintendent", "orchestrator", msg)
 
 			// If the issue is assigned to a team, also notify the team engineer
-			iss, err := o.store.Get(issueID)
-			if err == nil && iss.AssignedTeam > 0 {
+			if iss.AssignedTeam > 0 {
 				engineerID := fmt.Sprintf("engineer-%d", iss.AssignedTeam)
 				o.chatLog.Append(engineerID, "orchestrator", msg)
 			}

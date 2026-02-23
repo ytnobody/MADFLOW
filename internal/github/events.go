@@ -466,10 +466,10 @@ func (w *EventWatcher) handleIssueCommentEvent(repo string, ev ghEvent) {
 			return
 		}
 		log.Printf("[event-watcher] comment #%d processed for %s", comment.ID, localID)
-	}
 
-	if w.callback != nil {
-		w.callback(EventTypeIssueComment, localID, &comment)
+		if w.callback != nil {
+			w.callback(EventTypeIssueComment, localID, &comment)
+		}
 	}
 }
 
