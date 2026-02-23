@@ -16,8 +16,8 @@ const (
 
 // githubRelease represents the GitHub Releases API response.
 type githubRelease struct {
-	TagName string         `json:"tag_name"`
-	Assets  []githubAsset  `json:"assets"`
+	TagName string        `json:"tag_name"`
+	Assets  []githubAsset `json:"assets"`
 }
 
 // githubAsset represents a downloadable asset in a GitHub release.
