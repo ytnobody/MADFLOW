@@ -1,6 +1,7 @@
 # Build binary
 /madflow
 /cmd/madflow/madflow
+dist/
 
 # Go
 *.exe
