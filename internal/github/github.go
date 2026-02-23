@@ -105,9 +105,9 @@ type Syncer struct {
 	owner           string
 	repos           []string
 	interval        time.Duration
-	idleDetector    *IdleDetector // nil = no adaptive behavior
-	idleInterval    time.Duration // effective only when idleDetector is set
-	authorizedUsers []string      // empty = all users trusted
+	idleDetector    *IdleDetector    // nil = no adaptive behavior
+	idleInterval    time.Duration    // effective only when idleDetector is set
+	authorizedUsers []string         // empty = all users trusted
 	botPatterns     []*regexp.Regexp // compiled bot comment patterns; nil = no pattern check
 }
 

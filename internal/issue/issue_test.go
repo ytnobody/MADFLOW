@@ -286,16 +286,16 @@ func TestPendingApprovalPersistence(t *testing.T) {
 
 func TestIsBotLogin(t *testing.T) {
 	tests := []struct {
-		login   string
-		want    bool
+		login string
+		want  bool
 	}{
 		{"github-actions[bot]", true},
 		{"dependabot[bot]", true},
 		{"renovate[bot]", true},
 		{"alice", false},
 		{"bob", false},
-		{"[bot]", true},      // edge case: exactly "[bot]"
-		{"mybot", false},     // does not end with "[bot]"
+		{"[bot]", true},  // edge case: exactly "[bot]"
+		{"mybot", false}, // does not end with "[bot]"
 		{"", false},
 	}
 
