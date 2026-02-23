@@ -401,9 +401,20 @@ func (o *Orchestrator) handleTeamCreate(ctx context.Context, body string) {
 	}
 	issueID := parts[1]
 
+	// Validate that the issue exists in the store to reject malformed IDs
+	// (e.g. "issueID（2回目）extra text" from retried TEAM_CREATE messages).
+	if _, err := o.store.Get(issueID); err != nil {
+		log.Printf("[orchestrator] TEAM_CREATE rejected: issue %q not found: %v", issueID, err)
+		o.chatLog.Append("superintendent", "orchestrator",
+			fmt.Sprintf("TEAM_CREATE %s は拒否されました: イシューが見つかりません", issueID))
+		return
+	}
+
 	t, err := o.teams.Create(ctx, issueID)
 	if err != nil {
 		log.Printf("[orchestrator] TEAM_CREATE failed for %s: %v", issueID, err)
+		o.chatLog.Append("superintendent", "orchestrator",
+			fmt.Sprintf("TEAM_CREATE %s に失敗しました: %v", issueID, err))
 		return
 	}
 
@@ -416,6 +427,8 @@ func (o *Orchestrator) handleTeamCreate(ctx context.Context, body string) {
 	}
 
 	log.Printf("[orchestrator] team %d created for issue %s", t.ID, issueID)
+	o.chatLog.Append("superintendent", "orchestrator",
+		fmt.Sprintf("TEAM_CREATE %s: チーム %d を作成しました", issueID, t.ID))
 }
 
 // handleTeamDisband disbands the team for an issue.
