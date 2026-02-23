@@ -168,7 +168,14 @@ func (a *Agent) buildInitialPrompt(memo string) string {
 	sb.WriteString("チャットログへの書き込みには以下のコマンドを使用してください:\n")
 	sb.WriteString(fmt.Sprintf(`echo "[$(date +%%Y-%%m-%%dT%%H:%%M:%%S)] [@宛先] %s: メッセージ内容" >> %s`, a.ID.String(), a.ChatLog.Path()))
 	sb.WriteString("\n\n")
-	sb.WriteString("自分宛のメンションがチャットログに投稿されるのを待ち、適切に対応してください。")
+	if a.OriginalTask != "" {
+		// イシューが割り当て済みの場合は即座に実装開始を指示する。
+		// これにより、チャットログ経由の割り当てメッセージが届かなかった場合でも
+		// エンジニアが作業を開始できる。
+		sb.WriteString("上記の依頼内容に従い、すぐに実装を開始してください。実装完了後は監督に報告してください。その後もチャットログへのメンションを監視し、追加の指示に対応してください。")
+	} else {
+		sb.WriteString("自分宛のメンションがチャットログに投稿されるのを待ち、適切に対応してください。")
+	}
 	return sb.String()
 }
 
