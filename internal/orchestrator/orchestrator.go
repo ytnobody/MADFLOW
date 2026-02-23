@@ -67,8 +67,6 @@ func New(cfg *config.Config, dataDir, promptDir string) *Orchestrator {
 		idleDetector: idleDetector,
 	}
 
-
-
 	orc.teams = team.NewManager(orc, cfg.Agent.MaxTeams)
 	return orc
 }
