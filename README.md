@@ -12,7 +12,7 @@ MADFLOW（Multi-Agent Development Flow）は、複数の AI エージェント�
 
 ## 必要要件
 
-- Go 1.23 以上
+- Go 1.25 以上
 - Git
 - 以下のいずれか:
   - [Claude Code](https://claude.com/claude-code)（`claude` コマンド）
@@ -21,9 +21,24 @@ MADFLOW（Multi-Agent Development Flow）は、複数の AI エージェント�
 
 ## インストール
 
+### go install を使用する場合
+
 ```bash
 go install github.com/ytnobody/madflow/cmd/madflow@latest
 ```
+
+### GitHub Releases からバイナリをダウンロードする場合
+
+[GitHub Releases](https://github.com/ytnobody/madflow/releases/latest) から、お使いのOSとアーキテクチャに対応したバイナリをダウンロードしてください。
+
+```bash
+# Linux (amd64) の例
+curl -L https://github.com/ytnobody/madflow/releases/latest/download/madflow-linux-amd64 -o madflow
+chmod +x madflow
+sudo mv madflow /usr/local/bin/
+```
+
+インストール後は `madflow upgrade` コマンドで最新バージョンへのアップグレードも可能です。
 
 ## クイックスタート
 
@@ -40,25 +55,6 @@ madflow init
 
 ```bash
 madflow start
-```
-
-### 3. イシューの作成
-
-```bash
-madflow issue create "機能Xを実装する"
-```
-
-### 4. 状態の確認
-
-```bash
-madflow status   # エージェントとチームの状態表示
-madflow logs     # チャットログのリアルタイム表示
-```
-
-### 5. エージェントの停止
-
-```bash
-madflow stop
 ```
 
 ## 設定
@@ -104,15 +100,8 @@ sync_interval_minutes = 5
 |---------|------|
 | `madflow init` | プロジェクトを初期化 |
 | `madflow start` | 全エージェントを起動 |
-| `madflow status` | エージェントとチームの状態を表示 |
-| `madflow logs` | チャットログをリアルタイム表示 |
-| `madflow stop` | 全エージェントを停止 |
-| `madflow issue create <title>` | イシューを作成 |
-| `madflow issue list` | イシュー一覧を表示 |
-| `madflow issue show <id>` | イシュー詳細を表示 |
-| `madflow issue close <id>` | イシューをクローズ |
-| `madflow release` | develop を main にマージ |
-| `madflow sync` | GitHub Issue を手動同期 |
+| `madflow version` | 現在のバージョンを表示 |
+| `madflow upgrade` | madflow を最新バージョンにアップグレード |
 
 ## アーキテクチャ
 
@@ -120,4 +109,4 @@ sync_interval_minutes = 5
 
 ## ライセンス
 
-（ライセンスファイルが追加され次第記載）
+MIT License
