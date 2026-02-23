@@ -19,6 +19,18 @@ type Comment struct {
 	Body      string    `toml:"body"`
 	CreatedAt time.Time `toml:"created_at"`
 	UpdatedAt time.Time `toml:"updated_at"`
+	// IsBot is true when the comment was posted by a bot account (e.g. a GitHub
+	// App or an account whose login ends with "[bot]"). Human discussion comments
+	// have IsBot=false, which allows the orchestrator and other consumers to
+	// distinguish human-initiated discussions from automated agent status posts.
+	IsBot bool `toml:"is_bot,omitempty"`
+}
+
+// IsBotLogin reports whether the given GitHub login belongs to a bot account.
+// GitHub Apps and automation accounts typically end their login with "[bot]"
+// (e.g. "github-actions[bot]", "dependabot[bot]").
+func IsBotLogin(login string) bool {
+	return strings.HasSuffix(login, "[bot]")
 }
 
 type Status string

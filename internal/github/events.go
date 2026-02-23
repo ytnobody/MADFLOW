@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -60,6 +61,8 @@ type ghEventComment struct {
 	UpdatedAt string `json:"updated_at"`
 	User      struct {
 		Login string `json:"login"`
+		// Type is the GitHub account type: "User", "Bot", or "Organization".
+		Type string `json:"type"`
 	} `json:"user"`
 }
 
@@ -71,9 +74,10 @@ type EventWatcher struct {
 	interval time.Duration
 	callback EventCallback
 
-	idleDetector    *IdleDetector // nil = no adaptive behavior
-	idleInterval    time.Duration // effective only when idleDetector is set
-	authorizedUsers []string      // empty = all users trusted
+	idleDetector    *IdleDetector    // nil = no adaptive behavior
+	idleInterval    time.Duration    // effective only when idleDetector is set
+	authorizedUsers []string         // empty = all users trusted
+	botPatterns     []*regexp.Regexp // compiled bot comment patterns; nil = no pattern check
 
 	mu         sync.Mutex
 	seenEvents map[string]struct{}
@@ -95,6 +99,16 @@ func NewEventWatcher(store *issue.Store, owner string, repos []string, interval 
 // the specified GitHub users. An empty slice (the default) allows all users.
 func (w *EventWatcher) WithAuthorizedUsers(users []string) *EventWatcher {
 	w.authorizedUsers = users
+	return w
+}
+
+// WithBotCommentPatterns attaches pre-compiled bot comment patterns to the
+// EventWatcher.  When a received comment body matches any of these patterns,
+// the comment is stored with IsBot=true, allowing the orchestrator and other
+// consumers to distinguish bot-generated status updates from human discussion
+// comments.  Use CompileBotPatterns to compile the raw string patterns.
+func (w *EventWatcher) WithBotCommentPatterns(patterns []*regexp.Regexp) *EventWatcher {
+	w.botPatterns = patterns
 	return w
 }
 
@@ -449,6 +463,7 @@ func (w *EventWatcher) handleIssueCommentEvent(repo string, ev ghEvent) {
 		Body:      payload.Comment.Body,
 		CreatedAt: createdAt,
 		UpdatedAt: updatedAt,
+		IsBot:     isBot(payload.Comment.User.Login, payload.Comment.User.Type, payload.Comment.Body, w.botPatterns),
 	}
 
 	changed := existing.AddComment(comment)
