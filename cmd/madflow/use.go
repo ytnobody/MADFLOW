@@ -42,6 +42,15 @@ var presets = map[string]presetModels{
 		Superintendent: "claude-sonnet-4-6",
 		Engineer:       "gemini-flash-2-5",
 	},
+	// Anthropic API key-based presets (require ANTHROPIC_API_KEY)
+	"claude-api-standard": {
+		Superintendent: "anthropic/claude-sonnet-4-5",
+		Engineer:       "anthropic/claude-haiku-4-5",
+	},
+	"claude-api-cheap": {
+		Superintendent: "anthropic/claude-haiku-4-5",
+		Engineer:       "anthropic/claude-haiku-4-5",
+	},
 }
 
 // cmdUse switches the active model preset in madflow.toml.
@@ -102,11 +111,14 @@ func updateModelsSection(content, superintendent, engineer string) (string, erro
 
 // formatPresets returns a human-readable list of available presets.
 func formatPresets() string {
-	names := []string{"claude", "gemini", "claude-cheap", "gemini-cheap", "hybrid", "hybrid-cheap"}
+	names := []string{
+		"claude", "gemini", "claude-cheap", "gemini-cheap", "hybrid", "hybrid-cheap",
+		"claude-api-standard", "claude-api-cheap",
+	}
 	var sb strings.Builder
 	for _, name := range names {
 		m := presets[name]
-		fmt.Fprintf(&sb, "  %-14s  superintendent=%s, engineer=%s\n", name, m.Superintendent, m.Engineer)
+		fmt.Fprintf(&sb, "  %-22s  superintendent=%s, engineer=%s\n", name, m.Superintendent, m.Engineer)
 	}
 	return sb.String()
 }
