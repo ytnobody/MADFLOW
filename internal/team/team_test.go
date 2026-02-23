@@ -331,3 +331,53 @@ func TestCreateAnnouncesStart(t *testing.T) {
 		}
 	}
 }
+
+// TestAnnounceStartSendsDirectAssignmentToEngineer は、イシューが割り当てられた場合に
+// 正しいエンジニアIDへ直接割り当てメッセージが送信されることを確認する。
+// これはエンジニア応答問題の修正（MADFLOW-077）のためのテスト。
+func TestAnnounceStartSendsDirectAssignmentToEngineer(t *testing.T) {
+	factory := newMockFactory(t)
+	m := NewManager(factory, 0)
+
+	team := createAndCancel(t, m, "issue-direct-assign")
+
+	// エンジニアへの直接割り当てメッセージが送信されているか確認
+	engineerID := team.Engineer.ID.String()
+	msgs, err := team.Engineer.ChatLog.Poll(engineerID)
+	if err != nil {
+		t.Fatalf("Poll failed for engineer %s: %v", engineerID, err)
+	}
+	if len(msgs) != 1 {
+		t.Errorf("expected 1 direct assignment message for %s, got %d", engineerID, len(msgs))
+		return
+	}
+	if msgs[0].Sender != "superintendent" {
+		t.Errorf("expected sender superintendent, got %s", msgs[0].Sender)
+	}
+	if !strings.Contains(msgs[0].Body, "issue-direct-assign") {
+		t.Errorf("expected assignment body to contain issue ID, got %q", msgs[0].Body)
+	}
+	if !strings.Contains(msgs[0].Body, "実装をお願いします") {
+		t.Errorf("expected assignment body to contain '実装をお願いします', got %q", msgs[0].Body)
+	}
+}
+
+// TestAnnounceStartStandbyNoDirectAssignment は、スタンバイ状態（イシューなし）の場合に
+// エンジニアへの直接割り当てメッセージが送信されないことを確認する。
+func TestAnnounceStartStandbyNoDirectAssignment(t *testing.T) {
+	factory := newMockFactory(t)
+	m := NewManager(factory, 0)
+
+	// イシューなしでスタンバイチームを作成
+	team := createAndCancel(t, m, "")
+
+	// エンジニアへの直接割り当てメッセージが送信されていないことを確認
+	engineerID := team.Engineer.ID.String()
+	msgs, err := team.Engineer.ChatLog.Poll(engineerID)
+	if err != nil {
+		t.Fatalf("Poll failed for engineer %s: %v", engineerID, err)
+	}
+	if len(msgs) != 0 {
+		t.Errorf("expected 0 direct assignment messages for standby team, got %d: %v", len(msgs), msgs)
+	}
+}
