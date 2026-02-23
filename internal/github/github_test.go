@@ -458,3 +458,30 @@ func TestSyncer_SyncComments_NoApprovalFromUnauthorized(t *testing.T) {
 func containsApprove(body string) bool {
 	return strings.Contains(strings.ToLower(body), "/approve")
 }
+
+func TestIsBotUser_BotType(t *testing.T) {
+	// A user with type "Bot" should be identified as a bot regardless of login.
+	if !isBotUser("some-app", "Bot") {
+		t.Error("expected isBotUser=true for type=Bot")
+	}
+}
+
+func TestIsBotUser_BotLogin(t *testing.T) {
+	// A user whose login ends with "[bot]" should be identified as a bot.
+	if !isBotUser("github-actions[bot]", "User") {
+		t.Error("expected isBotUser=true for login ending with [bot]")
+	}
+	if !isBotUser("dependabot[bot]", "") {
+		t.Error("expected isBotUser=true for dependabot[bot]")
+	}
+}
+
+func TestIsBotUser_HumanUser(t *testing.T) {
+	// A regular user should NOT be identified as a bot.
+	if isBotUser("alice", "User") {
+		t.Error("expected isBotUser=false for regular user")
+	}
+	if isBotUser("bob", "") {
+		t.Error("expected isBotUser=false for user with empty type")
+	}
+}

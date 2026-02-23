@@ -60,6 +60,8 @@ type ghEventComment struct {
 	UpdatedAt string `json:"updated_at"`
 	User      struct {
 		Login string `json:"login"`
+		// Type is the GitHub account type: "User", "Bot", or "Organization".
+		Type string `json:"type"`
 	} `json:"user"`
 }
 
@@ -449,6 +451,7 @@ func (w *EventWatcher) handleIssueCommentEvent(repo string, ev ghEvent) {
 		Body:      payload.Comment.Body,
 		CreatedAt: createdAt,
 		UpdatedAt: updatedAt,
+		IsBot:     isBotUser(payload.Comment.User.Login, payload.Comment.User.Type),
 	}
 
 	changed := existing.AddComment(comment)

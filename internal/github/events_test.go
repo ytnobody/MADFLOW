@@ -418,3 +418,123 @@ func TestParseGHResponseWithStatus_InvalidHTTPStartsWithH(t *testing.T) {
 		t.Errorf("expected empty body (headers-only response), got %q", body)
 	}
 }
+
+// --- Bot detection via IssueCommentEvent ---
+
+func TestProcessIssueCommentEvent_BotComment(t *testing.T) {
+	// A comment from a GitHub App (type="Bot") should have IsBot=true.
+	dir := t.TempDir()
+	store := issue.NewStore(dir)
+
+	store.Update(&issue.Issue{ID: "owner-repo-001", Title: "Test", Status: issue.StatusOpen})
+
+	var gotComment *issue.Comment
+	cb := func(et EventType, id string, c *issue.Comment) {
+		gotComment = c
+	}
+
+	w := NewEventWatcher(store, "owner", []string{"repo"}, time.Minute, cb)
+
+	payload := ghEventPayloadComment{
+		Action: "created",
+		Issue:  ghIssue{Number: 1},
+		Comment: ghEventComment{
+			ID:        100,
+			Body:      "Automated status update",
+			CreatedAt: "2026-02-24T10:00:00Z",
+			UpdatedAt: "2026-02-24T10:00:00Z",
+		},
+	}
+	payload.Comment.User.Login = "my-app[bot]"
+	payload.Comment.User.Type = "Bot"
+	payloadBytes, _ := json.Marshal(payload)
+
+	ev := ghEvent{ID: "evt-bot-1", Type: "IssueCommentEvent", Payload: payloadBytes}
+	w.processEvent("repo", ev)
+
+	if gotComment == nil {
+		t.Fatal("expected comment callback")
+	}
+	if !gotComment.IsBot {
+		t.Errorf("expected IsBot=true for bot comment (type=Bot), got false")
+	}
+}
+
+func TestProcessIssueCommentEvent_BotLoginSuffix(t *testing.T) {
+	// A comment from a login ending with "[bot]" should have IsBot=true
+	// even when user.type is not "Bot" (e.g. old API response).
+	dir := t.TempDir()
+	store := issue.NewStore(dir)
+
+	store.Update(&issue.Issue{ID: "owner-repo-002", Title: "Test", Status: issue.StatusOpen})
+
+	var gotComment *issue.Comment
+	cb := func(et EventType, id string, c *issue.Comment) {
+		gotComment = c
+	}
+
+	w := NewEventWatcher(store, "owner", []string{"repo"}, time.Minute, cb)
+
+	payload := ghEventPayloadComment{
+		Action: "created",
+		Issue:  ghIssue{Number: 2},
+		Comment: ghEventComment{
+			ID:        101,
+			Body:      "Bot comment via login suffix",
+			CreatedAt: "2026-02-24T10:00:00Z",
+			UpdatedAt: "2026-02-24T10:00:00Z",
+		},
+	}
+	payload.Comment.User.Login = "github-actions[bot]"
+	payload.Comment.User.Type = "User" // type not set to Bot intentionally
+	payloadBytes, _ := json.Marshal(payload)
+
+	ev := ghEvent{ID: "evt-bot-2", Type: "IssueCommentEvent", Payload: payloadBytes}
+	w.processEvent("repo", ev)
+
+	if gotComment == nil {
+		t.Fatal("expected comment callback")
+	}
+	if !gotComment.IsBot {
+		t.Errorf("expected IsBot=true for comment from login ending with [bot], got false")
+	}
+}
+
+func TestProcessIssueCommentEvent_HumanComment(t *testing.T) {
+	// A comment from a regular user account should have IsBot=false.
+	dir := t.TempDir()
+	store := issue.NewStore(dir)
+
+	store.Update(&issue.Issue{ID: "owner-repo-003", Title: "Test", Status: issue.StatusOpen})
+
+	var gotComment *issue.Comment
+	cb := func(et EventType, id string, c *issue.Comment) {
+		gotComment = c
+	}
+
+	w := NewEventWatcher(store, "owner", []string{"repo"}, time.Minute, cb)
+
+	payload := ghEventPayloadComment{
+		Action: "created",
+		Issue:  ghIssue{Number: 3},
+		Comment: ghEventComment{
+			ID:        102,
+			Body:      "Human discussion comment",
+			CreatedAt: "2026-02-24T10:00:00Z",
+			UpdatedAt: "2026-02-24T10:00:00Z",
+		},
+	}
+	payload.Comment.User.Login = "alice"
+	payload.Comment.User.Type = "User"
+	payloadBytes, _ := json.Marshal(payload)
+
+	ev := ghEvent{ID: "evt-human-1", Type: "IssueCommentEvent", Payload: payloadBytes}
+	w.processEvent("repo", ev)
+
+	if gotComment == nil {
+		t.Fatal("expected comment callback")
+	}
+	if gotComment.IsBot {
+		t.Errorf("expected IsBot=false for human comment, got true")
+	}
+}

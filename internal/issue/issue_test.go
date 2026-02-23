@@ -284,6 +284,96 @@ func TestPendingApprovalPersistence(t *testing.T) {
 	}
 }
 
+func TestIsBotLogin(t *testing.T) {
+	tests := []struct {
+		login   string
+		want    bool
+	}{
+		{"github-actions[bot]", true},
+		{"dependabot[bot]", true},
+		{"renovate[bot]", true},
+		{"alice", false},
+		{"bob", false},
+		{"[bot]", true},      // edge case: exactly "[bot]"
+		{"mybot", false},     // does not end with "[bot]"
+		{"", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.login, func(t *testing.T) {
+			got := IsBotLogin(tt.login)
+			if got != tt.want {
+				t.Errorf("IsBotLogin(%q) = %v, want %v", tt.login, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCommentIsBot_Persistence(t *testing.T) {
+	dir := t.TempDir()
+	store := NewStore(dir)
+
+	iss, err := store.Create("Issue with bot comment", "body")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Now()
+	human := Comment{ID: 1, Author: "alice", Body: "human comment", CreatedAt: now, UpdatedAt: now, IsBot: false}
+	bot := Comment{ID: 2, Author: "github-actions[bot]", Body: "bot comment", CreatedAt: now, UpdatedAt: now, IsBot: true}
+
+	iss.AddComment(human)
+	iss.AddComment(bot)
+
+	if err := store.Update(iss); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := store.Get(iss.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(got.Comments) != 2 {
+		t.Fatalf("expected 2 comments, got %d", len(got.Comments))
+	}
+
+	// Human comment: IsBot should be false
+	if got.Comments[0].IsBot {
+		t.Errorf("human comment should have IsBot=false")
+	}
+	// Bot comment: IsBot should be true
+	if !got.Comments[1].IsBot {
+		t.Errorf("bot comment should have IsBot=true")
+	}
+}
+
+func TestCommentIsBot_DefaultFalse(t *testing.T) {
+	// Comments created without setting IsBot should default to false.
+	dir := t.TempDir()
+	store := NewStore(dir)
+
+	iss, err := store.Create("Default IsBot test", "body")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Now()
+	c := Comment{ID: 1, Author: "alice", Body: "hello", CreatedAt: now, UpdatedAt: now}
+	iss.AddComment(c)
+	if err := store.Update(iss); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := store.Get(iss.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Comments[0].IsBot {
+		t.Error("IsBot should default to false when not set")
+	}
+}
+
 func TestPendingApprovalNotAssignable(t *testing.T) {
 	// Verify that listing can be used to filter pending-approval issues.
 	dir := t.TempDir()

@@ -20,7 +20,17 @@ type ghComment struct {
 	UpdatedAt string `json:"updated_at"`
 	User      struct {
 		Login string `json:"login"`
+		// Type is the GitHub account type: "User", "Bot", or "Organization".
+		Type string `json:"type"`
 	} `json:"user"`
+}
+
+// isBotUser reports whether a GitHub commenter is a bot.
+// A commenter is considered a bot if the GitHub API reports their type as "Bot",
+// or if their login name ends with the "[bot]" suffix used by GitHub Apps
+// (e.g. "github-actions[bot]", "dependabot[bot]").
+func isBotUser(login, userType string) bool {
+	return userType == "Bot" || issue.IsBotLogin(login)
 }
 
 // ghIssue represents a GitHub issue from `gh issue list --json` or Events API.
@@ -288,6 +298,7 @@ func (s *Syncer) syncComments(repo string, issueNumber int, localID string) {
 			Body:      c.Body,
 			CreatedAt: createdAt,
 			UpdatedAt: updatedAt,
+			IsBot:     isBotUser(c.User.Login, c.User.Type),
 		}
 		if iss.AddComment(comment) {
 			added++
