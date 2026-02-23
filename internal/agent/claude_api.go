@@ -87,12 +87,12 @@ type anthropicToolResultContent struct {
 }
 
 type anthropicResponse struct {
-	ID           string               `json:"id"`
-	Type         string               `json:"type"`
-	Role         string               `json:"role"`
-	Content      []anthropicRawBlock  `json:"content"`
-	StopReason   string               `json:"stop_reason"`
-	Error        *anthropicErrorBlock `json:"error,omitempty"`
+	ID         string               `json:"id"`
+	Type       string               `json:"type"`
+	Role       string               `json:"role"`
+	Content    []anthropicRawBlock  `json:"content"`
+	StopReason string               `json:"stop_reason"`
+	Error      *anthropicErrorBlock `json:"error,omitempty"`
 }
 
 type anthropicRawBlock struct {

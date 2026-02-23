@@ -18,8 +18,8 @@ func TestClaudeAPIProcess_StripPrefix(t *testing.T) {
 	}{
 		{"anthropic/claude-sonnet-4-5", "claude-sonnet-4-5"},
 		{"anthropic/claude-haiku-4-5", "claude-haiku-4-5"},
-		{"claude-sonnet-4-5", "claude-sonnet-4-5"},   // no prefix: unchanged
-		{"anthropic/", ""},                            // empty after strip
+		{"claude-sonnet-4-5", "claude-sonnet-4-5"}, // no prefix: unchanged
+		{"anthropic/", ""}, // empty after strip
 	}
 	for _, tt := range tests {
 		p := &ClaudeAPIProcess{opts: ClaudeAPIOptions{Model: tt.input}}
