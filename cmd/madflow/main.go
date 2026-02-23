@@ -23,6 +23,8 @@ const usage = `Usage: madflow <command> [options]
 Commands:
   init                      Initialize a new project
   start                     Start all agents
+  use <preset>              Switch the active model preset in madflow.toml
+                            Presets: claude, gemini, claude-cheap, gemini-cheap, hybrid, hybrid-cheap
   version                   Show current version
   upgrade                   Upgrade madflow to the latest version
 `
@@ -53,6 +55,12 @@ func main() {
 	case "version", "--version", "-v":
 		fmt.Printf("madflow %s\n", version)
 		return
+	case "use":
+		preset := ""
+		if len(os.Args) >= 3 {
+			preset = os.Args[2]
+		}
+		err = cmdUse(preset)
 	case "upgrade":
 		err = cmdUpgrade(version)
 	case "help", "--help", "-h":
