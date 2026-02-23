@@ -23,13 +23,30 @@ type ghComment struct {
 	} `json:"user"`
 }
 
-// ghIssue represents a GitHub issue from `gh issue list --json`.
+// ghIssue represents a GitHub issue from `gh issue list --json` or Events API.
 type ghIssue struct {
 	Number int       `json:"number"`
 	Title  string    `json:"title"`
 	URL    string    `json:"url"`
 	Body   string    `json:"body"`
 	Labels []ghLabel `json:"labels"`
+	// User is populated from the GitHub Events API (issue.user.login).
+	User struct {
+		Login string `json:"login"`
+	} `json:"user"`
+	// Author is populated from `gh issue list --json author` (author.login).
+	Author struct {
+		Login string `json:"login"`
+	} `json:"author"`
+}
+
+// authorLogin returns the GitHub login of the issue author.
+// It checks User.Login first (Events API) and falls back to Author.Login (gh CLI).
+func (g *ghIssue) authorLogin() string {
+	if g.User.Login != "" {
+		return g.User.Login
+	}
+	return g.Author.Login
 }
 
 type ghLabel struct {
@@ -38,10 +55,13 @@ type ghLabel struct {
 
 // Syncer synchronizes GitHub Issues to local issue files.
 type Syncer struct {
-	store    *issue.Store
-	owner    string
-	repos    []string
-	interval time.Duration
+	store           *issue.Store
+	owner           string
+	repos           []string
+	interval        time.Duration
+	idleDetector    *IdleDetector // nil = no adaptive behavior
+	idleInterval    time.Duration // effective only when idleDetector is set
+	authorizedUsers []string      // empty = all users trusted
 }
 
 // NewSyncer creates a new GitHub issue syncer.
@@ -54,7 +74,77 @@ func NewSyncer(store *issue.Store, owner string, repos []string, interval time.D
 	}
 }
 
+// WithAuthorizedUsers restricts the Syncer to only process issues created by
+// the specified GitHub users. An empty slice (the default) allows all users.
+func (s *Syncer) WithAuthorizedUsers(users []string) *Syncer {
+	s.authorizedUsers = users
+	return s
+}
+
+// isAuthorized returns true if the given GitHub login is authorized.
+// When authorizedUsers is empty, all users are authorized.
+func isAuthorized(login string, authorizedUsers []string) bool {
+	if len(authorizedUsers) == 0 {
+		return true
+	}
+	for _, u := range authorizedUsers {
+		if u == login {
+			return true
+		}
+	}
+	return false
+}
+
+// WithIdleDetector attaches an IdleDetector to the Syncer, enabling adaptive polling.
+// When the detector reports no active issues, the Syncer uses idleInterval instead
+// of the normal interval. Returns the Syncer for method chaining.
+func (s *Syncer) WithIdleDetector(d *IdleDetector, idleInterval time.Duration) *Syncer {
+	s.idleDetector = d
+	s.idleInterval = idleInterval
+	return s
+}
+
+// currentInterval returns the interval to use for the next sleep, taking idle state into account.
+func (s *Syncer) currentInterval() time.Duration {
+	if s.idleDetector != nil {
+		return s.idleDetector.AdaptInterval(s.interval, s.idleInterval)
+	}
+	return s.interval
+}
+
+// updateIdleState checks the issue store for active issues and updates the IdleDetector.
+// An issue is considered active if its status is open or in_progress.
+func (s *Syncer) updateIdleState() {
+	if s.idleDetector == nil {
+		return
+	}
+
+	all, err := s.store.List(issue.StatusFilter{})
+	if err != nil {
+		// On error, assume there might be issues to avoid suppressing polling
+		s.idleDetector.SetHasIssues(true)
+		return
+	}
+
+	for _, iss := range all {
+		if iss.Status == issue.StatusOpen || iss.Status == issue.StatusInProgress {
+			s.idleDetector.SetHasIssues(true)
+			return
+		}
+	}
+	s.idleDetector.SetHasIssues(false)
+}
+
+// dormancyCheckInterval is how often the Syncer re-checks dormancy state
+// while dormant (no GitHub API calls are made during this wait).
+const dormancyCheckInterval = 30 * time.Second
+
 // Run starts the periodic sync loop. Blocks until ctx is cancelled.
+// If an IdleDetector is attached (via WithIdleDetector), the sync interval
+// automatically increases to idleInterval when no active issues are present,
+// and reverts to the normal interval when issues appear.
+// When the detector reports dormancy (via IsDormant), all GitHub API calls are
+// suspended until Wake() is called on the detector or issues reappear.
 func (s *Syncer) Run(ctx context.Context) error {
 	log.Printf("[github-sync] started (interval: %v, repos: %v)", s.interval, s.repos)
 
@@ -62,19 +152,31 @@ func (s *Syncer) Run(ctx context.Context) error {
 	if err := s.SyncOnce(); err != nil {
 		log.Printf("[github-sync] initial sync failed: %v", err)
 	}
-
-	ticker := time.NewTicker(s.interval)
-	defer ticker.Stop()
+	s.updateIdleState()
 
 	for {
+		// Dormancy check: if dormant, suspend GitHub API calls entirely.
+		if s.idleDetector != nil && s.idleDetector.IsDormant() {
+			select {
+			case <-ctx.Done():
+				log.Println("[github-sync] stopped")
+				return ctx.Err()
+			case <-time.After(dormancyCheckInterval):
+				// Re-evaluate dormancy without making any GitHub API calls.
+				continue
+			}
+		}
+
+		interval := s.currentInterval()
 		select {
 		case <-ctx.Done():
 			log.Println("[github-sync] stopped")
 			return ctx.Err()
-		case <-ticker.C:
+		case <-time.After(interval):
 			if err := s.SyncOnce(); err != nil {
 				log.Printf("[github-sync] sync failed: %v", err)
 			}
+			s.updateIdleState()
 		}
 	}
 }
@@ -99,25 +201,34 @@ func (s *Syncer) syncRepo(repo string) error {
 	for _, gh := range issues {
 		localID := formatID(s.owner, repo, gh.Number)
 
+		// Determine authorization - unauthorized issues are stored with PendingApproval=true
+		// instead of being skipped, so that an authorized user can later approve them.
+		login := gh.authorLogin()
+		pendingApproval := !isAuthorized(login, s.authorizedUsers)
+		if pendingApproval {
+			log.Printf("[github-sync] issue %s by unauthorized user %q - stored as pending approval", localID, login)
+		}
+
 		existing, err := s.store.Get(localID)
 		if err != nil {
 			// New issue - create it
 			newIssue := &issue.Issue{
-				ID:           localID,
-				Title:        gh.Title,
-				URL:          gh.URL,
-				Status:       issue.StatusOpen,
-				AssignedTeam: 0,
-				Repos:        []string{repo},
-				Labels:       extractLabels(gh.Labels),
-				Body:         gh.Body,
+				ID:              localID,
+				Title:           gh.Title,
+				URL:             gh.URL,
+				Status:          issue.StatusOpen,
+				AssignedTeam:    0,
+				PendingApproval: pendingApproval,
+				Repos:           []string{repo},
+				Labels:          extractLabels(gh.Labels),
+				Body:            gh.Body,
 			}
 			if err := s.store.Update(newIssue); err != nil {
 				log.Printf("[github-sync] create %s failed: %v", localID, err)
 			} else {
 				log.Printf("[github-sync] imported %s: %s", localID, gh.Title)
 			}
-			// Sync comments for new issue
+			// Sync comments for new issue (may contain /approve)
 			s.syncComments(repo, gh.Number, localID)
 			continue
 		}
@@ -153,13 +264,12 @@ func (s *Syncer) syncRepo(repo string) error {
 }
 
 // syncComments fetches and persists comments for a single issue.
+// If the issue has PendingApproval=true and an authorized user's comment contains
+// "/approve", the PendingApproval flag is cleared.
 func (s *Syncer) syncComments(repo string, issueNumber int, localID string) {
 	comments, err := s.fetchComments(repo, issueNumber)
 	if err != nil {
 		log.Printf("[github-sync] fetch comments for %s failed: %v", localID, err)
-		return
-	}
-	if len(comments) == 0 {
 		return
 	}
 
@@ -184,10 +294,23 @@ func (s *Syncer) syncComments(repo string, issueNumber int, localID string) {
 		}
 	}
 
-	if added > 0 {
+	// Check for /approve from an authorized user to clear PendingApproval.
+	approvalChanged := false
+	if iss.PendingApproval {
+		for _, c := range iss.Comments {
+			if isAuthorized(c.Author, s.authorizedUsers) && strings.Contains(strings.ToLower(c.Body), "/approve") {
+				iss.PendingApproval = false
+				approvalChanged = true
+				log.Printf("[github-sync] issue %s approved by %s", localID, c.Author)
+				break
+			}
+		}
+	}
+
+	if added > 0 || approvalChanged {
 		if err := s.store.Update(iss); err != nil {
 			log.Printf("[github-sync] save comments for %s failed: %v", localID, err)
-		} else {
+		} else if added > 0 {
 			log.Printf("[github-sync] added %d comments to %s", added, localID)
 		}
 	}
@@ -219,7 +342,7 @@ func (s *Syncer) fetchIssues(repo string) ([]ghIssue, error) {
 	cmd := exec.Command("gh", "issue", "list",
 		"-R", fullRepo,
 		"--state", "open",
-		"--json", "number,title,url,body,labels",
+		"--json", "number,title,url,body,labels,author",
 	)
 
 	out, err := cmd.Output()

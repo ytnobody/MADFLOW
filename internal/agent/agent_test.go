@@ -87,6 +87,50 @@ func TestBuildInitialPromptWithMemo(t *testing.T) {
 	}
 }
 
+// TestBuildInitialPromptWithOriginalTaskStartsImmediately は、OriginalTask がある場合に
+// 即座に実装開始を指示するプロンプトが生成されることを確認する。
+// MADFLOW-077 の修正: エンジニアが確実に作業を開始できるよう、
+// チャットログのメッセージ待ちではなく即座に実装開始を指示する。
+func TestBuildInitialPromptWithOriginalTaskStartsImmediately(t *testing.T) {
+	ag := &Agent{
+		ID:           AgentID{Role: RoleEngineer, TeamNum: 1},
+		OriginalTask: "Issue #test: テスト実装\n\nテスト用のイシューです。",
+		ChatLog:      chatlog.New("/tmp/test/chatlog.txt"),
+	}
+
+	prompt := ag.buildInitialPrompt("")
+
+	// OriginalTask がある場合は即座に実装開始を指示する
+	if !strings.Contains(prompt, "実装を開始してください") {
+		t.Error("expected prompt to contain '実装を開始してください' when OriginalTask is set")
+	}
+	// スタンバイ時の待機指示は含まれないはず
+	if strings.Contains(prompt, "投稿されるのを待ち") {
+		t.Error("expected prompt NOT to contain wait instruction when OriginalTask is set")
+	}
+}
+
+// TestBuildInitialPromptWithoutOriginalTaskWaits は、OriginalTask がない場合に
+// チャットログのメッセージを待つ指示が生成されることを確認する（スタンバイモード）。
+func TestBuildInitialPromptWithoutOriginalTaskWaits(t *testing.T) {
+	ag := &Agent{
+		ID:      AgentID{Role: RoleEngineer, TeamNum: 1},
+		ChatLog: chatlog.New("/tmp/test/chatlog.txt"),
+		// OriginalTask は空
+	}
+
+	prompt := ag.buildInitialPrompt("")
+
+	// OriginalTask がない場合はチャットログのメッセージを待つ
+	if !strings.Contains(prompt, "投稿されるのを待ち") {
+		t.Error("expected prompt to contain wait instruction when OriginalTask is empty")
+	}
+	// 実装開始の指示は含まれないはず
+	if strings.Contains(prompt, "実装を開始してください") {
+		t.Error("expected prompt NOT to contain immediate start instruction when OriginalTask is empty")
+	}
+}
+
 func TestTruncate(t *testing.T) {
 	if truncate("short", 10) != "short" {
 		t.Error("should not truncate short strings")

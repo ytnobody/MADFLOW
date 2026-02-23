@@ -73,8 +73,11 @@ path = "."
 	if cfg.Agent.ContextResetMinutes != 8 {
 		t.Errorf("expected default 8, got %d", cfg.Agent.ContextResetMinutes)
 	}
-	if cfg.Agent.Models.Superintendent != "claude-opus-4-6" {
-		t.Errorf("expected default superintendent model, got %s", cfg.Agent.Models.Superintendent)
+	if cfg.Agent.Models.Superintendent != "claude-sonnet-4-6" {
+		t.Errorf("expected default superintendent model claude-sonnet-4-6, got %s", cfg.Agent.Models.Superintendent)
+	}
+	if cfg.Agent.Models.Engineer != "claude-haiku-4-5" {
+		t.Errorf("expected default engineer model claude-haiku-4-5, got %s", cfg.Agent.Models.Engineer)
 	}
 }
 
@@ -251,5 +254,253 @@ chatlog_max_lines = 1000
 
 	if cfg.Agent.ChatlogMaxLines != 1000 {
 		t.Errorf("expected chatlog_max_lines 1000, got %d", cfg.Agent.ChatlogMaxLines)
+	}
+}
+
+func TestMainCheckIntervalHoursDefault(t *testing.T) {
+	content := `
+[project]
+name = "test-app"
+
+[[project.repos]]
+name = "main"
+path = "."
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "madflow.toml")
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if cfg.Agent.MainCheckIntervalHours != 6 {
+		t.Errorf("expected default main_check_interval_hours 6, got %d", cfg.Agent.MainCheckIntervalHours)
+	}
+}
+
+func TestMainCheckIntervalHoursCustom(t *testing.T) {
+	content := `
+[project]
+name = "test-app"
+
+[[project.repos]]
+name = "main"
+path = "."
+
+[agent]
+main_check_interval_hours = 12
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "madflow.toml")
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if cfg.Agent.MainCheckIntervalHours != 12 {
+		t.Errorf("expected main_check_interval_hours 12, got %d", cfg.Agent.MainCheckIntervalHours)
+	}
+}
+
+func TestMainCheckIntervalHoursDisabled(t *testing.T) {
+	// Setting to -1 is invalid but 0 would trigger the default (6).
+	// Users who want to disable must set a negative value... actually
+	// looking at the design, 0 triggers the default. Let's verify
+	// the default is applied correctly when not specified.
+	content := `
+[project]
+name = "test-app"
+
+[[project.repos]]
+name = "main"
+path = "."
+
+[agent]
+main_check_interval_hours = 0
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "madflow.toml")
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 0 triggers the default of 6
+	if cfg.Agent.MainCheckIntervalHours != 6 {
+		t.Errorf("expected default 6 when 0 is set, got %d", cfg.Agent.MainCheckIntervalHours)
+	}
+}
+
+func TestExtraPromptDefault(t *testing.T) {
+	content := `
+[project]
+name = "test-app"
+
+[[project.repos]]
+name = "main"
+path = "."
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "madflow.toml")
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if cfg.Agent.ExtraPrompt != "" {
+		t.Errorf("expected empty extra_prompt by default, got %q", cfg.Agent.ExtraPrompt)
+	}
+}
+
+func TestExtraPromptCustom(t *testing.T) {
+	content := `
+[project]
+name = "test-app"
+
+[[project.repos]]
+name = "main"
+path = "."
+
+[agent]
+extra_prompt = "このプロジェクトはGoで書かれています。コーディング規約を遵守してください。"
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "madflow.toml")
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	expected := "このプロジェクトはGoで書かれています。コーディング規約を遵守してください。"
+	if cfg.Agent.ExtraPrompt != expected {
+		t.Errorf("expected extra_prompt %q, got %q", expected, cfg.Agent.ExtraPrompt)
+	}
+}
+
+func TestAuthorizedUsersDefault(t *testing.T) {
+	content := `
+[project]
+name = "test-app"
+
+[[project.repos]]
+name = "main"
+path = "."
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "madflow.toml")
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(cfg.AuthorizedUsers) != 0 {
+		t.Errorf("expected empty authorized_users by default, got %v", cfg.AuthorizedUsers)
+	}
+}
+
+func TestAuthorizedUsersCustom(t *testing.T) {
+	content := `
+authorized_users = ["alice", "bob"]
+
+[project]
+name = "test-app"
+
+[[project.repos]]
+name = "main"
+path = "."
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "madflow.toml")
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(cfg.AuthorizedUsers) != 2 {
+		t.Fatalf("expected 2 authorized_users, got %d", len(cfg.AuthorizedUsers))
+	}
+	if cfg.AuthorizedUsers[0] != "alice" || cfg.AuthorizedUsers[1] != "bob" {
+		t.Errorf("expected [alice bob], got %v", cfg.AuthorizedUsers)
+	}
+}
+
+func TestDocCheckIntervalHoursDefault(t *testing.T) {
+	content := `
+[project]
+name = "test-app"
+
+[[project.repos]]
+name = "main"
+path = "."
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "madflow.toml")
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if cfg.Agent.DocCheckIntervalHours != 24 {
+		t.Errorf("expected default doc_check_interval_hours 24, got %d", cfg.Agent.DocCheckIntervalHours)
+	}
+}
+
+func TestDocCheckIntervalHoursCustom(t *testing.T) {
+	content := `
+[project]
+name = "test-app"
+
+[[project.repos]]
+name = "main"
+path = "."
+
+[agent]
+doc_check_interval_hours = 48
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "madflow.toml")
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if cfg.Agent.DocCheckIntervalHours != 48 {
+		t.Errorf("expected doc_check_interval_hours 48, got %d", cfg.Agent.DocCheckIntervalHours)
 	}
 }

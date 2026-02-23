@@ -230,3 +230,88 @@ func TestBackwardCompatNoComments(t *testing.T) {
 		t.Errorf("expected 0 comments, got %d", len(got.Comments))
 	}
 }
+
+func TestPendingApprovalDefault(t *testing.T) {
+	dir := t.TempDir()
+	store := NewStore(dir)
+
+	iss, err := store.Create("Test", "body")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// PendingApproval should default to false.
+	if iss.PendingApproval {
+		t.Error("expected PendingApproval=false by default")
+	}
+}
+
+func TestPendingApprovalPersistence(t *testing.T) {
+	dir := t.TempDir()
+	store := NewStore(dir)
+
+	iss, err := store.Create("Pending Issue", "body")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Set PendingApproval and persist.
+	iss.PendingApproval = true
+	if err := store.Update(iss); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := store.Get(iss.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.PendingApproval {
+		t.Error("expected PendingApproval=true after Update/Get")
+	}
+
+	// Clear PendingApproval and persist.
+	got.PendingApproval = false
+	if err := store.Update(got); err != nil {
+		t.Fatal(err)
+	}
+
+	cleared, err := store.Get(iss.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cleared.PendingApproval {
+		t.Error("expected PendingApproval=false after clearing and Update/Get")
+	}
+}
+
+func TestPendingApprovalNotAssignable(t *testing.T) {
+	// Verify that listing can be used to filter pending-approval issues.
+	dir := t.TempDir()
+	store := NewStore(dir)
+
+	regular, _ := store.Create("Regular Issue", "body")
+	pending, _ := store.Create("Pending Issue", "body")
+
+	pending.PendingApproval = true
+	store.Update(pending)
+
+	// Simulate what the orchestrator does: filter out PendingApproval issues.
+	all, err := store.List(StatusFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var assignable []*Issue
+	for _, iss := range all {
+		if iss.Status == StatusOpen && !iss.PendingApproval {
+			assignable = append(assignable, iss)
+		}
+	}
+
+	if len(assignable) != 1 {
+		t.Fatalf("expected 1 assignable issue, got %d", len(assignable))
+	}
+	if assignable[0].ID != regular.ID {
+		t.Errorf("expected regular issue %s, got %s", regular.ID, assignable[0].ID)
+	}
+}

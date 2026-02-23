@@ -13,13 +13,28 @@ import (
 )
 
 // announceStart は各エージェントの作業開始をチャットログに報告する。
+// イシューが割り当てられている場合は、正しいエンジニアIDに直接割り当てメッセージも送信する。
+// これにより、監督が誤ったエンジニアIDに送信してもエンジニアが確実に作業を受け取れる。
 func announceStart(team *Team) {
+	// 監督にチーム開始を通知（監督が正しいエンジニアIDを知るために必要）
 	line := chatlog.FormatMessage(
 		"superintendent",
 		team.Engineer.ID.String(),
 		fmt.Sprintf("チーム %d の %s として作業を開始します。イシュー: %s", team.ID, team.Engineer.ID.Role, team.IssueID),
 	)
 	appendLine(team.Engineer.ChatLog.Path(), line)
+
+	// イシューが割り当てられている場合、正しいエンジニアIDに直接割り当てメッセージを送信する。
+	// 監督がTEAM_CREATE送信と同タイミングでエンジニアに割り当てメッセージを送ると、
+	// announceStartより前に誤ったエンジニアIDへ送信されてしまう競合状態を回避するため。
+	if team.IssueID != "" {
+		assignLine := chatlog.FormatMessage(
+			team.Engineer.ID.String(), // 正しいエンジニアIDに直接送信
+			"superintendent",
+			fmt.Sprintf("イシュー %s の実装をお願いします。あなたにアサインしました。", team.IssueID),
+		)
+		appendLine(team.Engineer.ChatLog.Path(), assignLine)
+	}
 }
 
 // appendLine はチャットログファイルに1行追記する。
@@ -35,10 +50,10 @@ func appendLine(path, line string) {
 
 // Team represents a task force team (engineer).
 type Team struct {
-	ID        int
-	IssueID   string
-	Engineer  *agent.Agent
-	cancel    context.CancelFunc
+	ID       int
+	IssueID  string
+	Engineer *agent.Agent
+	cancel   context.CancelFunc
 }
 
 // DefaultMaxTeams is the default maximum number of concurrent teams.
@@ -89,10 +104,10 @@ func (m *Manager) Create(ctx context.Context, issueID string) (*Team, error) {
 	teamCtx, cancel := context.WithCancel(ctx)
 
 	team := &Team{
-		ID:        teamNum,
-		IssueID:   issueID,
-		Engineer:  engineer,
-		cancel:    cancel,
+		ID:       teamNum,
+		IssueID:  issueID,
+		Engineer: engineer,
+		cancel:   cancel,
 	}
 
 	m.mu.Lock()

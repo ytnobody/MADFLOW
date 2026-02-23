@@ -193,11 +193,9 @@ func TestCreateTeamAgents(t *testing.T) {
 		t.Fatal("one or more agents is nil")
 	}
 
-
 	if engineer.ID.Role != "engineer" {
 		t.Errorf("expected engineer role, got %s", engineer.ID.Role)
 	}
-
 
 	// All agents should have team number 1
 	// if architect.ID.TeamNum != 1 {
@@ -230,7 +228,6 @@ func TestCreateTeamAgentsWithIssue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateTeamAgents failed: %v", err)
 	}
-
 
 }
 
@@ -340,6 +337,51 @@ func TestStartAllTeamsAssignsIssues(t *testing.T) {
 	}
 }
 
+func TestStartAllTeamsSkipsPendingApproval(t *testing.T) {
+	dir := t.TempDir()
+	cfg := testConfig(dir)
+	cfg.Agent.MaxTeams = 3
+	os.MkdirAll(filepath.Join(dir, "issues"), 0755)
+	os.WriteFile(filepath.Join(dir, "chatlog.txt"), nil, 0644)
+
+	orc := New(cfg, dir, t.TempDir())
+	orc.teams = team.NewManager(newMockTeamFactory(t), 3)
+
+	// Create 1 regular open issue and 1 pending-approval issue.
+	regular, err := orc.Store().Create("Regular Issue", "body")
+	if err != nil {
+		t.Fatalf("create regular issue: %v", err)
+	}
+
+	pending, err := orc.Store().Create("Pending Issue", "body")
+	if err != nil {
+		t.Fatalf("create pending issue: %v", err)
+	}
+	pending.PendingApproval = true
+	orc.Store().Update(pending)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	orc.startAllTeams(ctx)
+
+	// 3 teams should be created (1 for regular + 2 standby)
+	if orc.Teams().Count() != 3 {
+		t.Errorf("expected 3 teams, got %d", orc.Teams().Count())
+	}
+
+	// Regular issue should be assigned, pending issue should NOT be assigned.
+	gotRegular, _ := orc.Store().Get(regular.ID)
+	if gotRegular.AssignedTeam == 0 {
+		t.Error("regular issue should have assigned team")
+	}
+
+	gotPending, _ := orc.Store().Get(pending.ID)
+	if gotPending.AssignedTeam != 0 {
+		t.Error("pending-approval issue should NOT have assigned team")
+	}
+}
+
 func TestCreateTeamAgentsMissingPrompt(t *testing.T) {
 	dir := t.TempDir()
 	cfg := testConfig(dir)
@@ -355,4 +397,45 @@ func TestCreateTeamAgentsMissingPrompt(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for missing prompt templates")
 	}
+}
+
+func TestCreateTeamAgentsExtraPrompt(t *testing.T) {
+	dir := t.TempDir()
+	cfg := testConfig(dir)
+	cfg.Agent.ExtraPrompt = "プロジェクト固有の追加指示です。"
+	os.MkdirAll(filepath.Join(dir, "issues"), 0755)
+	os.MkdirAll(filepath.Join(dir, "memos"), 0755)
+
+	// Create prompt templates
+	promptDir := t.TempDir()
+	basePrompt := "# engineer.md\nAgent: {{AGENT_ID}}"
+	os.WriteFile(filepath.Join(promptDir, "engineer.md"), []byte(basePrompt), 0644)
+
+	orc := New(cfg, dir, promptDir)
+
+	engineer, err := orc.CreateTeamAgents(1, "test-issue-extra")
+	if err != nil {
+		t.Fatalf("CreateTeamAgents failed: %v", err)
+	}
+
+	// The system prompt should contain both the base prompt and the extra prompt.
+	if !contains(engineer.SystemPrompt, "# engineer.md") {
+		t.Error("expected system prompt to contain base prompt content")
+	}
+	if !contains(engineer.SystemPrompt, cfg.Agent.ExtraPrompt) {
+		t.Errorf("expected system prompt to contain extra_prompt %q, got %q", cfg.Agent.ExtraPrompt, engineer.SystemPrompt)
+	}
+}
+
+func contains(s, sub string) bool {
+	return len(s) >= len(sub) && (s == sub || len(s) > 0 && containsStr(s, sub))
+}
+
+func containsStr(s, sub string) bool {
+	for i := 0; i <= len(s)-len(sub); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
 }

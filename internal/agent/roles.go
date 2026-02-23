@@ -8,15 +8,15 @@ import (
 type Role string
 
 const (
-	RoleSuperintendent  Role = "superintendent"
+	RoleSuperintendent Role = "superintendent"
 
-	RoleEngineer        Role = "engineer"
-	RoleOrchestrator    Role = "orchestrator"
+	RoleEngineer     Role = "engineer"
+	RoleOrchestrator Role = "orchestrator"
 )
 
 type AgentID struct {
-	Role     Role
-	TeamNum  int // 0 for non-team agents (superintendent, rm)
+	Role    Role
+	TeamNum int // 0 for non-team agents (superintendent, rm)
 }
 
 func (id AgentID) String() string {
@@ -47,7 +47,7 @@ type WorkMemo struct {
 var AllowedTargets = map[Role][]Role{
 	RoleSuperintendent: {RoleEngineer, RoleOrchestrator},
 
-	RoleEngineer:       {RoleSuperintendent}, // Engineer can send to Superintendent
+	RoleEngineer: {RoleSuperintendent}, // Engineer can send to Superintendent
 }
 
 func CanSendTo(from, to Role) bool {

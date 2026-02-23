@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/ytnobody/madflow/internal/agent"
-	"github.com/ytnobody/madflow/internal/cache"
 	"github.com/ytnobody/madflow/internal/chatlog"
 	"github.com/ytnobody/madflow/internal/config"
 	"github.com/ytnobody/madflow/internal/git"
@@ -31,7 +30,7 @@ type Orchestrator struct {
 	teams        *team.Manager
 	repos        map[string]*git.Repo // name -> repo
 	dormancy     *agent.Dormancy
-	cacheManager *cache.Manager // nil when cache is disabled
+	idleDetector *github.IdleDetector // shared idle state for GitHub polling
 
 	residentAgents []*agent.Agent
 	mu             sync.Mutex
@@ -47,39 +46,26 @@ func New(cfg *config.Config, dataDir, promptDir string) *Orchestrator {
 		repos[r.Name] = git.NewRepo(r.Path)
 	}
 
+	idleDetector := github.NewIdleDetector()
+	if cfg.GitHub != nil && cfg.GitHub.IdleThresholdMinutes > 0 {
+		idleDetector.SetIdleThreshold(time.Duration(cfg.GitHub.IdleThresholdMinutes) * time.Minute)
+	}
+	if cfg.GitHub != nil && cfg.GitHub.DormancyThresholdMinutes > 0 {
+		idleDetector.SetDormancyThreshold(time.Duration(cfg.GitHub.DormancyThresholdMinutes) * time.Minute)
+	}
+
 	orc := &Orchestrator{
-		cfg:       cfg,
-		dataDir:   dataDir,
-		promptDir: promptDir,
-		store:     issue.NewStore(issuesDir),
-		chatLog:   chatlog.New(chatLogPath),
-		repos:     repos,
-		dormancy:  agent.NewDormancy(),
+		cfg:          cfg,
+		dataDir:      dataDir,
+		promptDir:    promptDir,
+		store:        issue.NewStore(issuesDir),
+		chatLog:      chatlog.New(chatLogPath),
+		repos:        repos,
+		dormancy:     agent.NewDormancy(),
+		idleDetector: idleDetector,
 	}
 
 	orc.teams = team.NewManager(orc, cfg.Agent.MaxTeams)
-
-	// Initialize cache manager if enabled
-	if cfg.Cache != nil && cfg.Cache.Enabled {
-		apiKey := cfg.Cache.GeminiAPIKey
-		if apiKey == "" {
-			apiKey = os.Getenv("GEMINI_API_KEY")
-		}
-		if apiKey != "" {
-			model := cfg.Agent.Models.Engineer
-			cacheDir := filepath.Join(dataDir, "caches")
-			cm, err := cache.NewManager(context.Background(), apiKey, model, cacheDir, cfg.Cache.TTLMinutes)
-			if err != nil {
-				log.Printf("[orchestrator] cache manager init failed: %v", err)
-			} else {
-				orc.cacheManager = cm
-				log.Printf("[orchestrator] cache manager initialized (model=%s, ttl=%dm)", model, cfg.Cache.TTLMinutes)
-			}
-		} else {
-			log.Printf("[orchestrator] cache.enabled=true but GEMINI_API_KEY is not set, cache disabled")
-		}
-	}
-
 	return orc
 }
 
@@ -133,6 +119,33 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 		o.runChatlogCleanup(ctx)
 	}()
 
+	// Start branch cleanup goroutine if configured
+	if o.cfg.Branches.CleanupIntervalMinutes > 0 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			o.runBranchCleanup(ctx)
+		}()
+	}
+
+	// Start main branch check goroutine
+	if o.cfg.Agent.MainCheckIntervalHours > 0 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			o.runMainCheck(ctx)
+		}()
+	}
+
+	// Start document consistency check goroutine
+	if o.cfg.Agent.DocCheckIntervalHours > 0 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			o.runDocCheck(ctx)
+		}()
+	}
+
 	// Watch chatlog for orchestrator commands
 	wg.Add(1)
 	go func() {
@@ -174,6 +187,9 @@ func (o *Orchestrator) startResidentAgents(ctx context.Context, wg *sync.WaitGro
 		systemPrompt, err := agent.LoadPrompt(o.promptDir, r.role, vars)
 		if err != nil {
 			return fmt.Errorf("load prompt for %s: %w", r.role, err)
+		}
+		if o.cfg.Agent.ExtraPrompt != "" {
+			systemPrompt += "\n\n" + o.cfg.Agent.ExtraPrompt
 		}
 
 		ag := agent.NewAgent(agent.AgentConfig{
@@ -232,7 +248,7 @@ func (o *Orchestrator) startAllTeams(ctx context.Context) {
 		maxTeams = team.DefaultMaxTeams
 	}
 
-	// Collect assignable issues
+	// Collect assignable issues (excluding those pending approval).
 	var assignable []*issue.Issue
 	allIssues, err := o.store.List(issue.StatusFilter{})
 	if err != nil {
@@ -240,6 +256,10 @@ func (o *Orchestrator) startAllTeams(ctx context.Context) {
 	} else {
 		for _, iss := range allIssues {
 			if iss.Status == issue.StatusOpen || iss.Status == issue.StatusInProgress {
+				if iss.PendingApproval {
+					log.Printf("[orchestrator] skipping issue %s (pending approval)", iss.ID)
+					continue
+				}
 				assignable = append(assignable, iss)
 			}
 		}
@@ -325,9 +345,23 @@ func (o *Orchestrator) handleCommand(ctx context.Context, msg chatlog.Message) {
 		o.handleTeamDisband(body)
 	case strings.HasPrefix(body, "RELEASE"):
 		o.handleRelease(body)
+	case strings.HasPrefix(body, "WAKE_GITHUB"):
+		o.handleWakeGitHub()
 	default:
 		log.Printf("[orchestrator] unknown command from %s: %s", msg.Sender, body)
 	}
+}
+
+// handleWakeGitHub wakes the GitHub polling subsystem from dormancy.
+// This is useful when the system has stopped polling due to a long idle period
+// and an operator wants to force an immediate sync.
+func (o *Orchestrator) handleWakeGitHub() {
+	if o.idleDetector == nil {
+		log.Println("[orchestrator] WAKE_GITHUB: no idle detector configured")
+		return
+	}
+	o.idleDetector.Wake()
+	log.Println("[orchestrator] WAKE_GITHUB: GitHub polling resumed")
 }
 
 // handleTeamCreate creates a new team for an issue.
@@ -417,7 +451,6 @@ func (o *Orchestrator) runEventWatcher(ctx context.Context) {
 
 			o.chatLog.Append("superintendent", "orchestrator", msg)
 
-
 			// If the issue is assigned to a team, also notify the team engineer
 			iss, err := o.store.Get(issueID)
 			if err == nil && iss.AssignedTeam > 0 {
@@ -427,7 +460,10 @@ func (o *Orchestrator) runEventWatcher(ctx context.Context) {
 		}
 	}
 
-	watcher := github.NewEventWatcher(o.store, gh.Owner, gh.Repos, interval, callback)
+	idleInterval := time.Duration(gh.IdlePollMinutes) * time.Minute
+	watcher := github.NewEventWatcher(o.store, gh.Owner, gh.Repos, interval, callback).
+		WithIdleDetector(o.idleDetector, idleInterval).
+		WithAuthorizedUsers(o.cfg.AuthorizedUsers)
 	if err := watcher.Run(ctx); err != nil && ctx.Err() == nil {
 		log.Printf("[orchestrator] event watcher stopped: %v", err)
 	}
@@ -464,7 +500,10 @@ func (o *Orchestrator) runChatlogCleanup(ctx context.Context) {
 func (o *Orchestrator) runGitHubSync(ctx context.Context) {
 	gh := o.cfg.GitHub
 	interval := time.Duration(gh.SyncIntervalMinutes) * time.Minute
-	syncer := github.NewSyncer(o.store, gh.Owner, gh.Repos, interval)
+	idleInterval := time.Duration(gh.IdlePollMinutes) * time.Minute
+	syncer := github.NewSyncer(o.store, gh.Owner, gh.Repos, interval).
+		WithIdleDetector(o.idleDetector, idleInterval).
+		WithAuthorizedUsers(o.cfg.AuthorizedUsers)
 	if err := syncer.Run(ctx); err != nil && ctx.Err() == nil {
 		log.Printf("[orchestrator] github sync stopped: %v", err)
 	}
@@ -508,13 +547,8 @@ func (o *Orchestrator) CreateTeamAgents(teamNum int, issueID string) (engineer *
 		if err != nil {
 			return nil, fmt.Errorf("load prompt for %s: %w", r.role, err)
 		}
-
-		// Inject cache manager for Gemini models only
-		var agentCacheManager *cache.Manager
-		var agentIssueID string
-		if o.cacheManager != nil && strings.HasPrefix(r.model, "gemini-") {
-			agentCacheManager = o.cacheManager
-			agentIssueID = issueID
+		if o.cfg.Agent.ExtraPrompt != "" {
+			systemPrompt += "\n\n" + o.cfg.Agent.ExtraPrompt
 		}
 
 		agents[i] = agent.NewAgent(agent.AgentConfig{
@@ -528,8 +562,6 @@ func (o *Orchestrator) CreateTeamAgents(teamNum int, issueID string) (engineer *
 			ResetInterval: resetInterval,
 			OriginalTask:  originalTask,
 			Dormancy:      o.dormancy,
-			CacheManager:  agentCacheManager,
-			IssueID:       agentIssueID,
 		})
 	}
 
@@ -561,4 +593,105 @@ func (o *Orchestrator) firstRepoPath() string {
 		return o.cfg.Project.Repos[0].Path
 	}
 	return "."
+}
+
+// mainCheckPrompt is the message sent to the superintendent for periodic main branch checks.
+const mainCheckPrompt = `定期メインブランチ動作確認の時間です。
+
+以下の手順でmainブランチを確認してください：
+
+1. mainブランチをチェックアウトして最新状態に更新
+2. ビルドエラーがないか確認（go build ./...）
+3. テストが通るか確認（go test ./...）
+4. 最近マージされた変更に潜在的な不具合・改善点がないかコードレビュー
+
+問題が見つかった場合は、GitHub Issueを作成してください。
+特に問題がなければ、その旨をチャットログに記録してください。`
+
+// runMainCheck periodically prompts the superintendent to verify the main branch.
+func (o *Orchestrator) runMainCheck(ctx context.Context) {
+	interval := time.Duration(o.cfg.Agent.MainCheckIntervalHours) * time.Hour
+	log.Printf("[main-check] started (interval: %v)", interval)
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			log.Println("[main-check] stopped")
+			return
+		case <-ticker.C:
+			log.Println("[main-check] sending main branch check request to superintendent")
+			o.chatLog.Append("superintendent", "orchestrator", mainCheckPrompt)
+		}
+	}
+}
+
+// docCheckPrompt is the message sent to the superintendent for periodic doc consistency checks.
+const docCheckPrompt = `定期ドキュメント整合性確認の時間です。
+
+以下の手順でドキュメントとコードの整合性を確認してください：
+
+1. README.md の内容と現在のコード構成・機能を比較する
+2. docs/ ディレクトリ配下のドキュメント（存在する場合）を確認する
+3. コマンドの使い方・設定項目・アーキテクチャ説明が現状と一致しているか確認する
+4. 差異が見つかった場合：
+   - feature ブランチを作成してドキュメントを修正する
+   - 修正内容を GitHub Pull Request として作成する（base: develop）
+   - PR の説明に差異の内容と修正理由を記載する
+5. 差異が見つからない場合は、その旨をチャットログに記録する
+
+注意: コードを修正するのではなく、ドキュメントをコードの現状に合わせて修正してください。`
+
+// runDocCheck periodically prompts the superintendent to check doc/code consistency.
+func (o *Orchestrator) runDocCheck(ctx context.Context) {
+	interval := time.Duration(o.cfg.Agent.DocCheckIntervalHours) * time.Hour
+	log.Printf("[doc-check] started (interval: %v)", interval)
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			log.Println("[doc-check] stopped")
+			return
+		case <-ticker.C:
+			log.Println("[doc-check] sending doc consistency check request to superintendent")
+			o.chatLog.Append("superintendent", "orchestrator", docCheckPrompt)
+		}
+	}
+}
+
+// runBranchCleanup periodically deletes merged feature branches from all repos.
+func (o *Orchestrator) runBranchCleanup(ctx context.Context) {
+	interval := time.Duration(o.cfg.Branches.CleanupIntervalMinutes) * time.Minute
+	log.Printf("[branch-cleanup] started (interval: %v)", interval)
+
+	protected := []string{o.cfg.Branches.Main, o.cfg.Branches.Develop}
+	featurePrefix := o.cfg.Branches.FeaturePrefix
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			log.Println("[branch-cleanup] stopped")
+			return
+		case <-ticker.C:
+			for name, repo := range o.repos {
+				cleaner := git.NewBranchCleaner(repo, protected, featurePrefix)
+				deleted, err := cleaner.CleanMergedBranches(o.cfg.Branches.Develop)
+				if err != nil {
+					log.Printf("[branch-cleanup] %s: %v", name, err)
+					continue
+				}
+				if len(deleted) > 0 {
+					log.Printf("[branch-cleanup] %s: deleted %d merged branches: %v", name, len(deleted), deleted)
+				}
+			}
+		}
+	}
 }
