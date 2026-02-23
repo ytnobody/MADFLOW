@@ -24,7 +24,8 @@ Commands:
   init                      Initialize a new project
   start                     Start all agents
   use <preset>              Switch the active model preset in madflow.toml
-                            Presets: claude, gemini, claude-cheap, gemini-cheap, hybrid, hybrid-cheap
+                            Presets: claude, gemini, claude-cheap, gemini-cheap, hybrid, hybrid-cheap,
+                                     claude-api-standard, claude-api-cheap (require ANTHROPIC_API_KEY)
   version                   Show current version
   upgrade                   Upgrade madflow to the latest version
 `
