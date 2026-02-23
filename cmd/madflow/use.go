@@ -44,7 +44,7 @@ var presets = map[string]presetModels{
 	},
 	// Anthropic API key-based presets (require ANTHROPIC_API_KEY)
 	"claude-api-standard": {
-		Superintendent: "anthropic/claude-sonnet-4-5",
+		Superintendent: "anthropic/claude-sonnet-4-6",
 		Engineer:       "anthropic/claude-haiku-4-5",
 	},
 	"claude-api-cheap": {

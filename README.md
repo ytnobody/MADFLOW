@@ -84,7 +84,7 @@ engineer = "claude-sonnet-4-6"
 # superintendent = "gemini-2.0-flash-exp"
 # engineer = "gemini-2.5-pro"
 # Anthropic API キー方式（ANTHROPIC_API_KEY 環境変数が必要）:
-# superintendent = "anthropic/claude-sonnet-4-5"
+# superintendent = "anthropic/claude-sonnet-4-6"
 # engineer = "anthropic/claude-haiku-4-5"
 
 [branches]
@@ -124,7 +124,7 @@ sync_interval_minutes = 5
 | `gemini-cheap` | gemini-flash-2-5 | gemini-flash-2-5 | Gemini 高速・低コスト版 |
 | `hybrid` | claude-sonnet-4-6 | gemini-pro-2-5 | ハイブリッド構成 |
 | `hybrid-cheap` | claude-sonnet-4-6 | gemini-flash-2-5 | ハイブリッド低コスト版 |
-| `claude-api-standard` | anthropic/claude-sonnet-4-5 | anthropic/claude-haiku-4-5 | **Anthropic API キー方式** |
+| `claude-api-standard` | anthropic/claude-sonnet-4-6 | anthropic/claude-haiku-4-5 | **Anthropic API キー方式** |
 | `claude-api-cheap` | anthropic/claude-haiku-4-5 | anthropic/claude-haiku-4-5 | **Anthropic API キー方式・最安** |
 
 ### Anthropic API キー方式の使い方

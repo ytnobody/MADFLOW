@@ -146,7 +146,7 @@ func (c *ClaudeAPIProcess) Send(ctx context.Context, prompt string) (string, err
 
 	model := c.stripPrefix(c.opts.Model)
 	if model == "" {
-		model = "claude-sonnet-4-5"
+		model = "claude-sonnet-4-6"
 	}
 
 	messages := []anthropicMessage{
