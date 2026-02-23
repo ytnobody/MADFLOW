@@ -15,11 +15,16 @@ import (
 	"github.com/ytnobody/madflow/internal/project"
 )
 
+// version is set via ldflags at build time (e.g., -ldflags "-X main.version=v1.2.3").
+var version = "dev"
+
 const usage = `Usage: madflow <command> [options]
 
 Commands:
   init                      Initialize a new project
   start                     Start all agents
+  version                   Show current version
+  upgrade                   Upgrade madflow to the latest version
 `
 
 // ANSI color codes for role-based coloring.
@@ -45,6 +50,11 @@ func main() {
 		err = cmdInit()
 	case "start":
 		err = cmdStart()
+	case "version", "--version", "-v":
+		fmt.Printf("madflow %s\n", version)
+		return
+	case "upgrade":
+		err = cmdUpgrade(version)
 	case "help", "--help", "-h":
 		fmt.Print(usage)
 		return
