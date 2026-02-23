@@ -155,7 +155,7 @@ feature_prefix = "feature/issue-"
 }
 
 func cmdStart() error {
-	cfg, proj, err := loadProjectConfig()
+	configPath, cfg, proj, err := loadProjectConfig()
 	if err != nil {
 		return err
 	}
@@ -163,7 +163,7 @@ func cmdStart() error {
 	// Determine prompts directory
 	promptDir := findPromptsDir(cfg.PromptsDir)
 
-	orc := orchestrator.New(cfg, proj.DataDir, promptDir)
+	orc := orchestrator.New(cfg, proj.DataDir, promptDir).WithConfigPath(configPath)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -185,23 +185,25 @@ func cmdStart() error {
 }
 
 // loadProjectConfig detects the project and loads its config.
-func loadProjectConfig() (*config.Config, *project.Project, error) {
+// It returns the resolved config file path along with the parsed config and
+// project metadata so that the caller can enable hot-reload.
+func loadProjectConfig() (string, *config.Config, *project.Project, error) {
 	configPath, err := findConfigPath()
 	if err != nil {
-		return nil, nil, err
+		return "", nil, nil, err
 	}
 
 	proj, err := project.Detect()
 	if err != nil {
-		return nil, nil, err
+		return "", nil, nil, err
 	}
 
 	cfg, err := config.Load(configPath)
 	if err != nil {
-		return nil, nil, err
+		return "", nil, nil, err
 	}
 
-	return cfg, proj, nil
+	return configPath, cfg, proj, nil
 }
 
 // findPromptsDir looks for the prompts directory.
