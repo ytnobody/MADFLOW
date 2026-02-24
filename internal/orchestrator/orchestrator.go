@@ -110,6 +110,17 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	}
 	o.startAllTeams(ctx)
 
+	// If context was cancelled during team startup (e.g. Ctrl+C or SIGTERM
+	// while agents were initialising), skip the ready-wait and go straight
+	// to the graceful shutdown path so we don't surface a confusing
+	// "wait for agents ready: context canceled" error.
+	if ctx.Err() != nil {
+		log.Println("[orchestrator] shutting down (cancelled during startup)")
+		wg.Wait()
+		log.Println("[orchestrator] stopped")
+		return nil
+	}
+
 	// Wait for all resident agents to complete their initial startup
 	if err := o.waitForAgentsReady(ctx); err != nil {
 		return fmt.Errorf("wait for agents ready: %w", err)
