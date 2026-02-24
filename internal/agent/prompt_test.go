@@ -53,6 +53,51 @@ func TestLoadPromptUnknownRole(t *testing.T) {
 	}
 }
 
+// TestLoadPromptFallbackToEmbedded verifies that LoadPrompt succeeds even when
+// the prompts directory does not contain the file, by falling back to the
+// embedded default prompt bundled in the binary.
+func TestLoadPromptFallbackToEmbedded(t *testing.T) {
+	// Use a directory that has NO prompt files in it
+	emptyDir := t.TempDir()
+
+	vars := PromptVars{
+		AgentID:       "superintendent",
+		ChatLogPath:   "/tmp/chatlog.txt",
+		IssuesDir:     "/tmp/issues",
+		DevelopBranch: "develop",
+	}
+
+	prompt, err := LoadPrompt(emptyDir, RoleSuperintendent, vars)
+	if err != nil {
+		t.Fatalf("expected fallback to embedded default, got error: %v", err)
+	}
+	if len(prompt) == 0 {
+		t.Fatal("expected non-empty prompt from embedded default")
+	}
+}
+
+// TestLoadPromptFallbackEngineer verifies that the engineer role also falls back
+// correctly to its embedded default.
+func TestLoadPromptFallbackEngineer(t *testing.T) {
+	emptyDir := t.TempDir()
+
+	vars := PromptVars{
+		AgentID:       "engineer-1",
+		ChatLogPath:   "/tmp/chatlog.txt",
+		IssuesDir:     "/tmp/issues",
+		DevelopBranch: "develop",
+		TeamNum:       "1",
+	}
+
+	prompt, err := LoadPrompt(emptyDir, RoleEngineer, vars)
+	if err != nil {
+		t.Fatalf("expected fallback to embedded default, got error: %v", err)
+	}
+	if len(prompt) == 0 {
+		t.Fatal("expected non-empty prompt from embedded default")
+	}
+}
+
 func TestSubstituteVars(t *testing.T) {
 	content := "agent={{AGENT_ID}} team={{TEAM_NUM}} empty={{MAIN_BRANCH}}"
 	vars := PromptVars{

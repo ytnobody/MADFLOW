@@ -382,20 +382,23 @@ func TestStartAllTeamsSkipsPendingApproval(t *testing.T) {
 	}
 }
 
+// TestCreateTeamAgentsMissingPrompt verifies that CreateTeamAgents succeeds even
+// when the prompts directory contains no files, because agent.LoadPrompt now
+// falls back to the embedded default templates bundled in the binary.
 func TestCreateTeamAgentsMissingPrompt(t *testing.T) {
 	dir := t.TempDir()
 	cfg := testConfig(dir)
 	os.MkdirAll(filepath.Join(dir, "issues"), 0755)
 	os.MkdirAll(filepath.Join(dir, "memos"), 0755)
 
-	// Empty prompt dir - no templates
+	// Empty prompt dir - no templates; embedded defaults should be used.
 	promptDir := t.TempDir()
 
 	orc := New(cfg, dir, promptDir)
 
 	_, err := orc.CreateTeamAgents(1, "test-issue")
-	if err == nil {
-		t.Fatal("expected error for missing prompt templates")
+	if err != nil {
+		t.Fatalf("expected no error when prompts are missing (should fall back to embedded defaults), got: %v", err)
 	}
 }
 

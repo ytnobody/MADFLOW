@@ -477,12 +477,14 @@ func (o *Orchestrator) handleRelease(_ string) {
 func (o *Orchestrator) compileBotPatterns() []*regexp.Regexp {
 	cfg := o.Config()
 	if cfg.GitHub == nil || len(cfg.GitHub.BotCommentPatterns) == 0 {
+		log.Println("[orchestrator] bot_comment_patterns not configured: all comments will be forwarded to superintendent")
 		return nil
 	}
 	patterns, err := github.CompileBotPatterns(cfg.GitHub.BotCommentPatterns)
 	if err != nil {
 		log.Printf("[orchestrator] invalid bot_comment_patterns (using patterns compiled so far): %v", err)
 	}
+	log.Printf("[orchestrator] bot_comment_patterns loaded: %d pattern(s) %v", len(patterns), cfg.GitHub.BotCommentPatterns)
 	return patterns
 }
 
