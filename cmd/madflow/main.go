@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -187,7 +188,13 @@ func cmdStart() error {
 	go displayChatLog(ctx, orc.ChatLogPath())
 
 	fmt.Printf("Starting MADFLOW for project '%s'...\n", proj.ID)
-	return orc.Run(ctx)
+	err = orc.Run(ctx)
+	// context.Canceled is the expected outcome when the user stops the process
+	// (Ctrl+C / SIGTERM). Treat it as a clean exit rather than an error.
+	if errors.Is(err, context.Canceled) {
+		return nil
+	}
+	return err
 }
 
 // loadProjectConfig detects the project and loads its config.

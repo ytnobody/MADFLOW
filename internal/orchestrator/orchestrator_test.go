@@ -541,3 +541,36 @@ func TestHandleGitHubEvent(t *testing.T) {
 		})
 	}
 }
+
+// TestRunGracefulShutdownDuringStartup verifies that Run returns nil (not an
+// error) when the context is cancelled while startAllTeams is still running.
+// Previously the system returned "wait for agents ready: context canceled"
+// which looked like a crash to the user (GitHub Issue #104).
+func TestRunGracefulShutdownDuringStartup(t *testing.T) {
+	dir := t.TempDir()
+	cfg := testConfig(dir)
+	cfg.Agent.MaxTeams = 2
+	os.MkdirAll(filepath.Join(dir, "issues"), 0755)
+	os.MkdirAll(filepath.Join(dir, "memos"), 0755)
+	chatlogPath := filepath.Join(dir, "chatlog.txt")
+	os.WriteFile(chatlogPath, nil, 0644)
+
+	// Provide a minimal superintendent prompt so startResidentAgents succeeds.
+	promptDir := t.TempDir()
+	os.WriteFile(filepath.Join(promptDir, "superintendent.md"), []byte("# superintendent"), 0644)
+
+	orc := New(cfg, dir, promptDir)
+	// Replace the team factory with the mock so no real Claude Code processes
+	// are spawned during startAllTeams.
+	orc.teams = team.NewManager(newMockTeamFactory(t), 2)
+
+	// Cancel the context before Run is called so that the context is already
+	// done by the time waitForAgentsReady would be reached.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // pre-cancel
+
+	err := orc.Run(ctx)
+	if err != nil {
+		t.Errorf("Run() with pre-cancelled context should return nil, got: %v", err)
+	}
+}
