@@ -13,6 +13,7 @@ import (
 	"github.com/ytnobody/madflow/internal/config"
 	"github.com/ytnobody/madflow/internal/orchestrator"
 	"github.com/ytnobody/madflow/internal/project"
+	"github.com/ytnobody/madflow/prompts"
 )
 
 // version is set via ldflags at build time (e.g., -ldflags "-X main.version=v1.2.3").
@@ -32,11 +33,9 @@ Commands:
 
 // ANSI color codes for role-based coloring.
 var roleColors = map[string]string{
-	"superintendent":  "\033[31m", // red
-	"engineer":        "\033[33m", // yellow
-	"reviewer":        "\033[35m", // magenta
-	"release_manager": "\033[36m", // cyan
-	"orchestrator":    "\033[37m", // white
+	"superintendent": "\033[31m", // red
+	"engineer":       "\033[33m", // yellow
+	"orchestrator":   "\033[37m", // white
 }
 
 const colorReset = "\033[0m"
@@ -100,7 +99,6 @@ func cmdInit() error {
 	}
 
 	if name == "" {
-		// Use current directory name
 		cwd, err := os.Getwd()
 		if err != nil {
 			return err
@@ -120,7 +118,6 @@ func cmdInit() error {
 		return err
 	}
 
-	// Create madflow.toml in current directory if it doesn't exist
 	cwd, _ := os.Getwd()
 	configPath := filepath.Join(cwd, "madflow.toml")
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
@@ -137,8 +134,6 @@ context_reset_minutes = 8
 [agent.models]
 superintendent = "claude-opus-4-6"
 engineer = "claude-sonnet-4-6"
-reviewer = "claude-sonnet-4-6"
-release_manager = "claude-haiku-4-5"
 
 [branches]
 main = "main"
@@ -150,8 +145,16 @@ feature_prefix = "feature/issue-"
 		}
 	}
 
+	// Create prompts/ directory with default templates so that `madflow start`
+	// works immediately after `madflow init` on a new project.
+	promptsDir := filepath.Join(cwd, "prompts")
+	if err := prompts.WriteDefaults(promptsDir); err != nil {
+		return fmt.Errorf("create default prompts: %w", err)
+	}
+
 	fmt.Printf("Project '%s' initialized.\n", name)
 	fmt.Printf("Config: %s\n", configPath)
+	fmt.Printf("Prompts: %s\n", promptsDir)
 	return nil
 }
 
@@ -161,7 +164,6 @@ func cmdStart() error {
 		return err
 	}
 
-	// Determine prompts directory
 	promptDir := findPromptsDir(cfg.PromptsDir)
 
 	orc := orchestrator.New(cfg, proj.DataDir, promptDir).WithConfigPath(configPath)
@@ -169,7 +171,6 @@ func cmdStart() error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Handle signals
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
@@ -178,16 +179,12 @@ func cmdStart() error {
 		cancel()
 	}()
 
-	// Start chatlog display in foreground mode
 	go displayChatLog(ctx, orc.ChatLogPath())
 
 	fmt.Printf("Starting MADFLOW for project '%s'...\n", proj.ID)
 	return orc.Run(ctx)
 }
 
-// loadProjectConfig detects the project and loads its config.
-// It returns the resolved config file path along with the parsed config and
-// project metadata so that the caller can enable hot-reload.
 func loadProjectConfig() (string, *config.Config, *project.Project, error) {
 	configPath, err := findConfigPath()
 	if err != nil {
@@ -210,21 +207,18 @@ func loadProjectConfig() (string, *config.Config, *project.Project, error) {
 // findPromptsDir looks for the prompts directory.
 // If configDir is set (from madflow.toml), it takes priority.
 func findPromptsDir(configDir string) string {
-	// 1. Config-specified directory
 	if configDir != "" {
 		if info, err := os.Stat(configDir); err == nil && info.IsDir() {
 			return configDir
 		}
 	}
 
-	// 2. Check relative to cwd
 	cwd, _ := os.Getwd()
 	dir := filepath.Join(cwd, "prompts")
 	if info, err := os.Stat(dir); err == nil && info.IsDir() {
 		return dir
 	}
 
-	// 3. Check relative to the binary
 	exe, err := os.Executable()
 	if err == nil {
 		dir := filepath.Join(filepath.Dir(exe), "prompts")
@@ -233,11 +227,12 @@ func findPromptsDir(configDir string) string {
 		}
 	}
 
-	// Fallback
+	// Fallback: return "prompts" as a relative path.  Even if the directory
+	// does not exist, agent.LoadPrompt will fall back to the embedded defaults
+	// bundled in the binary, so startup will still succeed.
 	return "prompts"
 }
 
-// displayChatLog streams the chatlog to stdout with role-based colors.
 func displayChatLog(ctx context.Context, logPath string) {
 	cl := chatlog.New(logPath)
 	msgCh := cl.WatchAll(ctx)
@@ -255,10 +250,8 @@ func displayChatLog(ctx context.Context, logPath string) {
 	}
 }
 
-// printColoredMessage prints a chatlog message with role-based coloring.
 func printColoredMessage(msg chatlog.Message) {
 	color := colorReset
-	// Extract base role from sender (e.g., "architect-1" -> "architect")
 	sender := msg.Sender
 	for role, c := range roleColors {
 		if strings.HasPrefix(sender, role) {

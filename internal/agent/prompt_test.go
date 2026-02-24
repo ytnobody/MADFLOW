@@ -8,7 +8,6 @@ import (
 )
 
 func TestLoadPrompt(t *testing.T) {
-	// Create a temp prompts directory with a test template
 	dir := t.TempDir()
 	template := `# テスト
 エージェント: {{AGENT_ID}}
@@ -57,7 +56,6 @@ func TestLoadPromptUnknownRole(t *testing.T) {
 // the prompts directory does not contain the file, by falling back to the
 // embedded default prompt bundled in the binary.
 func TestLoadPromptFallbackToEmbedded(t *testing.T) {
-	// Use a directory that has NO prompt files in it
 	emptyDir := t.TempDir()
 
 	vars := PromptVars{
@@ -103,7 +101,6 @@ func TestSubstituteVars(t *testing.T) {
 	vars := PromptVars{
 		AgentID: "engineer-1",
 		TeamNum: "1",
-		// MainBranch is empty, should not replace
 	}
 
 	result := substituteVars(content, vars)
@@ -117,7 +114,6 @@ func TestSubstituteVars(t *testing.T) {
 	if !strings.Contains(result, "team=1") {
 		t.Error("expected team=1")
 	}
-	// Empty var should leave placeholder
 	if !strings.Contains(result, "{{MAIN_BRANCH}}") {
 		t.Error("empty var should leave placeholder intact")
 	}
