@@ -32,11 +32,9 @@ Commands:
 
 // ANSI color codes for role-based coloring.
 var roleColors = map[string]string{
-	"superintendent":  "\033[31m", // red
-	"engineer":        "\033[33m", // yellow
-	"reviewer":        "\033[35m", // magenta
-	"release_manager": "\033[36m", // cyan
-	"orchestrator":    "\033[37m", // white
+	"superintendent": "\033[31m", // red
+	"engineer":       "\033[33m", // yellow
+	"orchestrator":   "\033[37m", // white
 }
 
 const colorReset = "\033[0m"
@@ -137,8 +135,6 @@ context_reset_minutes = 8
 [agent.models]
 superintendent = "claude-opus-4-6"
 engineer = "claude-sonnet-4-6"
-reviewer = "claude-sonnet-4-6"
-release_manager = "claude-haiku-4-5"
 
 [branches]
 main = "main"
