@@ -13,6 +13,7 @@ import (
 	"github.com/ytnobody/madflow/internal/config"
 	"github.com/ytnobody/madflow/internal/orchestrator"
 	"github.com/ytnobody/madflow/internal/project"
+	"github.com/ytnobody/madflow/prompts"
 )
 
 // version is set via ldflags at build time (e.g., -ldflags "-X main.version=v1.2.3").
@@ -146,8 +147,16 @@ feature_prefix = "feature/issue-"
 		}
 	}
 
+	// Create prompts/ directory with default templates so that `madflow start`
+	// works immediately after `madflow init` on a new project.
+	promptsDir := filepath.Join(cwd, "prompts")
+	if err := prompts.WriteDefaults(promptsDir); err != nil {
+		return fmt.Errorf("create default prompts: %w", err)
+	}
+
 	fmt.Printf("Project '%s' initialized.\n", name)
 	fmt.Printf("Config: %s\n", configPath)
+	fmt.Printf("Prompts: %s\n", promptsDir)
 	return nil
 }
 
