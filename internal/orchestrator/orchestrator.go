@@ -477,13 +477,50 @@ func (o *Orchestrator) handleRelease(_ string) {
 func (o *Orchestrator) compileBotPatterns() []*regexp.Regexp {
 	cfg := o.Config()
 	if cfg.GitHub == nil || len(cfg.GitHub.BotCommentPatterns) == 0 {
+		log.Println("[orchestrator] bot_comment_patterns not configured: all comments will be forwarded to superintendent")
 		return nil
 	}
 	patterns, err := github.CompileBotPatterns(cfg.GitHub.BotCommentPatterns)
 	if err != nil {
 		log.Printf("[orchestrator] invalid bot_comment_patterns (using patterns compiled so far): %v", err)
 	}
+	log.Printf("[orchestrator] bot_comment_patterns loaded: %d pattern(s) %v", len(patterns), cfg.GitHub.BotCommentPatterns)
 	return patterns
+}
+
+// handleGitHubEvent processes a single GitHub event callback from the event watcher.
+// It is extracted from runEventWatcher for testability.
+func (o *Orchestrator) handleGitHubEvent(eventType github.EventType, issueID string, comment *issue.Comment) {
+	switch eventType {
+	case github.EventTypeIssues:
+		// Notify superintendent about new/updated issue
+		o.chatLog.Append("superintendent", "orchestrator",
+			fmt.Sprintf("GitHub Issue updated: %s", issueID))
+	case github.EventTypeIssueComment:
+		if comment == nil {
+			return
+		}
+		// Skip notifications for bot-generated comments (e.g. agent status
+		// updates) to avoid flooding chatlog with non-human traffic.
+		if comment.IsBot {
+			return
+		}
+		// Skip notifications for closed or resolved issues to avoid delayed-notification spam.
+		iss, err := o.store.Get(issueID)
+		if err != nil || iss.Status == issue.StatusClosed || iss.Status == issue.StatusResolved {
+			return
+		}
+		// Notify superintendent and the assigned team's engineer
+		msg := fmt.Sprintf("New comment on %s by @%s: %s", issueID, comment.Author, comment.Body)
+
+		o.chatLog.Append("superintendent", "orchestrator", msg)
+
+		// If the issue is assigned to a team, also notify the team engineer
+		if iss.AssignedTeam > 0 {
+			engineerID := fmt.Sprintf("engineer-%d", iss.AssignedTeam)
+			o.chatLog.Append(engineerID, "orchestrator", msg)
+		}
+	}
 }
 
 // runEventWatcher starts the GitHub Events API watcher for real-time updates.
@@ -493,41 +530,8 @@ func (o *Orchestrator) runEventWatcher(ctx context.Context) {
 
 	botPatterns := o.compileBotPatterns()
 
-	callback := func(eventType github.EventType, issueID string, comment *issue.Comment) {
-		switch eventType {
-		case github.EventTypeIssues:
-			// Notify superintendent about new/updated issue
-			o.chatLog.Append("superintendent", "orchestrator",
-				fmt.Sprintf("GitHub Issue updated: %s", issueID))
-		case github.EventTypeIssueComment:
-			if comment == nil {
-				return
-			}
-			// Skip notifications for bot-generated comments (e.g. agent status
-			// updates) to avoid flooding chatlog with non-human traffic.
-			if comment.IsBot {
-				return
-			}
-			// Skip notifications for closed issues to avoid delayed-notification spam.
-			iss, err := o.store.Get(issueID)
-			if err != nil || iss.Status == issue.StatusClosed {
-				return
-			}
-			// Notify superintendent and the assigned team's engineer
-			msg := fmt.Sprintf("New comment on %s by @%s: %s", issueID, comment.Author, comment.Body)
-
-			o.chatLog.Append("superintendent", "orchestrator", msg)
-
-			// If the issue is assigned to a team, also notify the team engineer
-			if iss.AssignedTeam > 0 {
-				engineerID := fmt.Sprintf("engineer-%d", iss.AssignedTeam)
-				o.chatLog.Append(engineerID, "orchestrator", msg)
-			}
-		}
-	}
-
 	idleInterval := time.Duration(gh.IdlePollMinutes) * time.Minute
-	watcher := github.NewEventWatcher(o.store, gh.Owner, gh.Repos, interval, callback).
+	watcher := github.NewEventWatcher(o.store, gh.Owner, gh.Repos, interval, o.handleGitHubEvent).
 		WithIdleDetector(o.idleDetector, idleInterval).
 		WithAuthorizedUsers(o.cfg.AuthorizedUsers).
 		WithBotCommentPatterns(botPatterns)
