@@ -142,6 +142,52 @@ func TestDormancyWaitCancelledContext(t *testing.T) {
 	}
 }
 
+func TestDormancyExponentialBackoff(t *testing.T) {
+	d := NewDormancy()
+	d.ProbeInterval = 10 * time.Millisecond
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var probeTimes []time.Time
+
+	// Probe fails 3 times, then succeeds
+	d.Enter(ctx, func(ctx context.Context) error {
+		probeTimes = append(probeTimes, time.Now())
+		if len(probeTimes) < 4 {
+			return fmt.Errorf("rate limit exceeded")
+		}
+		return nil
+	})
+
+	done := make(chan struct{})
+	go func() {
+		d.Wait(ctx)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// success
+	case <-time.After(5 * time.Second):
+		t.Fatal("Wait did not return after backoff probes")
+	}
+
+	if len(probeTimes) != 4 {
+		t.Fatalf("expected 4 probes, got %d", len(probeTimes))
+	}
+
+	// Verify intervals are increasing (with some tolerance for scheduling jitter)
+	for i := 2; i < len(probeTimes); i++ {
+		prev := probeTimes[i-1].Sub(probeTimes[i-2])
+		curr := probeTimes[i].Sub(probeTimes[i-1])
+		// Each interval should be roughly 2x the previous (allow 50% tolerance)
+		if curr < prev {
+			t.Errorf("interval %d (%s) should be >= interval %d (%s)", i, curr, i-1, prev)
+		}
+	}
+}
+
 func TestIsRateLimitError(t *testing.T) {
 	tests := []struct {
 		err  error

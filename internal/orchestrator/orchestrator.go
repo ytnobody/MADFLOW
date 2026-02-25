@@ -33,6 +33,7 @@ type Orchestrator struct {
 	teams        *team.Manager
 	repos        map[string]*git.Repo // name -> repo
 	dormancy     *agent.Dormancy
+	throttle     *agent.Throttle
 	idleDetector *github.IdleDetector // shared idle state for GitHub polling
 
 	residentAgents []*agent.Agent
@@ -57,6 +58,8 @@ func New(cfg *config.Config, dataDir, promptDir string) *Orchestrator {
 		idleDetector.SetDormancyThreshold(time.Duration(cfg.GitHub.DormancyThresholdMinutes) * time.Minute)
 	}
 
+	probeInterval := time.Duration(cfg.Agent.DormancyProbeMinutes) * time.Minute
+
 	orc := &Orchestrator{
 		cfg:          cfg,
 		dataDir:      dataDir,
@@ -64,7 +67,8 @@ func New(cfg *config.Config, dataDir, promptDir string) *Orchestrator {
 		store:        issue.NewStore(issuesDir),
 		chatLog:      chatlog.New(chatLogPath),
 		repos:        repos,
-		dormancy:     agent.NewDormancy(),
+		dormancy:     agent.NewDormancy(probeInterval),
+		throttle:     agent.NewThrottle(cfg.Agent.GeminiRPM),
 		idleDetector: idleDetector,
 	}
 
@@ -205,6 +209,7 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 // startResidentAgents starts the superintendent.
 func (o *Orchestrator) startResidentAgents(ctx context.Context, wg *sync.WaitGroup) error {
 	resetInterval := time.Duration(o.cfg.Agent.ContextResetMinutes) * time.Minute
+	bashTimeout := time.Duration(o.cfg.Agent.BashTimeoutMinutes) * time.Minute
 
 	residents := []struct {
 		role  agent.Role
@@ -231,7 +236,7 @@ func (o *Orchestrator) startResidentAgents(ctx context.Context, wg *sync.WaitGro
 			systemPrompt += "\n\n" + o.cfg.Agent.ExtraPrompt
 		}
 
-		ag := agent.NewAgent(agent.AgentConfig{
+		agentCfg := agent.AgentConfig{
 			ID:            agent.AgentID{Role: r.role},
 			Role:          r.role,
 			SystemPrompt:  systemPrompt,
@@ -240,8 +245,13 @@ func (o *Orchestrator) startResidentAgents(ctx context.Context, wg *sync.WaitGro
 			ChatLogPath:   o.chatLog.Path(),
 			MemosDir:      filepath.Join(o.dataDir, "memos"),
 			ResetInterval: resetInterval,
+			BashTimeout:   bashTimeout,
 			Dormancy:      o.dormancy,
-		})
+		}
+		if strings.HasPrefix(r.model, "gemini-") {
+			agentCfg.Throttle = o.throttle
+		}
+		ag := agent.NewAgent(agentCfg)
 
 		o.mu.Lock()
 		o.residentAgents = append(o.residentAgents, ag)
@@ -596,6 +606,7 @@ func (o *Orchestrator) runGitHubSync(ctx context.Context) {
 // CreateTeamAgents implements team.TeamFactory.
 func (o *Orchestrator) CreateTeamAgents(teamNum int, issueID string) (engineer *agent.Agent, err error) {
 	resetInterval := time.Duration(o.cfg.Agent.ContextResetMinutes) * time.Minute
+	bashTimeout := time.Duration(o.cfg.Agent.BashTimeoutMinutes) * time.Minute
 	teamNumStr := fmt.Sprintf("%d", teamNum)
 
 	// Load the issue for context
@@ -635,7 +646,7 @@ func (o *Orchestrator) CreateTeamAgents(teamNum int, issueID string) (engineer *
 			systemPrompt += "\n\n" + o.cfg.Agent.ExtraPrompt
 		}
 
-		agents[i] = agent.NewAgent(agent.AgentConfig{
+		agentCfg := agent.AgentConfig{
 			ID:            agent.AgentID{Role: r.role, TeamNum: teamNum},
 			Role:          r.role,
 			SystemPrompt:  systemPrompt,
@@ -644,9 +655,14 @@ func (o *Orchestrator) CreateTeamAgents(teamNum int, issueID string) (engineer *
 			ChatLogPath:   o.chatLog.Path(),
 			MemosDir:      filepath.Join(o.dataDir, "memos"),
 			ResetInterval: resetInterval,
+			BashTimeout:   bashTimeout,
 			OriginalTask:  originalTask,
 			Dormancy:      o.dormancy,
-		})
+		}
+		if strings.HasPrefix(r.model, "gemini-") {
+			agentCfg.Throttle = o.throttle
+		}
+		agents[i] = agent.NewAgent(agentCfg)
 	}
 
 	return agents[0], nil

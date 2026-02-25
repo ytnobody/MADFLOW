@@ -25,6 +25,7 @@ type ClaudeAPIOptions struct {
 	SystemPrompt string
 	Model        string
 	WorkDir      string
+	BashTimeout  time.Duration
 }
 
 // ClaudeAPIProcess sends prompts to the Anthropic Messages API using ANTHROPIC_API_KEY.
@@ -205,7 +206,7 @@ func (c *ClaudeAPIProcess) Send(ctx context.Context, prompt string) (string, err
 			if block.Type != "tool_use" {
 				continue
 			}
-			result, isError := c.executeTool(block.Name, block.Input)
+			result, isError := c.executeTool(ctx, block.Name, block.Input)
 			toolResults = append(toolResults, anthropicToolResultContent{
 				Type:      "tool_result",
 				ToolUseID: block.ID,
@@ -286,7 +287,7 @@ func (c *ClaudeAPIProcess) callAPIWithURL(ctx context.Context, apiKey, model str
 }
 
 // executeTool runs the requested tool and returns (output, isError).
-func (c *ClaudeAPIProcess) executeTool(toolName string, input json.RawMessage) (string, bool) {
+func (c *ClaudeAPIProcess) executeTool(ctx context.Context, toolName string, input json.RawMessage) (string, bool) {
 	switch toolName {
 	case "bash":
 		var params struct {
@@ -295,15 +296,21 @@ func (c *ClaudeAPIProcess) executeTool(toolName string, input json.RawMessage) (
 		if err := json.Unmarshal(input, &params); err != nil {
 			return fmt.Sprintf("failed to parse bash input: %v", err), true
 		}
-		return c.runBash(params.Command)
+		return c.runBash(ctx, params.Command)
 	default:
 		return fmt.Sprintf("unknown tool: %s", toolName), true
 	}
 }
 
 // runBash executes a bash command and returns (output, isError).
-func (c *ClaudeAPIProcess) runBash(command string) (string, bool) {
-	cmd := exec.Command("bash", "-c", command)
+func (c *ClaudeAPIProcess) runBash(ctx context.Context, command string) (string, bool) {
+	if c.opts.BashTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, c.opts.BashTimeout)
+		defer cancel()
+	}
+
+	cmd := exec.CommandContext(ctx, "bash", "-c", command)
 	if c.opts.WorkDir != "" {
 		cmd.Dir = c.opts.WorkDir
 	}

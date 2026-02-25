@@ -7,8 +7,11 @@ import (
 	"time"
 )
 
-// DefaultProbeInterval is the interval between rate-limit recovery probes.
+// DefaultProbeInterval is the initial interval between rate-limit recovery probes.
 const DefaultProbeInterval = 15 * time.Minute
+
+// MaxProbeInterval is the upper bound for exponential backoff.
+const MaxProbeInterval = 60 * time.Minute
 
 // ProbeFunc tests whether the rate limit has been lifted.
 // It should return nil if the limit is cleared.
@@ -25,10 +28,15 @@ type Dormancy struct {
 }
 
 // NewDormancy creates a new Dormancy instance.
-func NewDormancy() *Dormancy {
+// An optional probeInterval can be provided; if zero or omitted, DefaultProbeInterval is used.
+func NewDormancy(probeInterval ...time.Duration) *Dormancy {
+	interval := DefaultProbeInterval
+	if len(probeInterval) > 0 && probeInterval[0] > 0 {
+		interval = probeInterval[0]
+	}
 	return &Dormancy{
 		wakeCh:        make(chan struct{}),
-		ProbeInterval: DefaultProbeInterval,
+		ProbeInterval: interval,
 	}
 }
 
@@ -50,28 +58,31 @@ func (d *Dormancy) Enter(ctx context.Context, probeFn ProbeFunc) {
 	go d.probeLoop(ctx, probeFn)
 }
 
-// probeLoop periodically calls probeFn until it succeeds without a rate limit error.
+// probeLoop calls probeFn with exponential backoff until it succeeds without a rate limit error.
 func (d *Dormancy) probeLoop(ctx context.Context, probeFn ProbeFunc) {
 	interval := d.ProbeInterval
 	if interval <= 0 {
 		interval = DefaultProbeInterval
 	}
 
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-
 	for {
+		timer := time.NewTimer(interval)
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			return
-		case <-ticker.C:
-			log.Println("[dormancy] probing rate limit status...")
+		case <-timer.C:
+			log.Printf("[dormancy] probing rate limit status (interval=%s)...", interval)
 			err := probeFn(ctx)
 			if err == nil || !IsRateLimitError(err) {
 				d.wake()
 				return
 			}
-			log.Println("[dormancy] still rate limited, continuing to sleep")
+			log.Printf("[dormancy] still rate limited, next probe in %s", interval*2)
+			interval *= 2
+			if interval > MaxProbeInterval {
+				interval = MaxProbeInterval
+			}
 		}
 	}
 }

@@ -23,6 +23,7 @@ type Agent struct {
 	SystemPrompt  string
 	OriginalTask  string
 	Dormancy      *Dormancy
+	Throttle      *Throttle
 	ready         chan struct{}
 	readyOnce     sync.Once
 }
@@ -36,9 +37,11 @@ type AgentConfig struct {
 	ChatLogPath   string
 	MemosDir      string
 	ResetInterval time.Duration
+	BashTimeout   time.Duration
 	OriginalTask  string
 	Process       Process
 	Dormancy      *Dormancy
+	Throttle      *Throttle
 }
 
 func NewAgent(cfg AgentConfig) *Agent {
@@ -48,16 +51,18 @@ func NewAgent(cfg AgentConfig) *Agent {
 	} else {
 		switch {
 		case strings.HasPrefix(cfg.Model, "gemini-"):
-			proc = NewGeminiProcess(GeminiOptions{
+			proc = NewGeminiAPIProcess(GeminiAPIOptions{
 				SystemPrompt: cfg.SystemPrompt,
 				Model:        cfg.Model,
 				WorkDir:      cfg.WorkDir,
+				BashTimeout:  cfg.BashTimeout,
 			})
 		case strings.HasPrefix(cfg.Model, "anthropic/"):
 			proc = NewClaudeAPIProcess(ClaudeAPIOptions{
 				SystemPrompt: cfg.SystemPrompt,
 				Model:        cfg.Model,
 				WorkDir:      cfg.WorkDir,
+				BashTimeout:  cfg.BashTimeout,
 			})
 		default:
 			proc = NewClaudeProcess(ClaudeOptions{
@@ -77,6 +82,7 @@ func NewAgent(cfg AgentConfig) *Agent {
 		SystemPrompt:  cfg.SystemPrompt,
 		OriginalTask:  cfg.OriginalTask,
 		Dormancy:      cfg.Dormancy,
+		Throttle:      cfg.Throttle,
 		ready:         make(chan struct{}),
 	}
 }
@@ -207,8 +213,16 @@ func parseDistilledMemo(agentID, raw string) reset.WorkMemo {
 	return memo
 }
 
+const (
+	sendMaxRetries    = 3
+	sendRetryBaseWait = 2 * time.Second
+)
+
 func (a *Agent) send(ctx context.Context, prompt string) (string, error) {
 	for {
+		if err := a.Throttle.Wait(ctx); err != nil {
+			return "", err
+		}
 		if a.Dormancy != nil {
 			if err := a.Dormancy.Wait(ctx); err != nil {
 				return "", err
@@ -223,8 +237,37 @@ func (a *Agent) send(ctx context.Context, prompt string) (string, error) {
 			})
 			continue
 		}
+		if err != nil && !IsRateLimitError(err) {
+			// Retry transient errors (network, API 500, etc.) with exponential backoff.
+			resp, err = a.retrySend(ctx, prompt, err)
+		}
 		return resp, err
 	}
+}
+
+// retrySend retries a failed send up to sendMaxRetries times with exponential backoff.
+// It is only called for non-rate-limit errors; rate limits are handled by the dormancy system.
+func (a *Agent) retrySend(ctx context.Context, prompt string, lastErr error) (string, error) {
+	wait := sendRetryBaseWait
+	for attempt := 1; attempt <= sendMaxRetries; attempt++ {
+		log.Printf("[%s] send failed (attempt %d/%d): %v, retrying in %v", a.ID.String(), attempt, sendMaxRetries, lastErr, wait)
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(wait):
+		}
+		resp, err := a.Process.Send(ctx, prompt)
+		if err == nil {
+			return resp, nil
+		}
+		if IsRateLimitError(err) {
+			// Hand off to the dormancy system on the next loop iteration.
+			return "", err
+		}
+		lastErr = err
+		wait *= 2
+	}
+	return "", lastErr
 }
 
 func truncate(s string, maxLen int) string {
