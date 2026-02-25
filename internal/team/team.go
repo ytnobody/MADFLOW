@@ -18,6 +18,11 @@ type TeamsFile struct {
 }
 
 
+import (
+	"context"
+	"fmt"
+	"log"
+func announceStart(team *Team) {
 	// 監督にチーム開始を通知（監督が正しいエンジニアIDを知るために必要）
 	line := chatlog.FormatMessage(
 		"superintendent",
@@ -67,7 +72,7 @@ type Manager struct {
 	teams    map[int]*Team
 	nextID   int
 	maxTeams int
-teamsPath string
+tteamsPath string
 	factory  TeamFactory
 }
 
