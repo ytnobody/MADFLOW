@@ -1,62 +1,3 @@
-// handleTeamCreate creates a new team for an issue.
-// Expected format: TEAM_CREATE issue-id
-func (o *Orchestrator) handleTeamCreate(ctx context.Context, body string) {
-	parts := strings.Fields(body)
-	if len(parts) < 2 {
-		log.Printf("[orchestrator] TEAM_CREATE missing issue ID")
-		return
-	}
-	issueID := parts[1]
-
-	// Validate that the issue exists in the store and is not closed/resolved.
-	iss, err := o.store.Get(issueID)
-	if err != nil {
-		log.Printf("[orchestrator] TEAM_CREATE rejected: issue %q not found: %v", issueID, err)
-		o.chatLog.Append("superintendent", "orchestrator",
-			fmt.Sprintf("TEAM_CREATE %s は拒否されました: イシューが見つかりません", issueID))
-		return
-	}
-
-	if iss.Status == issue.StatusClosed || iss.Status == issue.StatusResolved {
-		log.Printf("[orchestrator] TEAM_CREATE rejected: issue %q is already %s", issueID, iss.Status)
-		o.chatLog.Append("superintendent", "orchestrator",
-			fmt.Sprintf("TEAM_CREATE %s は拒否されました: イシューは既に %s です", issueID, iss.Status))
-		return
-	}
-
-	// Validate that the issue exists in the store and is not closed/resolved.
-	iss, err := o.store.Get(issueID)
-	if err != nil {
-		log.Printf("[orchestrator] TEAM_CREATE rejected: issue %q not found: %v", issueID, err)
-		o.chatLog.Append("superintendent", "orchestrator",
-			fmt.Sprintf("TEAM_CREATE %s は拒否されました: イシューが見つかりません", issueID))
-		return
-	}
-
-	if iss.Status == issue.StatusClosed || iss.Status == issue.StatusResolved {
-		log.Printf("[orchestrator] TEAM_CREATE rejected: issue %q is already %s", issueID, iss.Status)
-		o.chatLog.Append("superintendent", "orchestrator",
-			fmt.Sprintf("TEAM_CREATE %s は拒否されました: イシューは既に %s です", issueID, iss.Status))
-		return
-	}
-
-	t, err := o.teams.Create(ctx, issueID)
-	if err != nil {
-		log.Printf("[orchestrator] TEAM_CREATE failed for %s: %v", issueID, err)
-		o.chatLog.Append("superintendent", "orchestrator",
-			fmt.Sprintf("TEAM_CREATE %s に失敗しました: %v", issueID, err))
-		return
-	}
-
-	// Update issue with assigned team
-	iss.AssignedTeam = t.ID
-	iss.Status = issue.StatusInProgress
-	o.store.Update(iss)
-
-	log.Printf("[orchestrator] team %d created for issue %s", t.ID, issueID)
-	o.chatLog.Append("superintendent", "orchestrator",
-		fmt.Sprintf("TEAM_CREATE %s: チーム %d を作成しました", issueID, t.ID))
-}
 package orchestrator
 
 import (
@@ -64,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -92,6 +34,7 @@ type Orchestrator struct {
 	teams        *team.Manager
 	repos        map[string]*git.Repo // name -> repo
 	dormancy     *agent.Dormancy
+	throttle     *agent.Throttle
 	idleDetector *github.IdleDetector // shared idle state for GitHub polling
 
 	residentAgents []*agent.Agent
@@ -116,6 +59,8 @@ func New(cfg *config.Config, dataDir, promptDir string) *Orchestrator {
 		idleDetector.SetDormancyThreshold(time.Duration(cfg.GitHub.DormancyThresholdMinutes) * time.Minute)
 	}
 
+	probeInterval := time.Duration(cfg.Agent.DormancyProbeMinutes) * time.Minute
+
 	orc := &Orchestrator{
 		cfg:          cfg,
 		dataDir:      dataDir,
@@ -123,7 +68,8 @@ func New(cfg *config.Config, dataDir, promptDir string) *Orchestrator {
 		store:        issue.NewStore(issuesDir),
 		chatLog:      chatlog.New(chatLogPath),
 		repos:        repos,
-		dormancy:     agent.NewDormancy(),
+		dormancy:     agent.NewDormancy(probeInterval),
+		throttle:     agent.NewThrottle(cfg.Agent.GeminiRPM),
 		idleDetector: idleDetector,
 	}
 
@@ -160,6 +106,10 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	}
 
 	log.Println("[orchestrator] starting")
+
+	// Remove closed issues left over from previous runs so the
+	// superintendent does not waste iterations cleaning them up.
+	o.pruneClosedIssues()
 
 	var wg sync.WaitGroup
 
@@ -261,9 +211,29 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	return ctx.Err()
 }
 
+// pruneClosedIssues removes all closed issue files from the store so
+// the superintendent does not spend iterations deleting them one by one.
+func (o *Orchestrator) pruneClosedIssues() {
+	all, err := o.store.List(issue.StatusFilter{})
+	if err != nil {
+		log.Printf("[orchestrator] pruneClosedIssues: list: %v", err)
+		return
+	}
+	for _, iss := range all {
+		if iss.Status == issue.StatusClosed {
+			if err := o.store.Delete(iss.ID); err != nil {
+				log.Printf("[orchestrator] pruneClosedIssues: delete %s: %v", iss.ID, err)
+			} else {
+				log.Printf("[orchestrator] pruned closed issue %s", iss.ID)
+			}
+		}
+	}
+}
+
 // startResidentAgents starts the superintendent.
 func (o *Orchestrator) startResidentAgents(ctx context.Context, wg *sync.WaitGroup) error {
 	resetInterval := time.Duration(o.cfg.Agent.ContextResetMinutes) * time.Minute
+	bashTimeout := time.Duration(o.cfg.Agent.BashTimeoutMinutes) * time.Minute
 
 	residents := []struct {
 		role  agent.Role
@@ -290,7 +260,7 @@ func (o *Orchestrator) startResidentAgents(ctx context.Context, wg *sync.WaitGro
 			systemPrompt += "\n\n" + o.cfg.Agent.ExtraPrompt
 		}
 
-		ag := agent.NewAgent(agent.AgentConfig{
+		agentCfg := agent.AgentConfig{
 			ID:            agent.AgentID{Role: r.role},
 			Role:          r.role,
 			SystemPrompt:  systemPrompt,
@@ -299,8 +269,13 @@ func (o *Orchestrator) startResidentAgents(ctx context.Context, wg *sync.WaitGro
 			ChatLogPath:   o.chatLog.Path(),
 			MemosDir:      filepath.Join(o.dataDir, "memos"),
 			ResetInterval: resetInterval,
+			BashTimeout:   bashTimeout,
 			Dormancy:      o.dormancy,
-		})
+		}
+		if strings.HasPrefix(r.model, "gemini-") {
+			agentCfg.Throttle = o.throttle
+		}
+		ag := agent.NewAgent(agentCfg)
 
 		o.mu.Lock()
 		o.residentAgents = append(o.residentAgents, ag)
@@ -358,13 +333,20 @@ func (o *Orchestrator) startAllTeams(ctx context.Context) {
 					log.Printf("[orchestrator] skipping issue %s (pending approval)", iss.ID)
 					continue
 				}
+				// Clear stale team assignments from previous runs so the
+				// issue gets correctly assigned to a newly created team.
+				if iss.Status == issue.StatusInProgress && iss.AssignedTeam != 0 {
+					log.Printf("[orchestrator] resetting stale AssignedTeam=%d on issue %s", iss.AssignedTeam, iss.ID)
+					iss.AssignedTeam = 0
+					o.store.Update(iss)
+				}
 				assignable = append(assignable, iss)
 			}
 		}
 	}
 
-	// Launch all teams concurrently
-	var twg sync.WaitGroup
+	// Launch all teams concurrently (fire-and-forget so startup is not
+	// blocked waiting for the first LLM response from each engineer).
 	for i := 0; i < maxTeams; i++ {
 		idx := i
 		var issueID string
@@ -372,13 +354,12 @@ func (o *Orchestrator) startAllTeams(ctx context.Context) {
 			issueID = assignable[idx].ID
 		}
 
-		twg.Add(1)
 		go func() {
-			defer twg.Done()
-
 			t, err := o.teams.Create(ctx, issueID)
 			if err != nil {
-				log.Printf("[orchestrator] start teams: team %d: %v", idx+1, err)
+				if ctx.Err() == nil {
+					log.Printf("[orchestrator] start teams: team %d: %v", idx+1, err)
+				}
 				return
 			}
 
@@ -394,9 +375,8 @@ func (o *Orchestrator) startAllTeams(ctx context.Context) {
 			}
 		}()
 	}
-	twg.Wait()
 
-	log.Printf("[orchestrator] started %d teams", o.teams.Count())
+	log.Printf("[orchestrator] launched %d teams (async)", maxTeams)
 }
 
 // runAgentWithRestart runs an agent and restarts it if it exits unexpectedly.
@@ -464,84 +444,29 @@ func (o *Orchestrator) handleWakeGitHub() {
 
 // handleTeamCreate creates a new team for an issue.
 // Expected format: TEAM_CREATE issue-id
-// handleTeamCreate creates a new team for an issue.
-// Expected format: TEAM_CREATE issue-id
-	issueID := parts[1]
-
-	// Validate that the issue exists in the store and is not closed/resolved.
-	iss, err := o.store.Get(issueID)
-	if err != nil {
-		log.Printf("[orchestrator] TEAM_CREATE rejected: issue %q not found: %v", issueID, err)
-		o.chatLog.Append("superintendent", "orchestrator",
-			fmt.Sprintf("TEAM_CREATE %s は拒否されました: イシューが見つかりません", issueID))
+func (o *Orchestrator) handleTeamCreate(ctx context.Context, body string) {
+	parts := strings.Fields(body)
+	if len(parts) < 2 {
+		log.Printf("[orchestrator] TEAM_CREATE missing issue ID")
 		return
-	}
-
-	if iss.Status == issue.StatusClosed || iss.Status == issue.StatusResolved {
-		log.Printf("[orchestrator] TEAM_CREATE rejected: issue %q is already %s", issueID, iss.Status)
-		o.chatLog.Append("superintendent", "orchestrator",
-			fmt.Sprintf("TEAM_CREATE %s は拒否されました: イシューは既に %s です", issueID, iss.Status))
-		return
-	}
-
-	t, err := o.teams.Create(ctx, issueID)
-	if err != nil {
-		log.Printf("[orchestrator] TEAM_CREATE failed for %s: %v", issueID, err)
-		o.chatLog.Append("superintendent", "orchestrator",
-			fmt.Sprintf("TEAM_CREATE %s に失敗しました: %v", issueID, err))
-		return
-	}
-
-	// Update issue with assigned team
-	iss.AssignedTeam = t.ID
-	iss.Status = issue.StatusInProgress
-	o.store.Update(iss)
-
-	log.Printf("[orchestrator] team %d created for issue %s", t.ID, issueID)
-	o.chatLog.Append("superintendent", "orchestrator",
-		fmt.Sprintf("TEAM_CREATE %s: チーム %d を作成しました", issueID, t.ID))
-}
-	issueID := parts[1]
-
-	// Get the issue to check its status
-	iss, err := o.store.Get(issueID)
-	if err != nil {
-		log.Printf("[orchestrator] TEAM_CREATE rejected: issue %q not found: %v", issueID, err)
-		o.chatLog.Append("superintendent", "orchestrator", fmt.Sprintf("TEAM_CREATE %s は拒否されました: イシューが見つかりません", issueID))
-		return
-	}
-
-	// Check if the issue is already closed or resolved
-	if iss.Status == issue.StatusClosed || iss.Status == issue.StatusResolved {
-		log.Printf("[orchestrator] TEAM_CREATE rejected: issue %q is %s", issueID, iss.Status)
-		o.chatLog.Append("superintendent", "orchestrator", fmt.Sprintf("TEAM_CREATE %s は拒否されました: イシューは既に %s です", issueID, iss.Status))
-		return
-	}
-
-	// Create the team
-	t, err := o.teams.Create(ctx, issueID)
-	if err != nil {
-		log.Printf("[orchestrator] TEAM_CREATE failed for %s: %v", issueID, err)
-		o.chatLog.Append("superintendent", "orchestrator", fmt.Sprintf("TEAM_CREATE %s に失敗しました: %v", issueID, err))
-		return
-	}
-
-	// Update issue with assigned team and status
-	iss.AssignedTeam = t.ID
-	iss.Status = issue.StatusInProgress
-	o.store.Update(iss)
-
-	log.Printf("[orchestrator] team %d created for issue %s", t.ID, issueID)
-	o.chatLog.Append("superintendent", "orchestrator", fmt.Sprintf("TEAM_CREATE %s: チーム %d を作成しました", issueID, t.ID))
 	}
 	issueID := parts[1]
 
 	// Validate that the issue exists in the store to reject malformed IDs
 	// (e.g. "issueID（2回目）extra text" from retried TEAM_CREATE messages).
-	if _, err := o.store.Get(issueID); err != nil {
+	existingIss, err := o.store.Get(issueID)
+	if err != nil {
 		log.Printf("[orchestrator] TEAM_CREATE rejected: issue %q not found: %v", issueID, err)
 		o.chatLog.Append("superintendent", "orchestrator",
 			fmt.Sprintf("TEAM_CREATE %s は拒否されました: イシューが見つかりません", issueID))
+		return
+	}
+
+	// Reject team creation for issues that are already closed or resolved.
+	if existingIss.Status == issue.StatusClosed || existingIss.Status == issue.StatusResolved {
+		log.Printf("[orchestrator] TEAM_CREATE rejected: issue %s is %s", issueID, existingIss.Status)
+		o.chatLog.Append("superintendent", "orchestrator",
+			fmt.Sprintf("TEAM_CREATE %s は拒否されました: イシューのステータスが %s です", issueID, existingIss.Status))
 		return
 	}
 
@@ -630,6 +555,8 @@ func (o *Orchestrator) handleGitHubEvent(eventType github.EventType, issueID str
 		// Notify superintendent about new/updated issue
 		o.chatLog.Append("superintendent", "orchestrator",
 			fmt.Sprintf("GitHub Issue updated: %s", issueID))
+	case github.EventTypePullRequest:
+		o.handlePRMerged(issueID)
 	case github.EventTypeIssueComment:
 		if comment == nil {
 			return
@@ -654,6 +581,60 @@ func (o *Orchestrator) handleGitHubEvent(eventType github.EventType, issueID str
 			engineerID := fmt.Sprintf("engineer-%d", iss.AssignedTeam)
 			o.chatLog.Append(engineerID, "orchestrator", msg)
 		}
+	}
+}
+
+// handlePRMerged closes a GitHub issue and updates local state when its linked PR is merged.
+func (o *Orchestrator) handlePRMerged(issueID string) {
+	iss, err := o.store.Get(issueID)
+	if err != nil {
+		log.Printf("[orchestrator] PR merged: issue %s not found: %v", issueID, err)
+		return
+	}
+
+	if iss.Status == issue.StatusClosed {
+		log.Printf("[orchestrator] PR merged: issue %s already closed, skipping", issueID)
+		return
+	}
+
+	// Close the GitHub issue via gh CLI (only for GitHub-synced issues with a URL)
+	if iss.URL != "" {
+		owner, repo, number, err := github.ParseID(issueID)
+		if err == nil {
+			o.closeGitHubIssue(owner, repo, number)
+		} else {
+			log.Printf("[orchestrator] PR merged: cannot parse issue ID %s for gh close: %v", issueID, err)
+		}
+	}
+
+	// Update local issue status
+	iss.Status = issue.StatusClosed
+	if err := o.store.Update(iss); err != nil {
+		log.Printf("[orchestrator] PR merged: update issue %s failed: %v", issueID, err)
+	}
+
+	// Disband the assigned team
+	if iss.AssignedTeam > 0 {
+		if err := o.teams.DisbandByIssue(issueID); err != nil {
+			log.Printf("[orchestrator] PR merged: disband team for %s failed: %v", issueID, err)
+		}
+	}
+
+	// Notify superintendent
+	o.chatLog.Append("superintendent", "orchestrator",
+		fmt.Sprintf("PR merged for issue %s. Issue auto-closed and team disbanded.", issueID))
+
+	log.Printf("[orchestrator] PR merged: issue %s closed, team disbanded", issueID)
+}
+
+// closeGitHubIssue closes an issue on GitHub via gh CLI.
+func (o *Orchestrator) closeGitHubIssue(owner, repo string, number int) {
+	fullRepo := fmt.Sprintf("%s/%s", owner, repo)
+	cmd := exec.Command("gh", "issue", "close", fmt.Sprintf("%d", number), "-R", fullRepo)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		log.Printf("[orchestrator] gh issue close %s#%d failed: %v (output: %s)", fullRepo, number, err, string(out))
+	} else {
+		log.Printf("[orchestrator] gh issue close %s#%d succeeded", fullRepo, number)
 	}
 }
 
@@ -719,6 +700,7 @@ func (o *Orchestrator) runGitHubSync(ctx context.Context) {
 // CreateTeamAgents implements team.TeamFactory.
 func (o *Orchestrator) CreateTeamAgents(teamNum int, issueID string) (engineer *agent.Agent, err error) {
 	resetInterval := time.Duration(o.cfg.Agent.ContextResetMinutes) * time.Minute
+	bashTimeout := time.Duration(o.cfg.Agent.BashTimeoutMinutes) * time.Minute
 	teamNumStr := fmt.Sprintf("%d", teamNum)
 
 	// Load the issue for context
@@ -758,7 +740,7 @@ func (o *Orchestrator) CreateTeamAgents(teamNum int, issueID string) (engineer *
 			systemPrompt += "\n\n" + o.cfg.Agent.ExtraPrompt
 		}
 
-		agents[i] = agent.NewAgent(agent.AgentConfig{
+		agentCfg := agent.AgentConfig{
 			ID:            agent.AgentID{Role: r.role, TeamNum: teamNum},
 			Role:          r.role,
 			SystemPrompt:  systemPrompt,
@@ -767,9 +749,14 @@ func (o *Orchestrator) CreateTeamAgents(teamNum int, issueID string) (engineer *
 			ChatLogPath:   o.chatLog.Path(),
 			MemosDir:      filepath.Join(o.dataDir, "memos"),
 			ResetInterval: resetInterval,
+			BashTimeout:   bashTimeout,
 			OriginalTask:  originalTask,
 			Dormancy:      o.dormancy,
-		})
+		}
+		if strings.HasPrefix(r.model, "gemini-") {
+			agentCfg.Throttle = o.throttle
+		}
+		agents[i] = agent.NewAgent(agentCfg)
 	}
 
 	return agents[0], nil

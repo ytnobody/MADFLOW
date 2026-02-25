@@ -128,6 +128,10 @@ func (a *Agent) Run(ctx context.Context) error {
 				if ctx.Err() != nil {
 					return ctx.Err()
 				}
+				if IsMaxIterationsError(err) {
+					log.Printf("[%s] max iterations reached, restarting agent", recipient)
+					return err
+				}
 				log.Printf("[%s] send failed: %v", recipient, err)
 				continue
 			}

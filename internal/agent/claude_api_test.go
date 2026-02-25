@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -332,5 +334,32 @@ func TestNewAgentDispatch_DefaultClaudeModel(t *testing.T) {
 	agent := NewAgent(cfg)
 	if _, ok := agent.Process.(*ClaudeProcess); !ok {
 		t.Errorf("expected *ClaudeProcess, got %T", agent.Process)
+	}
+}
+
+// TestIsMaxIterationsError verifies that IsMaxIterationsError correctly identifies MaxIterationsError.
+func TestIsMaxIterationsError(t *testing.T) {
+	err := &MaxIterationsError{PartialResponse: "partial"}
+	if !IsMaxIterationsError(err) {
+		t.Error("expected IsMaxIterationsError to return true for *MaxIterationsError")
+	}
+
+	// Wrapped error should also be detected
+	wrapped := fmt.Errorf("send failed: %w", err)
+	if !IsMaxIterationsError(wrapped) {
+		t.Error("expected IsMaxIterationsError to return true for wrapped *MaxIterationsError")
+	}
+}
+
+// TestIsMaxIterationsError_OtherError verifies that IsMaxIterationsError returns false for other errors.
+func TestIsMaxIterationsError_OtherError(t *testing.T) {
+	if IsMaxIterationsError(errors.New("some other error")) {
+		t.Error("expected IsMaxIterationsError to return false for non-MaxIterationsError")
+	}
+	if IsMaxIterationsError(nil) {
+		t.Error("expected IsMaxIterationsError to return false for nil")
+	}
+	if IsMaxIterationsError(&RateLimitError{Wrapped: errors.New("rate limit")}) {
+		t.Error("expected IsMaxIterationsError to return false for RateLimitError")
 	}
 }
