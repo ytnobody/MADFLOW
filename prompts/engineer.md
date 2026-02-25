@@ -90,18 +90,42 @@ cat {{ISSUES_DIR}}/<イシューID>.toml
 
 ### 2. ブランチの作成と実装
 
-feature ブランチを作成して実装を行います:
+feature ブランチを作成して実装を行います。まず既存ブランチがあるか確認します:
 ```bash
 cd <リポジトリパス>
-git checkout -b {{FEATURE_PREFIX}}<イシューID> {{DEVELOP_BRANCH}}
+git branch -a | grep {{FEATURE_PREFIX}}<イシューID>
 ```
 
-ブランチに切り替えたら、GitHub Issueに実装開始をコメントします（`url` フィールドがある場合のみ）:
+- **既存ブランチがある場合**: そのブランチをチェックアウトして作業を継続します
+  ```bash
+  git checkout {{FEATURE_PREFIX}}<イシューID>
+  ```
+- **既存ブランチがない場合**: 新規作成します
+  ```bash
+  git checkout -b {{FEATURE_PREFIX}}<イシューID> {{DEVELOP_BRANCH}}
+  ```
+
+#### 既存PRの確認
+
+既に PR が存在する場合は、その PR の修正に注力してください（新規作成ではなく）:
 ```bash
-gh issue comment <イシュー番号> -R <owner>/<repo> --body "**[実装開始]** by \`{{AGENT_ID}}\`
-
-実装を開始しました。feature ブランチ: {{FEATURE_PREFIX}}<イシューID>"
+gh pr list --head {{FEATURE_PREFIX}}<イシューID> --state open
 ```
+
+#### 実装開始コメントの投稿（重複チェック必須）
+
+`url` フィールドがある場合、**まず既存コメントを確認**してから投稿します:
+```bash
+gh api repos/<owner>/<repo>/issues/<イシュー番号>/comments --jq '.[].body' | grep -c '^\*\*\[実装開始\]\*\*'
+```
+
+- 結果が `0` の場合のみ、実装開始コメントを投稿してください:
+  ```bash
+  gh issue comment <イシュー番号> -R <owner>/<repo> --body "**[実装開始]** by \`{{AGENT_ID}}\`
+
+  実装を開始しました。feature ブランチ: {{FEATURE_PREFIX}}<イシューID>"
+  ```
+- **結果が `1` 以上の場合は投稿をスキップ**してください。既に実装開始が報告済みです。
 
 イシュー番号・owner・repo は、イシューファイルの `url` フィールドから取得します。
 例: `url = "https://api.github.com/repos/ytnobody/MADFLOW/issues/5"` の場合
@@ -141,17 +165,46 @@ gh pr list --head {{FEATURE_PREFIX}}<イシューID> --state open
 
 ### 4. レビュー依頼
 
-実装が完了したら、監督にレビューを依頼します:
+#### 実装完了前の確認（必須）
+
+レビュー依頼を出す前に、以下を必ず確認してください:
+
+1. **ビルドが通ること**:
+   ```bash
+   go build ./...
+   ```
+2. **テストが通ること**:
+   ```bash
+   go test ./...
+   ```
+3. **変更がプッシュ済みであること**:
+   ```bash
+   git push
+   ```
+
+**ビルドまたはテストが失敗する場合は、実装完了を報告してはいけません。** 問題を修正してから再度確認してください。
+
+#### レビュー依頼の送信
+
+確認が全て通ったら、監督にレビューを依頼します:
 ```bash
 echo "[$(date +%Y-%m-%dT%H:%M:%S)] [@superintendent] {{AGENT_ID}}: 実装完了。{{FEATURE_PREFIX}}<イシューID> ブランチのレビューをお願いします。" >> {{CHATLOG_PATH}}
 ```
 
-GitHub Issueに実装完了をコメントします（`url` フィールドがある場合のみ）:
-```bash
-gh issue comment <イシュー番号> -R <owner>/<repo> --body "**[実装完了]** by \`{{AGENT_ID}}\`
+#### 実装完了コメントの投稿（重複チェック必須）
 
-実装が完了しました。監督にレビューを依頼しました。"
+`url` フィールドがある場合、**まず既存コメントを確認**してから投稿します:
+```bash
+gh api repos/<owner>/<repo>/issues/<イシュー番号>/comments --jq '.[].body' | grep -c '^\*\*\[実装完了\]\*\*'
 ```
+
+- 結果が `0` の場合のみ、実装完了コメントを投稿してください:
+  ```bash
+  gh issue comment <イシュー番号> -R <owner>/<repo> --body "**[実装完了]** by \`{{AGENT_ID}}\`
+
+  実装が完了しました。監督にレビューを依頼しました。"
+  ```
+- **結果が `1` 以上の場合は投稿をスキップ**してください。
 
 `url` フィールドがない場合はコメント投稿をスキップしてください。
 
