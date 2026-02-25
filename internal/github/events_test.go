@@ -628,3 +628,196 @@ func TestEventWatcher_WithBotCommentPatterns_HumanComment(t *testing.T) {
 		t.Errorf("expected IsBot=false for human comment even with bot patterns, got true")
 	}
 }
+
+// --- PullRequestEvent tests ---
+
+func TestParsePRBodyIssueID(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{"standard format", "Issue: ytnobody-MADFLOW-113", "ytnobody-MADFLOW-113"},
+		{"with prefix text", "Some description\n\nIssue: owner-repo-042", "owner-repo-042"},
+		{"case insensitive prefix", "issue: owner-repo-001", "owner-repo-001"},
+		{"with extra whitespace", "  Issue:   owner-repo-005  ", "owner-repo-005"},
+		{"no issue line", "Just a PR description", ""},
+		{"empty body", "", ""},
+		{"issue line with no ID", "Issue: ", ""},
+		{"multiple lines first match", "Title\n\nIssue: owner-repo-010\n\nDetails", "owner-repo-010"},
+		{"local issue", "Issue: local-031", "local-031"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ParsePRBodyIssueID(tt.body)
+			if got != tt.want {
+				t.Errorf("ParsePRBodyIssueID(%q) = %q, want %q", tt.body, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestProcessPullRequestEvent_Merged(t *testing.T) {
+	dir := t.TempDir()
+	store := issue.NewStore(dir)
+
+	// Pre-create the issue that the PR references
+	store.Update(&issue.Issue{
+		ID:     "owner-repo-001",
+		Title:  "Test Issue",
+		Status: issue.StatusInProgress,
+	})
+
+	var gotEventType EventType
+	var gotIssueID string
+
+	cb := func(et EventType, id string, c *issue.Comment) {
+		gotEventType = et
+		gotIssueID = id
+	}
+
+	w := NewEventWatcher(store, "owner", []string{"repo"}, time.Minute, cb)
+
+	payload := ghEventPayloadPullRequest{
+		Action: "closed",
+		PullRequest: ghEventPR{
+			Number: 10,
+			Title:  "Fix the thing",
+			Body:   "Issue: owner-repo-001",
+			Merged: true,
+		},
+	}
+	payloadBytes, _ := json.Marshal(payload)
+
+	ev := ghEvent{
+		ID:      "evt-pr-1",
+		Type:    "PullRequestEvent",
+		Payload: payloadBytes,
+	}
+
+	w.processEvent("repo", ev)
+
+	if gotEventType != EventTypePullRequest {
+		t.Errorf("expected PullRequestEvent callback, got %s", gotEventType)
+	}
+	if gotIssueID != "owner-repo-001" {
+		t.Errorf("expected issue ID owner-repo-001, got %s", gotIssueID)
+	}
+}
+
+func TestProcessPullRequestEvent_ClosedNotMerged(t *testing.T) {
+	dir := t.TempDir()
+	store := issue.NewStore(dir)
+
+	callCount := 0
+	cb := func(et EventType, id string, c *issue.Comment) {
+		callCount++
+	}
+
+	w := NewEventWatcher(store, "owner", []string{"repo"}, time.Minute, cb)
+
+	payload := ghEventPayloadPullRequest{
+		Action: "closed",
+		PullRequest: ghEventPR{
+			Number: 10,
+			Body:   "Issue: owner-repo-001",
+			Merged: false, // closed but NOT merged
+		},
+	}
+	payloadBytes, _ := json.Marshal(payload)
+
+	ev := ghEvent{ID: "evt-pr-closed", Type: "PullRequestEvent", Payload: payloadBytes}
+	w.processEvent("repo", ev)
+
+	if callCount != 0 {
+		t.Errorf("expected 0 callbacks for closed-not-merged PR, got %d", callCount)
+	}
+}
+
+func TestProcessPullRequestEvent_NoIssueInBody(t *testing.T) {
+	dir := t.TempDir()
+	store := issue.NewStore(dir)
+
+	callCount := 0
+	cb := func(et EventType, id string, c *issue.Comment) {
+		callCount++
+	}
+
+	w := NewEventWatcher(store, "owner", []string{"repo"}, time.Minute, cb)
+
+	payload := ghEventPayloadPullRequest{
+		Action: "closed",
+		PullRequest: ghEventPR{
+			Number: 11,
+			Body:   "Just a description, no issue link",
+			Merged: true,
+		},
+	}
+	payloadBytes, _ := json.Marshal(payload)
+
+	ev := ghEvent{ID: "evt-pr-no-issue", Type: "PullRequestEvent", Payload: payloadBytes}
+	w.processEvent("repo", ev)
+
+	if callCount != 0 {
+		t.Errorf("expected 0 callbacks for PR with no Issue: line, got %d", callCount)
+	}
+}
+
+func TestProcessPullRequestEvent_IssueNotInStore(t *testing.T) {
+	dir := t.TempDir()
+	store := issue.NewStore(dir)
+
+	callCount := 0
+	cb := func(et EventType, id string, c *issue.Comment) {
+		callCount++
+	}
+
+	w := NewEventWatcher(store, "owner", []string{"repo"}, time.Minute, cb)
+
+	payload := ghEventPayloadPullRequest{
+		Action: "closed",
+		PullRequest: ghEventPR{
+			Number: 12,
+			Body:   "Issue: owner-repo-999",
+			Merged: true,
+		},
+	}
+	payloadBytes, _ := json.Marshal(payload)
+
+	ev := ghEvent{ID: "evt-pr-missing", Type: "PullRequestEvent", Payload: payloadBytes}
+	w.processEvent("repo", ev)
+
+	if callCount != 0 {
+		t.Errorf("expected 0 callbacks for PR referencing unknown issue, got %d", callCount)
+	}
+}
+
+func TestProcessPullRequestEvent_OpenedAction(t *testing.T) {
+	dir := t.TempDir()
+	store := issue.NewStore(dir)
+
+	callCount := 0
+	cb := func(et EventType, id string, c *issue.Comment) {
+		callCount++
+	}
+
+	w := NewEventWatcher(store, "owner", []string{"repo"}, time.Minute, cb)
+
+	payload := ghEventPayloadPullRequest{
+		Action: "opened",
+		PullRequest: ghEventPR{
+			Number: 13,
+			Body:   "Issue: owner-repo-001",
+			Merged: false,
+		},
+	}
+	payloadBytes, _ := json.Marshal(payload)
+
+	ev := ghEvent{ID: "evt-pr-opened", Type: "PullRequestEvent", Payload: payloadBytes}
+	w.processEvent("repo", ev)
+
+	if callCount != 0 {
+		t.Errorf("expected 0 callbacks for opened PR, got %d", callCount)
+	}
+}

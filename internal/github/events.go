@@ -26,6 +26,7 @@ type EventType string
 const (
 	EventTypeIssues       EventType = "IssuesEvent"
 	EventTypeIssueComment EventType = "IssueCommentEvent"
+	EventTypePullRequest  EventType = "PullRequestEvent"
 )
 
 // EventCallback is invoked when an event is processed.
@@ -38,6 +39,24 @@ type ghEvent struct {
 	ID      string          `json:"id"`
 	Type    string          `json:"type"`
 	Payload json.RawMessage `json:"payload"`
+}
+
+// ghEventPayloadPullRequest is the payload for PullRequestEvent.
+type ghEventPayloadPullRequest struct {
+	Action      string    `json:"action"`
+	PullRequest ghEventPR `json:"pull_request"`
+}
+
+// ghEventPR represents a pull request within the Events API payload.
+type ghEventPR struct {
+	Number  int    `json:"number"`
+	Title   string `json:"title"`
+	Body    string `json:"body"`
+	Merged  bool   `json:"merged"`
+	HTMLURL string `json:"html_url"`
+	Base    struct {
+		Ref string `json:"ref"`
+	} `json:"base"`
 }
 
 // ghEventPayloadIssue is the payload for IssuesEvent.
@@ -350,6 +369,8 @@ func (w *EventWatcher) processEvent(repo string, ev ghEvent) {
 		w.handleIssuesEvent(repo, ev)
 	case EventTypeIssueComment:
 		w.handleIssueCommentEvent(repo, ev)
+	case EventTypePullRequest:
+		w.handlePullRequestEvent(repo, ev)
 	}
 }
 
@@ -486,6 +507,59 @@ func (w *EventWatcher) handleIssueCommentEvent(repo string, ev ghEvent) {
 			w.callback(EventTypeIssueComment, localID, &comment)
 		}
 	}
+}
+
+// handlePullRequestEvent processes a PullRequestEvent (merged PRs).
+func (w *EventWatcher) handlePullRequestEvent(repo string, ev ghEvent) {
+	var payload ghEventPayloadPullRequest
+	if err := json.Unmarshal(ev.Payload, &payload); err != nil {
+		log.Printf("[event-watcher] parse PullRequestEvent payload: %v", err)
+		return
+	}
+
+	// Only process merged PRs (action=closed + merged=true)
+	if payload.Action != "closed" || !payload.PullRequest.Merged {
+		return
+	}
+
+	// Extract issue ID from PR body
+	issueID := ParsePRBodyIssueID(payload.PullRequest.Body)
+	if issueID == "" {
+		log.Printf("[event-watcher] PullRequestEvent #%d: no Issue: line in PR body, skipping",
+			payload.PullRequest.Number)
+		return
+	}
+
+	// Verify the issue exists in local store
+	_, err := w.store.Get(issueID)
+	if err != nil {
+		log.Printf("[event-watcher] PullRequestEvent #%d: issue %s not found in store, skipping",
+			payload.PullRequest.Number, issueID)
+		return
+	}
+
+	log.Printf("[event-watcher] PR #%d merged for issue %s", payload.PullRequest.Number, issueID)
+
+	if w.callback != nil {
+		w.callback(EventTypePullRequest, issueID, nil)
+	}
+}
+
+// ParsePRBodyIssueID extracts the issue ID from a PR body.
+// It looks for a line matching "Issue: <issueID>" (case-insensitive prefix).
+// Returns empty string if not found.
+func ParsePRBodyIssueID(body string) string {
+	for _, line := range strings.Split(body, "\n") {
+		trimmed := strings.TrimSpace(line)
+		lower := strings.ToLower(trimmed)
+		if strings.HasPrefix(lower, "issue:") {
+			id := strings.TrimSpace(trimmed[len("issue:"):])
+			if id != "" {
+				return id
+			}
+		}
+	}
+	return ""
 }
 
 // markSeen returns true if the event was already seen, false if newly added.

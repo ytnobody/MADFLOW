@@ -686,6 +686,129 @@ func TestHandleGitHubEvent(t *testing.T) {
 	}
 }
 
+// --- PullRequestEvent / handlePRMerged tests ---
+
+func TestHandlePRMerged(t *testing.T) {
+	dir := t.TempDir()
+	cfg := testConfig(dir)
+	os.MkdirAll(filepath.Join(dir, "issues"), 0755)
+	chatlogPath := filepath.Join(dir, "chatlog.txt")
+	os.WriteFile(chatlogPath, nil, 0644)
+
+	orc := New(cfg, dir, t.TempDir())
+	orc.teams = team.NewManager(newMockTeamFactory(t), 3)
+
+	// Create an in-progress issue with an assigned team
+	iss := &issue.Issue{
+		ID:     "owner-repo-001",
+		Title:  "Test Issue",
+		URL:    "https://api.github.com/repos/owner/repo/issues/1",
+		Status: issue.StatusInProgress,
+	}
+	orc.Store().Update(iss)
+
+	// Create a team for this issue
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	tm, err := orc.Teams().Create(ctx, "owner-repo-001")
+	if err != nil {
+		t.Fatalf("create team: %v", err)
+	}
+	iss.AssignedTeam = tm.ID
+	orc.Store().Update(iss)
+
+	// Simulate handlePRMerged
+	orc.handlePRMerged("owner-repo-001")
+
+	// Verify issue status is closed
+	got, err := orc.Store().Get("owner-repo-001")
+	if err != nil {
+		t.Fatalf("get issue: %v", err)
+	}
+	if got.Status != issue.StatusClosed {
+		t.Errorf("expected status closed, got %s", got.Status)
+	}
+
+	// Verify chatlog notification
+	cl := chatlog.New(chatlogPath)
+	msgs, _ := cl.Poll("superintendent")
+	found := false
+	for _, m := range msgs {
+		if contains(m.Body, "PR merged") && contains(m.Body, "owner-repo-001") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected chatlog notification about PR merge")
+	}
+}
+
+func TestHandlePRMerged_AlreadyClosed(t *testing.T) {
+	dir := t.TempDir()
+	cfg := testConfig(dir)
+	os.MkdirAll(filepath.Join(dir, "issues"), 0755)
+	os.WriteFile(filepath.Join(dir, "chatlog.txt"), nil, 0644)
+
+	orc := New(cfg, dir, t.TempDir())
+
+	// Create an already-closed issue
+	iss := &issue.Issue{
+		ID:     "owner-repo-002",
+		Title:  "Already Closed",
+		Status: issue.StatusClosed,
+	}
+	orc.Store().Update(iss)
+
+	// Should not panic or change anything
+	orc.handlePRMerged("owner-repo-002")
+
+	// Status should remain closed
+	got, _ := orc.Store().Get("owner-repo-002")
+	if got.Status != issue.StatusClosed {
+		t.Errorf("expected status to remain closed, got %s", got.Status)
+	}
+}
+
+func TestHandlePRMerged_IssueNotFound(t *testing.T) {
+	dir := t.TempDir()
+	cfg := testConfig(dir)
+	os.MkdirAll(filepath.Join(dir, "issues"), 0755)
+	os.WriteFile(filepath.Join(dir, "chatlog.txt"), nil, 0644)
+
+	orc := New(cfg, dir, t.TempDir())
+
+	// Should not panic when issue is missing
+	orc.handlePRMerged("nonexistent-issue-999")
+}
+
+func TestHandleGitHubEvent_PullRequest(t *testing.T) {
+	dir := t.TempDir()
+	cfg := testConfig(dir)
+	os.MkdirAll(filepath.Join(dir, "issues"), 0755)
+	chatlogPath := filepath.Join(dir, "chatlog.txt")
+	os.WriteFile(chatlogPath, nil, 0644)
+
+	orc := New(cfg, dir, t.TempDir())
+
+	// Create an issue
+	iss := &issue.Issue{
+		ID:     "owner-repo-005",
+		Title:  "Test",
+		Status: issue.StatusInProgress,
+	}
+	orc.Store().Update(iss)
+
+	// Call handleGitHubEvent with PullRequest type
+	orc.handleGitHubEvent(githubPkg.EventTypePullRequest, "owner-repo-005", nil)
+
+	// Issue should be closed
+	got, _ := orc.Store().Get("owner-repo-005")
+	if got.Status != issue.StatusClosed {
+		t.Errorf("expected status closed, got %s", got.Status)
+	}
+}
+
 // TestRunGracefulShutdownDuringStartup verifies that Run returns nil (not an
 // error) when the context is cancelled while startAllTeams is still running.
 // Previously the system returned "wait for agents ready: context canceled"

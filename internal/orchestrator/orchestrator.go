@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -554,6 +555,8 @@ func (o *Orchestrator) handleGitHubEvent(eventType github.EventType, issueID str
 		// Notify superintendent about new/updated issue
 		o.chatLog.Append("superintendent", "orchestrator",
 			fmt.Sprintf("GitHub Issue updated: %s", issueID))
+	case github.EventTypePullRequest:
+		o.handlePRMerged(issueID)
 	case github.EventTypeIssueComment:
 		if comment == nil {
 			return
@@ -578,6 +581,60 @@ func (o *Orchestrator) handleGitHubEvent(eventType github.EventType, issueID str
 			engineerID := fmt.Sprintf("engineer-%d", iss.AssignedTeam)
 			o.chatLog.Append(engineerID, "orchestrator", msg)
 		}
+	}
+}
+
+// handlePRMerged closes a GitHub issue and updates local state when its linked PR is merged.
+func (o *Orchestrator) handlePRMerged(issueID string) {
+	iss, err := o.store.Get(issueID)
+	if err != nil {
+		log.Printf("[orchestrator] PR merged: issue %s not found: %v", issueID, err)
+		return
+	}
+
+	if iss.Status == issue.StatusClosed {
+		log.Printf("[orchestrator] PR merged: issue %s already closed, skipping", issueID)
+		return
+	}
+
+	// Close the GitHub issue via gh CLI (only for GitHub-synced issues with a URL)
+	if iss.URL != "" {
+		owner, repo, number, err := github.ParseID(issueID)
+		if err == nil {
+			o.closeGitHubIssue(owner, repo, number)
+		} else {
+			log.Printf("[orchestrator] PR merged: cannot parse issue ID %s for gh close: %v", issueID, err)
+		}
+	}
+
+	// Update local issue status
+	iss.Status = issue.StatusClosed
+	if err := o.store.Update(iss); err != nil {
+		log.Printf("[orchestrator] PR merged: update issue %s failed: %v", issueID, err)
+	}
+
+	// Disband the assigned team
+	if iss.AssignedTeam > 0 {
+		if err := o.teams.DisbandByIssue(issueID); err != nil {
+			log.Printf("[orchestrator] PR merged: disband team for %s failed: %v", issueID, err)
+		}
+	}
+
+	// Notify superintendent
+	o.chatLog.Append("superintendent", "orchestrator",
+		fmt.Sprintf("PR merged for issue %s. Issue auto-closed and team disbanded.", issueID))
+
+	log.Printf("[orchestrator] PR merged: issue %s closed, team disbanded", issueID)
+}
+
+// closeGitHubIssue closes an issue on GitHub via gh CLI.
+func (o *Orchestrator) closeGitHubIssue(owner, repo string, number int) {
+	fullRepo := fmt.Sprintf("%s/%s", owner, repo)
+	cmd := exec.Command("gh", "issue", "close", fmt.Sprintf("%d", number), "-R", fullRepo)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		log.Printf("[orchestrator] gh issue close %s#%d failed: %v (output: %s)", fullRepo, number, err, string(out))
+	} else {
+		log.Printf("[orchestrator] gh issue close %s#%d succeeded", fullRepo, number)
 	}
 }
 
