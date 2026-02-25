@@ -56,7 +56,7 @@ jobs:
 
           # Run benchmarks on current (PR) branch
           echo "=== Running benchmarks on PR branch ==="
-          go test -bench=. -benchmem -count=5 -timeout 300s ./... > /tmp/bench_new.txt 2>go test -bench=. -benchmem -count=5 -timeout 300s ./... > /tmp/bench_new.txt 2>          go test -bench=. -benchmem -count=5 -timeout 300s ./... > /tmp/bench_new.txt 2>go test -bench=. -benchmem -count=5 -timeout 300s ./... > /tmp/bench_new.txt 2>&1 || true11 || true1 || true
+          go test -bench=. -benchmem -count=5 -timeout 300s ./... > /tmp/bench_new.txt 2>go test -bench=. -benchmem -count=5 -timeout 300s ./... > /tmp/bench_new.txt 2>          go test -bench=. -benchmem -count=5 -timeout 300s ./... > /tmp/bench_new.txt 2>go test -bench=. -benchmem -count=5 -timeout 300s ./... > /tmp/bench_new.txt 2>go test -bench=. -benchmem -count=5 -timeout 300s ./... > /tmp/bench_new.txt 2>&1 || true11 || true1 || true1 || true
           cat /tmp/bench_new.txt
 
           # Fetch base branch tip and create an isolated worktree for comparison
