@@ -278,6 +278,10 @@ func TestTruncate_EmptyFile(t *testing.T) {
 	}
 }
 
+// TestReadFrom_OffsetResetAfterTruncate verifies that readFrom skips to the
+// end of file when truncation is detected, instead of replaying old messages.
+// This prevents old TEAM_CREATE/TEAM_DISBAND commands from being re-processed
+// every time the chatlog cleanup goroutine truncates the file.
 func TestReadFrom_OffsetResetAfterTruncate(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "chatlog.txt")
@@ -309,7 +313,26 @@ func TestReadFrom_OffsetResetAfterTruncate(t *testing.T) {
 		t.Fatalf("Truncate failed: %v", err)
 	}
 
-	// Now append a new message
+	// readFrom should detect truncation and skip to end-of-file instead of
+	// re-reading from the beginning.  No messages should be returned.
+	messages, newOffset, err := cl.readFrom(offset, "superintendent")
+	if err != nil {
+		t.Fatalf("readFrom failed: %v", err)
+	}
+	if len(messages) != 0 {
+		t.Errorf("expected 0 messages after truncation (skip-to-end), got %d: %v", len(messages), messages)
+	}
+	// Offset must have been updated to the current (smaller) file size.
+	truncatedInfo, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if newOffset != truncatedInfo.Size() {
+		t.Errorf("expected newOffset=%d (end of truncated file), got %d", truncatedInfo.Size(), newOffset)
+	}
+
+	// A new message appended AFTER the truncation should be picked up on the
+	// next readFrom call.
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0644)
 	if err != nil {
 		t.Fatal(err)
@@ -318,21 +341,14 @@ func TestReadFrom_OffsetResetAfterTruncate(t *testing.T) {
 	f.WriteString(newMsg)
 	f.Close()
 
-	// readFrom should detect truncation (file smaller than offset) and reset offset to 0
-	// It should then read from the beginning and return all 3 lines (2 old + 1 new)
-	messages, newOffset, err := cl.readFrom(offset, "superintendent")
+	messages2, _, err := cl.readFrom(newOffset, "superintendent")
 	if err != nil {
-		t.Fatalf("readFrom failed: %v", err)
+		t.Fatalf("second readFrom failed: %v", err)
 	}
-	if newOffset == offset {
-		t.Errorf("expected offset to change after truncation reset, offset=%d newOffset=%d", offset, newOffset)
+	if len(messages2) != 1 {
+		t.Errorf("expected 1 new message after truncation, got %d", len(messages2))
 	}
-	// Should have 3 messages: 2 kept by truncate + 1 new
-	if len(messages) != 3 {
-		t.Errorf("expected 3 messages after offset reset, got %d: %v", len(messages), messages)
-	}
-	// Last message should be the new one
-	if len(messages) > 0 && messages[len(messages)-1].Body != "新しいメッセージ" {
-		t.Errorf("expected last message to be the new one, got: %s", messages[len(messages)-1].Body)
+	if len(messages2) > 0 && messages2[0].Body != "新しいメッセージ" {
+		t.Errorf("expected new message body '新しいメッセージ', got: %s", messages2[0].Body)
 	}
 }

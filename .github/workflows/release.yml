@@ -36,13 +36,28 @@ jobs:
           GOOS=darwin  GOARCH=arm64 go build -ldflags "${LDFLAGS}" -o dist/madflow-darwin-arm64  ./cmd/madflow
           GOOS=windows GOARCH=amd64 go build -ldflags "${LDFLAGS}" -o dist/madflow-windows-amd64.exe ./cmd/madflow
 
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          generate_release_notes: true
-          files: |
-            dist/madflow-linux-amd64
-            dist/madflow-linux-arm64
-            dist/madflow-darwin-amd64
-            dist/madflow-darwin-arm64
-            dist/madflow-windows-amd64.exe
+      - name: Create or Update GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          # リリースが既に存在する場合は assets のみアップロード（上書き）
+          if gh release view "$VERSION" -R ${{ github.repository }} > /dev/null 2>&1; then
+            echo "Release $VERSION already exists. Uploading/overwriting assets..."
+            gh release upload "$VERSION" -R ${{ github.repository }} \
+              dist/madflow-linux-amd64 \
+              dist/madflow-linux-arm64 \
+              dist/madflow-darwin-amd64 \
+              dist/madflow-darwin-arm64 \
+              dist/madflow-windows-amd64.exe \
+              --clobber
+          else
+            echo "Creating new release $VERSION..."
+            gh release create "$VERSION" -R ${{ github.repository }} \
+              --generate-notes \
+              dist/madflow-linux-amd64 \
+              dist/madflow-linux-arm64 \
+              dist/madflow-darwin-amd64 \
+              dist/madflow-darwin-arm64 \
+              dist/madflow-windows-amd64.exe
+          fi

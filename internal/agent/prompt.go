@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/ytnobody/madflow/prompts"
 )
 
 // PromptVars holds the variables to substitute into prompt templates.
@@ -25,6 +27,9 @@ var promptFileNames = map[Role]string{
 }
 
 // LoadPrompt reads a role's prompt template and substitutes variables.
+// It first looks for the file in promptsDir.  If the file does not exist
+// there (e.g. on a fresh project created with madflow init), it falls back
+// to the embedded default template bundled into the binary.
 func LoadPrompt(promptsDir string, role Role, vars PromptVars) (string, error) {
 	filename, ok := promptFileNames[role]
 	if !ok {
@@ -34,7 +39,14 @@ func LoadPrompt(promptsDir string, role Role, vars PromptVars) (string, error) {
 	path := filepath.Join(promptsDir, filename)
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return "", fmt.Errorf("read prompt %s: %w", path, err)
+		if !os.IsNotExist(err) {
+			return "", fmt.Errorf("read prompt %s: %w", path, err)
+		}
+		// Fall back to the embedded default prompt bundled in the binary.
+		data, err = prompts.ReadDefault(filename)
+		if err != nil {
+			return "", fmt.Errorf("read prompt %s: %w", path, os.ErrNotExist)
+		}
 	}
 
 	content := string(data)

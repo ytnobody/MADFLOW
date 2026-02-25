@@ -46,13 +46,20 @@ func NewAgent(cfg AgentConfig) *Agent {
 	if cfg.Process != nil {
 		proc = cfg.Process
 	} else {
-		if strings.HasPrefix(cfg.Model, "gemini-") {
+		switch {
+		case strings.HasPrefix(cfg.Model, "gemini-"):
 			proc = NewGeminiProcess(GeminiOptions{
 				SystemPrompt: cfg.SystemPrompt,
 				Model:        cfg.Model,
 				WorkDir:      cfg.WorkDir,
 			})
-		} else {
+		case strings.HasPrefix(cfg.Model, "anthropic/"):
+			proc = NewClaudeAPIProcess(ClaudeAPIOptions{
+				SystemPrompt: cfg.SystemPrompt,
+				Model:        cfg.Model,
+				WorkDir:      cfg.WorkDir,
+			})
+		default:
 			proc = NewClaudeProcess(ClaudeOptions{
 				SystemPrompt: cfg.SystemPrompt,
 				Model:        cfg.Model,

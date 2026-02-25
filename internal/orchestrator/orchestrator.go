@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -21,9 +22,11 @@ import (
 
 // Orchestrator manages the lifecycle of all agents and subsystems.
 type Orchestrator struct {
-	cfg       *config.Config
-	dataDir   string
-	promptDir string
+	cfg        *config.Config
+	cfgMu      sync.RWMutex // protects cfg for hot-reload
+	configPath string       // path to madflow.toml for hot-reload watcher
+	dataDir    string
+	promptDir  string
 
 	store        *issue.Store
 	chatLog      *chatlog.ChatLog
@@ -69,6 +72,22 @@ func New(cfg *config.Config, dataDir, promptDir string) *Orchestrator {
 	return orc
 }
 
+// WithConfigPath enables hot-reload of the config file during Run.
+// Call this before Run when you want changes to madflow.toml to take effect
+// without restarting the process.
+func (o *Orchestrator) WithConfigPath(path string) *Orchestrator {
+	o.configPath = path
+	return o
+}
+
+// Config returns the current active configuration.
+// Safe to call from multiple goroutines.
+func (o *Orchestrator) Config() *config.Config {
+	o.cfgMu.RLock()
+	defer o.cfgMu.RUnlock()
+	return o.cfg
+}
+
 // Run starts all subsystems and blocks until ctx is cancelled.
 func (o *Orchestrator) Run(ctx context.Context) error {
 	// Ensure data directories exist
@@ -90,6 +109,17 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 		return fmt.Errorf("start resident agents: %w", err)
 	}
 	o.startAllTeams(ctx)
+
+	// If context was cancelled during team startup (e.g. Ctrl+C or SIGTERM
+	// while agents were initialising), skip the ready-wait and go straight
+	// to the graceful shutdown path so we don't surface a confusing
+	// "wait for agents ready: context canceled" error.
+	if ctx.Err() != nil {
+		log.Println("[orchestrator] shutting down (cancelled during startup)")
+		wg.Wait()
+		log.Println("[orchestrator] stopped")
+		return nil
+	}
 
 	// Wait for all resident agents to complete their initial startup
 	if err := o.waitForAgentsReady(ctx); err != nil {
@@ -152,6 +182,15 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 		defer wg.Done()
 		o.watchCommands(ctx)
 	}()
+
+	// Start config hot-reload watcher if a config path is set
+	if o.configPath != "" {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			o.runConfigWatcher(ctx)
+		}()
+	}
 
 	log.Println("[orchestrator] all subsystems started")
 
@@ -374,9 +413,20 @@ func (o *Orchestrator) handleTeamCreate(ctx context.Context, body string) {
 	}
 	issueID := parts[1]
 
+	// Validate that the issue exists in the store to reject malformed IDs
+	// (e.g. "issueID（2回目）extra text" from retried TEAM_CREATE messages).
+	if _, err := o.store.Get(issueID); err != nil {
+		log.Printf("[orchestrator] TEAM_CREATE rejected: issue %q not found: %v", issueID, err)
+		o.chatLog.Append("superintendent", "orchestrator",
+			fmt.Sprintf("TEAM_CREATE %s は拒否されました: イシューが見つかりません", issueID))
+		return
+	}
+
 	t, err := o.teams.Create(ctx, issueID)
 	if err != nil {
 		log.Printf("[orchestrator] TEAM_CREATE failed for %s: %v", issueID, err)
+		o.chatLog.Append("superintendent", "orchestrator",
+			fmt.Sprintf("TEAM_CREATE %s に失敗しました: %v", issueID, err))
 		return
 	}
 
@@ -389,6 +439,8 @@ func (o *Orchestrator) handleTeamCreate(ctx context.Context, body string) {
 	}
 
 	log.Printf("[orchestrator] team %d created for issue %s", t.ID, issueID)
+	o.chatLog.Append("superintendent", "orchestrator",
+		fmt.Sprintf("TEAM_CREATE %s: チーム %d を作成しました", issueID, t.ID))
 }
 
 // handleTeamDisband disbands the team for an issue.
@@ -431,39 +483,69 @@ func (o *Orchestrator) handleRelease(_ string) {
 	}
 }
 
+// compileBotPatterns compiles the bot_comment_patterns from the GitHub config.
+// If any pattern is invalid it is logged and skipped; the valid ones are returned.
+func (o *Orchestrator) compileBotPatterns() []*regexp.Regexp {
+	cfg := o.Config()
+	if cfg.GitHub == nil || len(cfg.GitHub.BotCommentPatterns) == 0 {
+		log.Println("[orchestrator] bot_comment_patterns not configured: all comments will be forwarded to superintendent")
+		return nil
+	}
+	patterns, err := github.CompileBotPatterns(cfg.GitHub.BotCommentPatterns)
+	if err != nil {
+		log.Printf("[orchestrator] invalid bot_comment_patterns (using patterns compiled so far): %v", err)
+	}
+	log.Printf("[orchestrator] bot_comment_patterns loaded: %d pattern(s) %v", len(patterns), cfg.GitHub.BotCommentPatterns)
+	return patterns
+}
+
+// handleGitHubEvent processes a single GitHub event callback from the event watcher.
+// It is extracted from runEventWatcher for testability.
+func (o *Orchestrator) handleGitHubEvent(eventType github.EventType, issueID string, comment *issue.Comment) {
+	switch eventType {
+	case github.EventTypeIssues:
+		// Notify superintendent about new/updated issue
+		o.chatLog.Append("superintendent", "orchestrator",
+			fmt.Sprintf("GitHub Issue updated: %s", issueID))
+	case github.EventTypeIssueComment:
+		if comment == nil {
+			return
+		}
+		// Skip notifications for bot-generated comments (e.g. agent status
+		// updates) to avoid flooding chatlog with non-human traffic.
+		if comment.IsBot {
+			return
+		}
+		// Skip notifications for closed or resolved issues to avoid delayed-notification spam.
+		iss, err := o.store.Get(issueID)
+		if err != nil || iss.Status == issue.StatusClosed || iss.Status == issue.StatusResolved {
+			return
+		}
+		// Notify superintendent and the assigned team's engineer
+		msg := fmt.Sprintf("New comment on %s by @%s: %s", issueID, comment.Author, comment.Body)
+
+		o.chatLog.Append("superintendent", "orchestrator", msg)
+
+		// If the issue is assigned to a team, also notify the team engineer
+		if iss.AssignedTeam > 0 {
+			engineerID := fmt.Sprintf("engineer-%d", iss.AssignedTeam)
+			o.chatLog.Append(engineerID, "orchestrator", msg)
+		}
+	}
+}
+
 // runEventWatcher starts the GitHub Events API watcher for real-time updates.
 func (o *Orchestrator) runEventWatcher(ctx context.Context) {
 	gh := o.cfg.GitHub
 	interval := time.Duration(gh.EventPollSeconds) * time.Second
 
-	callback := func(eventType github.EventType, issueID string, comment *issue.Comment) {
-		switch eventType {
-		case github.EventTypeIssues:
-			// Notify superintendent about new/updated issue
-			o.chatLog.Append("superintendent", "orchestrator",
-				fmt.Sprintf("GitHub Issue updated: %s", issueID))
-		case github.EventTypeIssueComment:
-			if comment == nil {
-				return
-			}
-			// Notify superintendent and the assigned team's engineer
-			msg := fmt.Sprintf("New comment on %s by @%s: %s", issueID, comment.Author, comment.Body)
-
-			o.chatLog.Append("superintendent", "orchestrator", msg)
-
-			// If the issue is assigned to a team, also notify the team engineer
-			iss, err := o.store.Get(issueID)
-			if err == nil && iss.AssignedTeam > 0 {
-				engineerID := fmt.Sprintf("engineer-%d", iss.AssignedTeam)
-				o.chatLog.Append(engineerID, "orchestrator", msg)
-			}
-		}
-	}
+	botPatterns := o.compileBotPatterns()
 
 	idleInterval := time.Duration(gh.IdlePollMinutes) * time.Minute
-	watcher := github.NewEventWatcher(o.store, gh.Owner, gh.Repos, interval, callback).
+	watcher := github.NewEventWatcher(o.store, gh.Owner, gh.Repos, interval, o.handleGitHubEvent).
 		WithIdleDetector(o.idleDetector, idleInterval).
-		WithAuthorizedUsers(o.cfg.AuthorizedUsers)
+		WithAuthorizedUsers(o.cfg.AuthorizedUsers).
+		WithBotCommentPatterns(botPatterns)
 	if err := watcher.Run(ctx); err != nil && ctx.Err() == nil {
 		log.Printf("[orchestrator] event watcher stopped: %v", err)
 	}
@@ -501,9 +583,11 @@ func (o *Orchestrator) runGitHubSync(ctx context.Context) {
 	gh := o.cfg.GitHub
 	interval := time.Duration(gh.SyncIntervalMinutes) * time.Minute
 	idleInterval := time.Duration(gh.IdlePollMinutes) * time.Minute
+	botPatterns := o.compileBotPatterns()
 	syncer := github.NewSyncer(o.store, gh.Owner, gh.Repos, interval).
 		WithIdleDetector(o.idleDetector, idleInterval).
-		WithAuthorizedUsers(o.cfg.AuthorizedUsers)
+		WithAuthorizedUsers(o.cfg.AuthorizedUsers).
+		WithBotCommentPatterns(botPatterns)
 	if err := syncer.Run(ctx); err != nil && ctx.Err() == nil {
 		log.Printf("[orchestrator] github sync stopped: %v", err)
 	}
@@ -692,6 +776,33 @@ func (o *Orchestrator) runBranchCleanup(ctx context.Context) {
 					log.Printf("[branch-cleanup] %s: deleted %d merged branches: %v", name, len(deleted), deleted)
 				}
 			}
+		}
+	}
+}
+
+// runConfigWatcher watches the madflow.toml config file for changes.
+// When a valid new config is detected, it is atomically applied to the
+// orchestrator (safe for concurrent reads via Config()).
+// Fields that affect already-running goroutines (e.g. poll intervals, model
+// names) will take effect on the next relevant cycle automatically because
+// those goroutines read cfg through Config().
+func (o *Orchestrator) runConfigWatcher(ctx context.Context) {
+	w := config.NewWatcher(o.configPath)
+	log.Printf("[config-watcher] watching %s for changes", o.configPath)
+
+	cfgCh := w.Watch(ctx)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case newCfg, ok := <-cfgCh:
+			if !ok {
+				return
+			}
+			o.cfgMu.Lock()
+			o.cfg = newCfg
+			o.cfgMu.Unlock()
+			log.Println("[config-watcher] active config updated")
 		}
 	}
 }

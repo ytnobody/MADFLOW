@@ -79,6 +79,18 @@ type GitHubConfig struct {
 	// IdleThresholdMinutes to form a natural progression: active → idle → dormant.
 	// Dormancy can be exited via the WAKE_GITHUB orchestrator command.
 	DormancyThresholdMinutes int `toml:"dormancy_threshold_minutes"`
+	// BotCommentPatterns is a list of regular-expression patterns used to detect
+	// bot-generated issue comments by their body content.  A comment whose body
+	// matches any of these patterns is marked with IsBot=true, which suppresses
+	// unnecessary chatlog notifications inside MADFLOW.
+	//
+	// This is useful when MADFLOW agents share a GitHub account with a human
+	// owner (the common single-account setup): bot-posted status updates can be
+	// detected by their predictable format rather than by account name.
+	//
+	// Example: ["^\\*\\*\\["] matches all MADFLOW agent status comments that
+	// start with **[実装開始]**, **[実装完了]**, **[質問]**, etc.
+	BotCommentPatterns []string `toml:"bot_comment_patterns,omitempty"`
 }
 
 func Load(path string) (*Config, error) {

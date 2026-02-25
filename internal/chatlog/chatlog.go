@@ -244,8 +244,10 @@ func (c *ChatLog) readFrom(offset int64, recipient string) ([]Message, int64, er
 	}
 
 	if info.Size() < offset {
-		// File was truncated (e.g., by Truncate()), reset offset
-		offset = 0
+		// File was truncated (e.g., by Truncate()); skip to current end to
+		// avoid reprocessing old messages (which could re-create orphaned teams
+		// or fire duplicate commands).
+		return nil, info.Size(), nil
 	}
 	if info.Size() == offset {
 		return nil, offset, nil

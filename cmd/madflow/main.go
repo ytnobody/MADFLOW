@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -13,6 +14,7 @@ import (
 	"github.com/ytnobody/madflow/internal/config"
 	"github.com/ytnobody/madflow/internal/orchestrator"
 	"github.com/ytnobody/madflow/internal/project"
+	"github.com/ytnobody/madflow/prompts"
 )
 
 // version is set via ldflags at build time (e.g., -ldflags "-X main.version=v1.2.3").
@@ -23,17 +25,18 @@ const usage = `Usage: madflow <command> [options]
 Commands:
   init                      Initialize a new project
   start                     Start all agents
+  use <preset>              Switch the active model preset in madflow.toml
+                            Presets: claude, gemini, claude-cheap, gemini-cheap, hybrid, hybrid-cheap,
+                                     claude-api-standard, claude-api-cheap (require ANTHROPIC_API_KEY)
   version                   Show current version
   upgrade                   Upgrade madflow to the latest version
 `
 
 // ANSI color codes for role-based coloring.
 var roleColors = map[string]string{
-	"superintendent":  "\033[31m", // red
-	"engineer":        "\033[33m", // yellow
-	"reviewer":        "\033[35m", // magenta
-	"release_manager": "\033[36m", // cyan
-	"orchestrator":    "\033[37m", // white
+	"superintendent": "\033[31m", // red
+	"engineer":       "\033[33m", // yellow
+	"orchestrator":   "\033[37m", // white
 }
 
 const colorReset = "\033[0m"
@@ -53,6 +56,12 @@ func main() {
 	case "version", "--version", "-v":
 		fmt.Printf("madflow %s\n", version)
 		return
+	case "use":
+		preset := ""
+		if len(os.Args) >= 3 {
+			preset = os.Args[2]
+		}
+		err = cmdUse(preset)
 	case "upgrade":
 		err = cmdUpgrade(version)
 	case "help", "--help", "-h":
@@ -128,8 +137,6 @@ context_reset_minutes = 8
 [agent.models]
 superintendent = "claude-opus-4-6"
 engineer = "claude-sonnet-4-6"
-reviewer = "claude-sonnet-4-6"
-release_manager = "claude-haiku-4-5"
 
 [branches]
 main = "main"
@@ -141,13 +148,21 @@ feature_prefix = "feature/issue-"
 		}
 	}
 
+	// Create prompts/ directory with default templates so that `madflow start`
+	// works immediately after `madflow init` on a new project.
+	promptsDir := filepath.Join(cwd, "prompts")
+	if err := prompts.WriteDefaults(promptsDir); err != nil {
+		return fmt.Errorf("create default prompts: %w", err)
+	}
+
 	fmt.Printf("Project '%s' initialized.\n", name)
 	fmt.Printf("Config: %s\n", configPath)
+	fmt.Printf("Prompts: %s\n", promptsDir)
 	return nil
 }
 
 func cmdStart() error {
-	cfg, proj, err := loadProjectConfig()
+	configPath, cfg, proj, err := loadProjectConfig()
 	if err != nil {
 		return err
 	}
@@ -155,7 +170,7 @@ func cmdStart() error {
 	// Determine prompts directory
 	promptDir := findPromptsDir(cfg.PromptsDir)
 
-	orc := orchestrator.New(cfg, proj.DataDir, promptDir)
+	orc := orchestrator.New(cfg, proj.DataDir, promptDir).WithConfigPath(configPath)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -173,27 +188,35 @@ func cmdStart() error {
 	go displayChatLog(ctx, orc.ChatLogPath())
 
 	fmt.Printf("Starting MADFLOW for project '%s'...\n", proj.ID)
-	return orc.Run(ctx)
+	err = orc.Run(ctx)
+	// context.Canceled is the expected outcome when the user stops the process
+	// (Ctrl+C / SIGTERM). Treat it as a clean exit rather than an error.
+	if errors.Is(err, context.Canceled) {
+		return nil
+	}
+	return err
 }
 
 // loadProjectConfig detects the project and loads its config.
-func loadProjectConfig() (*config.Config, *project.Project, error) {
+// It returns the resolved config file path along with the parsed config and
+// project metadata so that the caller can enable hot-reload.
+func loadProjectConfig() (string, *config.Config, *project.Project, error) {
 	configPath, err := findConfigPath()
 	if err != nil {
-		return nil, nil, err
+		return "", nil, nil, err
 	}
 
 	proj, err := project.Detect()
 	if err != nil {
-		return nil, nil, err
+		return "", nil, nil, err
 	}
 
 	cfg, err := config.Load(configPath)
 	if err != nil {
-		return nil, nil, err
+		return "", nil, nil, err
 	}
 
-	return cfg, proj, nil
+	return configPath, cfg, proj, nil
 }
 
 // findPromptsDir looks for the prompts directory.

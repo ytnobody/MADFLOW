@@ -11,6 +11,7 @@ import (
 	"github.com/ytnobody/madflow/internal/agent"
 	"github.com/ytnobody/madflow/internal/chatlog"
 	"github.com/ytnobody/madflow/internal/config"
+	githubPkg "github.com/ytnobody/madflow/internal/github"
 	"github.com/ytnobody/madflow/internal/issue"
 	"github.com/ytnobody/madflow/internal/team"
 )
@@ -382,20 +383,23 @@ func TestStartAllTeamsSkipsPendingApproval(t *testing.T) {
 	}
 }
 
+// TestCreateTeamAgentsMissingPrompt verifies that CreateTeamAgents succeeds even
+// when the prompts directory contains no files, because agent.LoadPrompt now
+// falls back to the embedded default templates bundled in the binary.
 func TestCreateTeamAgentsMissingPrompt(t *testing.T) {
 	dir := t.TempDir()
 	cfg := testConfig(dir)
 	os.MkdirAll(filepath.Join(dir, "issues"), 0755)
 	os.MkdirAll(filepath.Join(dir, "memos"), 0755)
 
-	// Empty prompt dir - no templates
+	// Empty prompt dir - no templates; embedded defaults should be used.
 	promptDir := t.TempDir()
 
 	orc := New(cfg, dir, promptDir)
 
 	_, err := orc.CreateTeamAgents(1, "test-issue")
-	if err == nil {
-		t.Fatal("expected error for missing prompt templates")
+	if err != nil {
+		t.Fatalf("expected no error when prompts are missing (should fall back to embedded defaults), got: %v", err)
 	}
 }
 
@@ -438,4 +442,135 @@ func containsStr(s, sub string) bool {
 		}
 	}
 	return false
+}
+
+// TestHandleGitHubEvent verifies that the GitHub event callback correctly filters
+// bot comments and comments on closed/resolved issues.
+func TestHandleGitHubEvent(t *testing.T) {
+	dir := t.TempDir()
+	cfg := testConfig(dir)
+	os.MkdirAll(filepath.Join(dir, "issues"), 0755)
+	chatlogPath := filepath.Join(dir, "chatlog.txt")
+	os.WriteFile(chatlogPath, nil, 0644)
+
+	orc := New(cfg, dir, t.TempDir())
+
+	// Helper: read all superintendent-targeted lines from chatlog
+	readSuperintendentMessages := func() []string {
+		cl := chatlog.New(chatlogPath)
+		msgs, _ := cl.Poll("superintendent")
+		var result []string
+		for _, m := range msgs {
+			result = append(result, m.Body)
+		}
+		return result
+	}
+
+	// Create test issues with various statuses
+	openIss, _ := orc.store.Create("Open Issue", "body")
+	openIss.Status = issue.StatusOpen
+	orc.store.Update(openIss)
+
+	resolvedIss, _ := orc.store.Create("Resolved Issue", "body")
+	resolvedIss.Status = issue.StatusResolved
+	orc.store.Update(resolvedIss)
+
+	closedIss, _ := orc.store.Create("Closed Issue", "body")
+	closedIss.Status = issue.StatusClosed
+	orc.store.Update(closedIss)
+
+	humanComment := &issue.Comment{ID: 1, Author: "human", Body: "Hey this is a human comment", IsBot: false}
+	botComment := &issue.Comment{ID: 2, Author: "ytnobody", Body: "**[実装完了]** by `engineer-1`", IsBot: true}
+
+	tests := []struct {
+		name        string
+		issueID     string
+		comment     *issue.Comment
+		wantNotify  bool
+		description string
+	}{
+		{
+			name:        "human comment on open issue triggers notification",
+			issueID:     openIss.ID,
+			comment:     humanComment,
+			wantNotify:  true,
+			description: "Human comments on open issues must be forwarded to superintendent",
+		},
+		{
+			name:        "bot comment on open issue is suppressed",
+			issueID:     openIss.ID,
+			comment:     botComment,
+			wantNotify:  false,
+			description: "Bot comments (IsBot=true) must not reach superintendent",
+		},
+		{
+			name:        "human comment on resolved issue is suppressed",
+			issueID:     resolvedIss.ID,
+			comment:     humanComment,
+			wantNotify:  false,
+			description: "Comments on resolved issues must not spam superintendent",
+		},
+		{
+			name:        "human comment on closed issue is suppressed",
+			issueID:     closedIss.ID,
+			comment:     humanComment,
+			wantNotify:  false,
+			description: "Comments on closed issues must not spam superintendent",
+		},
+		{
+			name:        "nil comment is ignored",
+			issueID:     openIss.ID,
+			comment:     nil,
+			wantNotify:  false,
+			description: "Nil comments must not cause panics or notifications",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// Reset chatlog before each sub-test
+			os.WriteFile(chatlogPath, nil, 0644)
+
+			orc.handleGitHubEvent(githubPkg.EventTypeIssueComment, tc.issueID, tc.comment)
+
+			msgs := readSuperintendentMessages()
+			notified := len(msgs) > 0
+			if notified != tc.wantNotify {
+				t.Errorf("%s: got notified=%v, want %v (messages: %v)", tc.description, notified, tc.wantNotify, msgs)
+			}
+		})
+	}
+}
+
+// TestRunGracefulShutdownDuringStartup verifies that Run returns nil (not an
+// error) when the context is cancelled while startAllTeams is still running.
+// Previously the system returned "wait for agents ready: context canceled"
+// which looked like a crash to the user (GitHub Issue #104).
+func TestRunGracefulShutdownDuringStartup(t *testing.T) {
+	dir := t.TempDir()
+	cfg := testConfig(dir)
+	cfg.Agent.MaxTeams = 2
+	os.MkdirAll(filepath.Join(dir, "issues"), 0755)
+	os.MkdirAll(filepath.Join(dir, "memos"), 0755)
+	chatlogPath := filepath.Join(dir, "chatlog.txt")
+	os.WriteFile(chatlogPath, nil, 0644)
+
+	// Provide a minimal superintendent prompt so startResidentAgents succeeds.
+	promptDir := t.TempDir()
+	os.WriteFile(filepath.Join(promptDir, "superintendent.md"), []byte("# superintendent"), 0644)
+
+	orc := New(cfg, dir, promptDir)
+	// Replace the team factory with the mock so no real Claude Code processes
+	// are spawned during startAllTeams.
+	orc.teams = team.NewManager(newMockTeamFactory(t), 2)
+
+	// Cancel the context before Run is called so that the context is already
+	// done by the time waitForAgentsReady would be reached.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // pre-cancel
+
+	err := orc.Run(ctx)
+	if err != nil {
+		t.Errorf("Run() with pre-cancelled context should return nil, got: %v", err)
+	}
 }
