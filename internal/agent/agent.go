@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -258,7 +259,7 @@ func (a *Agent) sendOnce(ctx context.Context, prompt string) (string, error) {
 			})
 			continue
 		}
-		if err != nil && !IsRateLimitError(err) && !isMaxIterationsError(err) {
+		if err != nil && !IsRateLimitError(err) && !isMaxIterationsError(err) && !isPermanentError(err) {
 			// Retry transient errors (network, API 500, etc.) with exponential backoff.
 			resp, err = a.retrySend(ctx, prompt, err)
 		}
@@ -272,11 +273,18 @@ func isMaxIterationsError(err error) bool {
 	return errors.As(err, &maxIterErr)
 }
 
+// isPermanentError checks whether the error is a permanent error that should not be retried
+// (e.g., executable not found).
+func isPermanentError(err error) bool {
+	var execErr *exec.Error
+	return errors.As(err, &execErr)
+}
+
 // sendWithRetry wraps send() with initial retry logic (exponential backoff).
 // Used for the first send in Run() where failure should be retried before falling back to chatlog watch.
 func (a *Agent) sendWithRetry(ctx context.Context, prompt string) (string, error) {
 	resp, err := a.send(ctx, prompt)
-	if err == nil || ctx.Err() != nil || IsRateLimitError(err) {
+	if err == nil || ctx.Err() != nil || IsRateLimitError(err) || isPermanentError(err) {
 		return resp, err
 	}
 
