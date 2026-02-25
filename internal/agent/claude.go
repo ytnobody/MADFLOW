@@ -3,160 +3,343 @@ package agent
 import (
 	"bytes"
 	"context"
-	"errors"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 )
 
-// Process is the interface for sending prompts to an AI backend.
-type Process interface {
-	Send(ctx context.Context, prompt string) (string, error)
-}
+const (
+	anthropicAPIEndpoint = "https://api.anthropic.com/v1/messages"
+	anthropicAPIVersion  = "2023-06-01"
+	anthropicMaxTokens   = 8096
+	anthropicMaxIter     = 20 // maximum agentic loop iterations
+)
 
-// ClaudeOptions configures a Claude Code subprocess.
-type ClaudeOptions struct {
+// ClaudeAPIOptions configures the Anthropic API-based agent process.
+type ClaudeAPIOptions struct {
 	SystemPrompt string
 	Model        string
 	WorkDir      string
-	AllowedTools []string
-	MaxBudgetUSD float64
 }
 
-// ClaudeProcess manages Claude Code subprocess invocations.
-// Each Send() call starts a new `claude -p` process, which autonomously
-// executes tools and returns the final response.
-type ClaudeProcess struct {
-	opts ClaudeOptions
+// ClaudeAPIProcess sends prompts to the Anthropic Messages API using ANTHROPIC_API_KEY.
+// It implements an agentic loop: if the model calls tools (bash), it executes them
+// and feeds the results back until the model finishes.
+type ClaudeAPIProcess struct {
+	opts       ClaudeAPIOptions
+	client     *http.Client
+	testAPIURL string // overrides anthropicAPIEndpoint in tests
 }
 
-func NewClaudeProcess(opts ClaudeOptions) *ClaudeProcess {
-	return &ClaudeProcess{opts: opts}
+// NewClaudeAPIProcess creates a new ClaudeAPIProcess.
+func NewClaudeAPIProcess(opts ClaudeAPIOptions) *ClaudeAPIProcess {
+	return &ClaudeAPIProcess{
+		opts:   opts,
+		client: &http.Client{Timeout: 300 * time.Second},
+	}
 }
 
-// Send invokes `claude -p` with the given prompt and returns the response.
-// The subprocess runs to completion, executing any tools as needed.
-func (c *ClaudeProcess) Send(ctx context.Context, prompt string) (string, error) {
-	args := c.buildArgs(prompt)
+// apiURL returns the effective API endpoint URL (test override or production).
+func (c *ClaudeAPIProcess) apiURL() string {
+	if c.testAPIURL != "" {
+		return c.testAPIURL
+	}
+	return anthropicAPIEndpoint
+}
 
-	cmd := exec.CommandContext(ctx, "claude", args...)
+// --- Anthropic API types ---
+
+type anthropicRequest struct {
+	Model     string             `json:"model"`
+	MaxTokens int                `json:"max_tokens"`
+	System    string             `json:"system,omitempty"`
+	Messages  []anthropicMessage `json:"messages"`
+	Tools     []anthropicTool    `json:"tools,omitempty"`
+}
+
+type anthropicMessage struct {
+	Role    string `json:"role"`
+	Content []any  `json:"content"`
+}
+
+type anthropicTextContent struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
+}
+
+type anthropicToolUseContent struct {
+	Type  string          `json:"type"`
+	ID    string          `json:"id"`
+	Name  string          `json:"name"`
+	Input json.RawMessage `json:"input"`
+}
+
+type anthropicToolResultContent struct {
+	Type      string `json:"type"`
+	ToolUseID string `json:"tool_use_id"`
+	Content   string `json:"content"`
+	IsError   bool   `json:"is_error,omitempty"`
+}
+
+type anthropicResponse struct {
+	ID         string               `json:"id"`
+	Type       string               `json:"type"`
+	Role       string               `json:"role"`
+	Content    []anthropicRawBlock  `json:"content"`
+	StopReason string               `json:"stop_reason"`
+	Error      *anthropicErrorBlock `json:"error,omitempty"`
+}
+
+type anthropicRawBlock struct {
+	Type  string          `json:"type"`
+	Text  string          `json:"text,omitempty"`
+	ID    string          `json:"id,omitempty"`
+	Name  string          `json:"name,omitempty"`
+	Input json.RawMessage `json:"input,omitempty"`
+}
+
+type anthropicErrorBlock struct {
+	Type    string `json:"type"`
+	Message string `json:"message"`
+}
+
+type anthropicTool struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	InputSchema any    `json:"input_schema"`
+}
+
+// bashInputSchema defines the input parameters for the bash tool.
+var bashInputSchema = map[string]any{
+	"type": "object",
+	"properties": map[string]any{
+		"command": map[string]any{
+			"type":        "string",
+			"description": "The bash command to execute",
+		},
+	},
+	"required": []string{"command"},
+}
+
+// bashTool is the tool definition passed to the Anthropic API.
+var bashTool = anthropicTool{
+	Name:        "bash",
+	Description: "Execute a bash command in the working directory and return stdout/stderr. Use this for all file operations, git commands, and shell tasks.",
+	InputSchema: bashInputSchema,
+}
+
+// Send implements the Process interface.
+// It calls the Anthropic Messages API with an agentic loop:
+//  1. Send the prompt
+//  2. If the model uses tools, execute them and feed results back
+//  3. Repeat until stop_reason == "end_turn" or max iterations reached
+func (c *ClaudeAPIProcess) Send(ctx context.Context, prompt string) (string, error) {
+	apiKey := os.Getenv("ANTHROPIC_API_KEY")
+	if apiKey == "" {
+		return "", fmt.Errorf("ANTHROPIC_API_KEY is not set; claude-api backend requires an Anthropic API key")
+	}
+
+	model := c.stripPrefix(c.opts.Model)
+	if model == "" {
+		model = "claude-sonnet-4-6"
+	}
+
+	messages := []anthropicMessage{
+		{
+			Role:    "user",
+			Content: []any{anthropicTextContent{Type: "text", Text: prompt}},
+		},
+	}
+
+	for range anthropicMaxIter {
+		resp, err := c.callAPI(ctx, apiKey, model, messages)
+		if err != nil {
+			return "", err
+		}
+
+		// Check for error in response body
+		if resp.Error != nil {
+			errMsg := resp.Error.Message
+			if containsRateLimitKeyword(errMsg) {
+				return "", &RateLimitError{Wrapped: fmt.Errorf("anthropic API rate limit: %s", errMsg)}
+			}
+			return "", fmt.Errorf("anthropic API error: %s", errMsg)
+		}
+
+		// Append the assistant's response to the message history
+		assistantContent := make([]any, 0, len(resp.Content))
+		for _, block := range resp.Content {
+			switch block.Type {
+			case "text":
+				assistantContent = append(assistantContent, anthropicTextContent{
+					Type: "text",
+					Text: block.Text,
+				})
+			case "tool_use":
+				assistantContent = append(assistantContent, anthropicToolUseContent{
+					Type:  "tool_use",
+					ID:    block.ID,
+					Name:  block.Name,
+					Input: block.Input,
+				})
+			}
+		}
+		messages = append(messages, anthropicMessage{
+			Role:    "assistant",
+			Content: assistantContent,
+		})
+
+		// If the model is done, extract the final text response
+		if resp.StopReason != "tool_use" {
+			return c.extractText(resp.Content), nil
+		}
+
+		// Process tool calls
+		toolResults := make([]any, 0)
+		for _, block := range resp.Content {
+			if block.Type != "tool_use" {
+				continue
+			}
+			result, isError := c.executeTool(block.Name, block.Input)
+			toolResults = append(toolResults, anthropicToolResultContent{
+				Type:      "tool_result",
+				ToolUseID: block.ID,
+				Content:   result,
+				IsError:   isError,
+			})
+		}
+
+		// Append tool results as a user message
+		messages = append(messages, anthropicMessage{
+			Role:    "user",
+			Content: toolResults,
+		})
+	}
+
+	return "", fmt.Errorf("claude-api: reached maximum iterations (%d) without completing", anthropicMaxIter)
+}
+
+// callAPI sends a single request to the Anthropic Messages API.
+func (c *ClaudeAPIProcess) callAPI(ctx context.Context, apiKey, model string, messages []anthropicMessage) (*anthropicResponse, error) {
+	return c.callAPIWithURL(ctx, apiKey, model, messages, c.apiURL())
+}
+
+// callAPIWithURL sends a request to the given URL. It is used directly in tests
+// to point at a mock HTTP server without spawning a real API call.
+func (c *ClaudeAPIProcess) callAPIWithURL(ctx context.Context, apiKey, model string, messages []anthropicMessage, url string) (*anthropicResponse, error) {
+	reqBody := anthropicRequest{
+		Model:     model,
+		MaxTokens: anthropicMaxTokens,
+		System:    c.opts.SystemPrompt,
+		Messages:  messages,
+		Tools:     []anthropicTool{bashTool},
+	}
+
+	data, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("marshal request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(data))
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("x-api-key", apiKey)
+	req.Header.Set("anthropic-version", anthropicAPIVersion)
+	req.Header.Set("content-type", "application/json")
+
+	httpResp, err := c.client.Do(req)
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		return nil, fmt.Errorf("http request failed: %w", err)
+	}
+	defer httpResp.Body.Close()
+
+	body, err := io.ReadAll(httpResp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read response body: %w", err)
+	}
+
+	// Handle HTTP error status codes
+	if httpResp.StatusCode == 429 {
+		return nil, &RateLimitError{
+			Wrapped: fmt.Errorf("anthropic API rate limit (HTTP 429): %s", strings.TrimSpace(string(body))),
+		}
+	}
+	if httpResp.StatusCode >= 400 {
+		return nil, fmt.Errorf("anthropic API HTTP %d: %s", httpResp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	var resp anthropicResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("decode response: %w (body: %s)", err, string(body))
+	}
+
+	return &resp, nil
+}
+
+// executeTool runs the requested tool and returns (output, isError).
+func (c *ClaudeAPIProcess) executeTool(toolName string, input json.RawMessage) (string, bool) {
+	switch toolName {
+	case "bash":
+		var params struct {
+			Command string `json:"command"`
+		}
+		if err := json.Unmarshal(input, &params); err != nil {
+			return fmt.Sprintf("failed to parse bash input: %v", err), true
+		}
+		return c.runBash(params.Command)
+	default:
+		return fmt.Sprintf("unknown tool: %s", toolName), true
+	}
+}
+
+// runBash executes a bash command and returns (output, isError).
+func (c *ClaudeAPIProcess) runBash(command string) (string, bool) {
+	cmd := exec.Command("bash", "-c", command)
 	if c.opts.WorkDir != "" {
 		cmd.Dir = c.opts.WorkDir
 	}
-
-	// Remove CLAUDECODE env var to allow nested invocations.
-	// MADFLOW intentionally spawns claude as subprocesses.
-	cmd.Env = filterEnv(os.Environ(), "CLAUDECODE")
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	if err := cmd.Run(); err != nil {
-		// If context was cancelled, return context error
-		if ctx.Err() != nil {
-			return "", ctx.Err()
+	err := cmd.Run()
+	result := strings.TrimSpace(stdout.String())
+	if stderr.Len() > 0 {
+		if result != "" {
+			result += "\n"
 		}
-		return "", fmt.Errorf("claude process failed: %w\nstderr: %s", err, stderr.String())
+		result += "STDERR:\n" + strings.TrimSpace(stderr.String())
+	}
+	if result == "" && err != nil {
+		result = fmt.Sprintf("command failed: %v", err)
 	}
 
-	return strings.TrimSpace(stdout.String()), nil
+	return result, err != nil
 }
 
-func (c *ClaudeProcess) buildArgs(prompt string) []string {
-	args := []string{
-		"--print",
-		"--output-format", "text",
-	}
-
-	if c.opts.SystemPrompt != "" {
-		args = append(args, "--system-prompt", c.opts.SystemPrompt)
-	}
-
-	if c.opts.Model != "" {
-		args = append(args, "--model", c.opts.Model)
-	}
-
-	if len(c.opts.AllowedTools) > 0 {
-		args = append(args, "--allowedTools", strings.Join(c.opts.AllowedTools, ","))
-	}
-
-	if c.opts.MaxBudgetUSD > 0 {
-		args = append(args, "--max-budget-usd", fmt.Sprintf("%.2f", c.opts.MaxBudgetUSD))
-	}
-
-	args = append(args, "--dangerously-skip-permissions")
-
-	args = append(args, prompt)
-
-	return args
-}
-
-// RateLimitError はレート制限に抵触したことを示す専用エラー型。
-type RateLimitError struct {
-	Wrapped error
-}
-
-func (e *RateLimitError) Error() string {
-	return e.Wrapped.Error()
-}
-
-func (e *RateLimitError) Unwrap() error {
-	return e.Wrapped
-}
-
-// containsRateLimitKeyword は文字列がレート制限関連のキーワードを含むか検査する。
-// Gemini CLI の stderr 出力から直接レート制限を検出するために使用する。
-func containsRateLimitKeyword(s string) bool {
-	lower := strings.ToLower(s)
-	keywords := []string{
-		"resource_exhausted",
-		"quota exceeded",
-		"rate limit",
-		"429",
-		"too many requests",
-		"resourceexhausted",
-	}
-	for _, kw := range keywords {
-		if strings.Contains(lower, kw) {
-			return true
+// extractText collects all text blocks from the response content.
+func (c *ClaudeAPIProcess) extractText(blocks []anthropicRawBlock) string {
+	var parts []string
+	for _, b := range blocks {
+		if b.Type == "text" && b.Text != "" {
+			parts = append(parts, b.Text)
 		}
 	}
-	return false
+	return strings.TrimSpace(strings.Join(parts, "\n"))
 }
 
-// IsRateLimitError checks whether the error indicates a token/rate limit.
-func IsRateLimitError(err error) bool {
-	if err == nil {
-		return false
-	}
-	// 型ベースのチェック（RateLimitError 型でラップされている場合）
-	var rlErr *RateLimitError
-	if errors.As(err, &rlErr) {
-		return true
-	}
-	// 既存の文字列チェック（後方互換性）
-	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "rate limit") ||
-		strings.Contains(msg, "token limit") ||
-		strings.Contains(msg, "usage limit") ||
-		strings.Contains(msg, "too many requests") ||
-		strings.Contains(msg, "429") ||
-		strings.Contains(msg, "overloaded") ||
-		strings.Contains(msg, "resource_exhausted") ||
-		strings.Contains(msg, "quota exceeded") ||
-		strings.Contains(msg, "resourceexhausted")
-}
-
-// filterEnv returns a copy of env with the given key removed.
-func filterEnv(env []string, key string) []string {
-	prefix := key + "="
-	result := make([]string, 0, len(env))
-	for _, e := range env {
-		if !strings.HasPrefix(e, prefix) {
-			result = append(result, e)
-		}
-	}
-	return result
+// stripPrefix removes the "anthropic/" prefix from model names.
+// e.g. "anthropic/claude-sonnet-4-5" → "claude-sonnet-4-5"
+func (c *ClaudeAPIProcess) stripPrefix(model string) string {
+	return strings.TrimPrefix(model, "anthropic/")
 }
