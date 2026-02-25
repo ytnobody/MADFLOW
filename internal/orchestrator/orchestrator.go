@@ -408,8 +408,41 @@ func (o *Orchestrator) handleWakeGitHub() {
 func (o *Orchestrator) handleTeamCreate(ctx context.Context, body string) {
 	parts := strings.Fields(body)
 	if len(parts) < 2 {
-		log.Printf("[orchestrator] TEAM_CREATE missing issue ID")
+		log.Printf("[orchestrator] TEAM_CREATE malformed: %s", body)
 		return
+	}
+	issueID := parts[1]
+
+	// Get the issue to check its status
+	iss, err := o.store.Get(issueID)
+	if err != nil {
+		log.Printf("[orchestrator] TEAM_CREATE rejected: issue %q not found: %v", issueID, err)
+		o.chatLog.Append("superintendent", "orchestrator", fmt.Sprintf("TEAM_CREATE %s は拒否されました: イシューが見つかりません", issueID))
+		return
+	}
+
+	// Check if the issue is already closed or resolved
+	if iss.Status == issue.StatusClosed || iss.Status == issue.StatusResolved {
+		log.Printf("[orchestrator] TEAM_CREATE rejected: issue %q is %s", issueID, iss.Status)
+		o.chatLog.Append("superintendent", "orchestrator", fmt.Sprintf("TEAM_CREATE %s は拒否されました: イシューは既に %s です", issueID, iss.Status))
+		return
+	}
+
+	// Create the team
+	t, err := o.teams.Create(ctx, issueID)
+	if err != nil {
+		log.Printf("[orchestrator] TEAM_CREATE failed for %s: %v", issueID, err)
+		o.chatLog.Append("superintendent", "orchestrator", fmt.Sprintf("TEAM_CREATE %s に失敗しました: %v", issueID, err))
+		return
+	}
+
+	// Update issue with assigned team and status
+	iss.AssignedTeam = t.ID
+	iss.Status = issue.StatusInProgress
+	o.store.Update(iss)
+
+	log.Printf("[orchestrator] team %d created for issue %s", t.ID, issueID)
+	o.chatLog.Append("superintendent", "orchestrator", fmt.Sprintf("TEAM_CREATE %s: チーム %d を作成しました", issueID, t.ID))
 	}
 	issueID := parts[1]
 
