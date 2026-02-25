@@ -37,9 +37,8 @@ func (t *Throttle) Wait(ctx context.Context) error {
 	}
 
 	for {
-		wait := t.nextWait()
+		wait := t.tryAcquire()
 		if wait == 0 {
-			t.record()
 			return nil
 		}
 
@@ -55,9 +54,10 @@ func (t *Throttle) Wait(ctx context.Context) error {
 	}
 }
 
-// nextWait returns how long the caller must wait before a slot opens.
-// Returns 0 if a slot is immediately available.
-func (t *Throttle) nextWait() time.Duration {
+// tryAcquire atomically checks for an available slot and records the request
+// if one is available. Returns 0 if the slot was acquired, or the duration
+// to wait before the next slot opens.
+func (t *Throttle) tryAcquire() time.Duration {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -72,16 +72,11 @@ func (t *Throttle) nextWait() time.Duration {
 	t.requests = t.requests[i:]
 
 	if len(t.requests) < t.rpm {
+		// Slot available — record and return immediately.
+		t.requests = append(t.requests, now)
 		return 0
 	}
 
 	// The oldest request in the window determines when the next slot opens.
 	return t.requests[0].Add(t.window).Sub(now)
-}
-
-// record appends the current timestamp to the request log.
-func (t *Throttle) record() {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.requests = append(t.requests, time.Now())
 }

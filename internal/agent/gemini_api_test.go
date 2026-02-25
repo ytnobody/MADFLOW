@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -372,5 +373,122 @@ func TestGeminiAPIProcess_Send_SystemPrompt(t *testing.T) {
 	}
 	if len(receivedReq.SystemInstruction.Parts) == 0 || receivedReq.SystemInstruction.Parts[0].Text != "You are a helpful assistant" {
 		t.Errorf("unexpected system_instruction: %+v", receivedReq.SystemInstruction)
+	}
+}
+
+// TestGeminiAPIProcess_Send_MaxIterationsError verifies that reaching max iterations returns MaxIterationsError.
+func TestGeminiAPIProcess_Send_MaxIterationsError(t *testing.T) {
+	// Always return a function call so the loop never terminates naturally
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := geminiResponse{
+			Candidates: []geminiCandidate{
+				{
+					Content: geminiContent{
+						Role: "model",
+						Parts: []geminiPart{
+							{Text: "partial work"},
+							{FunctionCall: &geminiFunctionCall{
+								Name: "bash",
+								Args: json.RawMessage(`{"command":"echo iteration"}`),
+							}},
+						},
+					},
+					FinishReason: "STOP",
+				},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	os.Setenv("GOOGLE_API_KEY", "test-key")
+	defer os.Unsetenv("GOOGLE_API_KEY")
+
+	p := NewGeminiAPIProcess(GeminiAPIOptions{Model: "gemini-2.5-flash"})
+	p.client = server.Client()
+	p.testAPIURL = server.URL + "/v1beta/models/gemini-2.5-flash:generateContent"
+
+	_, err := p.Send(context.Background(), "do something complex")
+	if err == nil {
+		t.Fatal("expected error when max iterations reached")
+	}
+
+	var maxIterErr *MaxIterationsError
+	if !errors.As(err, &maxIterErr) {
+		t.Fatalf("expected MaxIterationsError, got: %T: %v", err, err)
+	}
+	if maxIterErr.PartialResponse != "partial work" {
+		t.Errorf("expected PartialResponse='partial work', got %q", maxIterErr.PartialResponse)
+	}
+}
+
+// TestGeminiAPIProcess_Send_FinishReasonSafety verifies that SAFETY finishReason returns an error.
+func TestGeminiAPIProcess_Send_FinishReasonSafety(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := geminiResponse{
+			Candidates: []geminiCandidate{
+				{
+					Content: geminiContent{
+						Role:  "model",
+						Parts: []geminiPart{{Text: "blocked content"}},
+					},
+					FinishReason: "SAFETY",
+				},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	os.Setenv("GOOGLE_API_KEY", "test-key")
+	defer os.Unsetenv("GOOGLE_API_KEY")
+
+	p := NewGeminiAPIProcess(GeminiAPIOptions{Model: "gemini-2.5-flash"})
+	p.client = server.Client()
+	p.testAPIURL = server.URL + "/v1beta/models/gemini-2.5-flash:generateContent"
+
+	_, err := p.Send(context.Background(), "generate something")
+	if err == nil {
+		t.Fatal("expected error for SAFETY finishReason")
+	}
+	if !strings.Contains(err.Error(), "SAFETY") {
+		t.Errorf("expected error to mention SAFETY, got: %v", err)
+	}
+}
+
+// TestGeminiAPIProcess_Send_FinishReasonMaxTokens verifies that MAX_TOKENS returns partial text.
+func TestGeminiAPIProcess_Send_FinishReasonMaxTokens(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := geminiResponse{
+			Candidates: []geminiCandidate{
+				{
+					Content: geminiContent{
+						Role:  "model",
+						Parts: []geminiPart{{Text: "truncated response text"}},
+					},
+					FinishReason: "MAX_TOKENS",
+				},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	os.Setenv("GOOGLE_API_KEY", "test-key")
+	defer os.Unsetenv("GOOGLE_API_KEY")
+
+	p := NewGeminiAPIProcess(GeminiAPIOptions{Model: "gemini-2.5-flash"})
+	p.client = server.Client()
+	p.testAPIURL = server.URL + "/v1beta/models/gemini-2.5-flash:generateContent"
+
+	result, err := p.Send(context.Background(), "generate a long response")
+	if err != nil {
+		t.Fatalf("expected no error for MAX_TOKENS, got: %v", err)
+	}
+	if result != "truncated response text" {
+		t.Errorf("expected 'truncated response text', got %q", result)
 	}
 }

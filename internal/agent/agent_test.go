@@ -2,9 +2,11 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -240,5 +242,139 @@ func TestResetTimerIntegration(t *testing.T) {
 	timer.Reset()
 	if timer.Expired() {
 		t.Error("should not be expired after reset")
+	}
+}
+
+// maxIterProcess is a mock Process that returns MaxIterationsError for the first N calls,
+// then succeeds.
+type maxIterProcess struct {
+	callCount   atomic.Int32
+	failCount   int32 // number of calls that return MaxIterationsError
+	lastPrompts []string
+}
+
+func (m *maxIterProcess) Send(_ context.Context, prompt string) (string, error) {
+	m.lastPrompts = append(m.lastPrompts, prompt)
+	n := m.callCount.Add(1)
+	if n <= m.failCount {
+		return "", &MaxIterationsError{PartialResponse: fmt.Sprintf("partial-%d", n)}
+	}
+	return "completed", nil
+}
+
+// TestSendContinuation verifies that send() auto-continues on MaxIterationsError.
+func TestSendContinuation(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "chatlog.txt")
+	os.WriteFile(logPath, nil, 0644)
+	memosDir := filepath.Join(dir, "memos")
+	os.MkdirAll(memosDir, 0755)
+
+	proc := &maxIterProcess{failCount: 2}
+	ag := NewAgent(AgentConfig{
+		ID:            AgentID{Role: RoleEngineer, TeamNum: 1},
+		Role:          RoleEngineer,
+		SystemPrompt:  "test",
+		Model:         "test",
+		ChatLogPath:   logPath,
+		MemosDir:      memosDir,
+		ResetInterval: time.Hour,
+		Process:       proc,
+	})
+
+	resp, err := ag.send(context.Background(), "initial prompt")
+	if err != nil {
+		t.Fatalf("expected success after continuations, got: %v", err)
+	}
+	if resp != "completed" {
+		t.Errorf("expected 'completed', got %q", resp)
+	}
+	// Should have been called 3 times: initial + 2 continuations
+	if proc.callCount.Load() != 3 {
+		t.Errorf("expected 3 calls, got %d", proc.callCount.Load())
+	}
+	// Second and third calls should use continuation prompt
+	for i := 1; i < len(proc.lastPrompts); i++ {
+		if proc.lastPrompts[i] != continuationPrompt {
+			t.Errorf("call %d: expected continuation prompt, got %q", i+1, proc.lastPrompts[i])
+		}
+	}
+}
+
+// TestSendContinuationExhausted verifies that send() gives up after maxContinuations.
+func TestSendContinuationExhausted(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "chatlog.txt")
+	os.WriteFile(logPath, nil, 0644)
+	memosDir := filepath.Join(dir, "memos")
+	os.MkdirAll(memosDir, 0755)
+
+	// Always fail with MaxIterationsError
+	proc := &maxIterProcess{failCount: 100}
+	ag := NewAgent(AgentConfig{
+		ID:            AgentID{Role: RoleEngineer, TeamNum: 1},
+		Role:          RoleEngineer,
+		SystemPrompt:  "test",
+		Model:         "test",
+		ChatLogPath:   logPath,
+		MemosDir:      memosDir,
+		ResetInterval: time.Hour,
+		Process:       proc,
+	})
+
+	_, err := ag.send(context.Background(), "initial prompt")
+	if err == nil {
+		t.Fatal("expected error after exhausting continuations")
+	}
+	if !isMaxIterationsError(err) {
+		t.Errorf("expected MaxIterationsError, got: %T: %v", err, err)
+	}
+	// Should have been called maxContinuations+1 times (initial + 3 continuations)
+	expected := int32(maxContinuations + 1)
+	if proc.callCount.Load() != expected {
+		t.Errorf("expected %d calls, got %d", expected, proc.callCount.Load())
+	}
+}
+
+// retryCountProcess counts calls and fails the first N times with a non-rate-limit error.
+type retryCountProcess struct {
+	callCount atomic.Int32
+	failCount int32
+}
+
+func (m *retryCountProcess) Send(_ context.Context, _ string) (string, error) {
+	n := m.callCount.Add(1)
+	if n <= m.failCount {
+		return "", fmt.Errorf("transient error %d", n)
+	}
+	return "ok", nil
+}
+
+// TestSendWithRetry verifies initial retry logic in sendWithRetry.
+func TestSendWithRetry(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "chatlog.txt")
+	os.WriteFile(logPath, nil, 0644)
+	memosDir := filepath.Join(dir, "memos")
+	os.MkdirAll(memosDir, 0755)
+
+	proc := &retryCountProcess{failCount: 2}
+	ag := NewAgent(AgentConfig{
+		ID:            AgentID{Role: RoleEngineer, TeamNum: 1},
+		Role:          RoleEngineer,
+		SystemPrompt:  "test",
+		Model:         "test",
+		ChatLogPath:   logPath,
+		MemosDir:      memosDir,
+		ResetInterval: time.Hour,
+		Process:       proc,
+	})
+
+	resp, err := ag.sendWithRetry(context.Background(), "test prompt")
+	if err != nil {
+		t.Fatalf("expected success after retries, got: %v", err)
+	}
+	if resp != "ok" {
+		t.Errorf("expected 'ok', got %q", resp)
 	}
 }

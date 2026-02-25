@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -97,7 +98,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	log.Printf("[%s] agent started", recipient)
 
 	memo, _ := reset.LoadLatestMemo(a.MemosDir, recipient)
-	_, initErr := a.send(ctx, a.buildInitialPrompt(memo))
+	_, initErr := a.sendWithRetry(ctx, a.buildInitialPrompt(memo))
 	a.markReady()
 	if initErr != nil {
 		if ctx.Err() != nil {
@@ -214,11 +215,31 @@ func parseDistilledMemo(agentID, raw string) reset.WorkMemo {
 }
 
 const (
-	sendMaxRetries    = 3
-	sendRetryBaseWait = 2 * time.Second
+	sendMaxRetries        = 3
+	sendRetryBaseWait     = 2 * time.Second
+	maxContinuations      = 3 // max auto-continuations on MaxIterationsError (total: 4 × 25 = 100 tool calls)
+	continuationPrompt    = "作業の途中で中断されました。現在のディレクトリの状態を確認し（git status等）、中断した作業を再開してください。"
 )
 
 func (a *Agent) send(ctx context.Context, prompt string) (string, error) {
+	currentPrompt := prompt
+	for continuation := 0; ; continuation++ {
+		resp, err := a.sendOnce(ctx, currentPrompt)
+
+		// Handle MaxIterationsError: auto-continue up to maxContinuations
+		var maxIterErr *MaxIterationsError
+		if errors.As(err, &maxIterErr) && continuation < maxContinuations {
+			log.Printf("[%s] max iterations reached, continuing (%d/%d)", a.ID.String(), continuation+1, maxContinuations)
+			currentPrompt = continuationPrompt
+			continue
+		}
+
+		return resp, err
+	}
+}
+
+// sendOnce performs a single send with throttle, dormancy, and retry handling.
+func (a *Agent) sendOnce(ctx context.Context, prompt string) (string, error) {
 	for {
 		if err := a.Throttle.Wait(ctx); err != nil {
 			return "", err
@@ -237,12 +258,43 @@ func (a *Agent) send(ctx context.Context, prompt string) (string, error) {
 			})
 			continue
 		}
-		if err != nil && !IsRateLimitError(err) {
+		if err != nil && !IsRateLimitError(err) && !isMaxIterationsError(err) {
 			// Retry transient errors (network, API 500, etc.) with exponential backoff.
 			resp, err = a.retrySend(ctx, prompt, err)
 		}
 		return resp, err
 	}
+}
+
+// isMaxIterationsError checks whether the error is a MaxIterationsError.
+func isMaxIterationsError(err error) bool {
+	var maxIterErr *MaxIterationsError
+	return errors.As(err, &maxIterErr)
+}
+
+// sendWithRetry wraps send() with initial retry logic (exponential backoff).
+// Used for the first send in Run() where failure should be retried before falling back to chatlog watch.
+func (a *Agent) sendWithRetry(ctx context.Context, prompt string) (string, error) {
+	resp, err := a.send(ctx, prompt)
+	if err == nil || ctx.Err() != nil || IsRateLimitError(err) {
+		return resp, err
+	}
+
+	wait := sendRetryBaseWait
+	for attempt := 1; attempt <= sendMaxRetries; attempt++ {
+		log.Printf("[%s] initial send failed (attempt %d/%d): %v, retrying in %v", a.ID.String(), attempt, sendMaxRetries, err, wait)
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(wait):
+		}
+		resp, err = a.send(ctx, prompt)
+		if err == nil || ctx.Err() != nil {
+			return resp, err
+		}
+		wait *= 2
+	}
+	return resp, err
 }
 
 // retrySend retries a failed send up to sendMaxRetries times with exponential backoff.

@@ -110,3 +110,41 @@ func TestThrottleConcurrentAccess(t *testing.T) {
 		t.Errorf("concurrent Wait error: %v", err)
 	}
 }
+
+// TestThrottleTryAcquireAtomic verifies that tryAcquire is atomic: concurrent goroutines
+// cannot over-acquire slots beyond the rpm limit within a single window.
+func TestThrottleTryAcquireAtomic(t *testing.T) {
+	const rpm = 5
+	th := NewThrottle(rpm)
+	th.window = 2 * time.Second // long window to prevent expiry during test
+
+	var wg sync.WaitGroup
+	acquired := make(chan struct{}, rpm*3) // buffer for all attempts
+
+	// Launch many goroutines all trying to acquire at once
+	for i := 0; i < rpm*3; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			wait := th.tryAcquire()
+			if wait == 0 {
+				acquired <- struct{}{}
+			}
+		}()
+	}
+
+	wg.Wait()
+	close(acquired)
+
+	count := 0
+	for range acquired {
+		count++
+	}
+
+	if count > rpm {
+		t.Errorf("tryAcquire allowed %d acquires, but rpm limit is %d", count, rpm)
+	}
+	if count < rpm {
+		t.Errorf("tryAcquire only allowed %d acquires, expected %d", count, rpm)
+	}
+}

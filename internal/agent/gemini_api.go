@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"os/exec"
@@ -15,9 +16,19 @@ import (
 
 const (
 	geminiAPIEndpointFmt = "https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent"
-	geminiMaxTokens      = 8096
-	geminiMaxIter        = 25 // maximum agentic loop iterations (same as gmn default max-turns)
+	geminiMaxTokens      = 65536 // Gemini 2.5 Pro/Flash support up to 64K-65.5K output tokens
+	geminiMaxIter        = 25    // maximum agentic loop iterations (same as gmn default max-turns)
 )
+
+// MaxIterationsError indicates that the agentic loop reached the iteration limit
+// without the model finishing naturally. It may carry a partial response text.
+type MaxIterationsError struct {
+	PartialResponse string
+}
+
+func (e *MaxIterationsError) Error() string {
+	return fmt.Sprintf("gemini-api: reached maximum iterations (%d) without completing", geminiMaxIter)
+}
 
 // GeminiAPIOptions configures the Gemini API-based agent process.
 type GeminiAPIOptions struct {
@@ -158,6 +169,7 @@ func (g *GeminiAPIProcess) Send(ctx context.Context, prompt string) (string, err
 		},
 	}
 
+	var lastText string
 	for range geminiMaxIter {
 		resp, err := g.callAPI(ctx, apiKey, model, contents)
 		if err != nil {
@@ -179,11 +191,35 @@ func (g *GeminiAPIProcess) Send(ctx context.Context, prompt string) (string, err
 
 		candidate := resp.Candidates[0]
 
+		// Check finishReason for content filtering
+		switch candidate.FinishReason {
+		case "SAFETY", "RECITATION", "PROHIBITED_CONTENT":
+			text := g.extractText(candidate.Content.Parts)
+			log.Printf("[gemini-api] response blocked by finishReason=%s", candidate.FinishReason)
+			return text, fmt.Errorf("gemini-api: response blocked (finishReason=%s)", candidate.FinishReason)
+		case "MAX_TOKENS":
+			text := g.extractText(candidate.Content.Parts)
+			if text != "" {
+				lastText = text
+			}
+			funcCalls := g.extractFunctionCalls(candidate.Content.Parts)
+			if len(funcCalls) > 0 {
+				log.Printf("[gemini-api] MAX_TOKENS with incomplete tool calls, returning partial text")
+			}
+			// Return whatever text we got; tool calls may be truncated
+			return lastText, nil
+		}
+
 		// Append the model's response to conversation history
 		contents = append(contents, geminiContent{
 			Role:  "model",
 			Parts: candidate.Content.Parts,
 		})
+
+		// Track last text for MaxIterationsError
+		if text := g.extractText(candidate.Content.Parts); text != "" {
+			lastText = text
+		}
 
 		// Check for function calls
 		funcCalls := g.extractFunctionCalls(candidate.Content.Parts)
@@ -215,7 +251,7 @@ func (g *GeminiAPIProcess) Send(ctx context.Context, prompt string) (string, err
 		})
 	}
 
-	return "", fmt.Errorf("gemini-api: reached maximum iterations (%d) without completing", geminiMaxIter)
+	return "", &MaxIterationsError{PartialResponse: lastText}
 }
 
 // callAPI sends a single request to the Gemini generateContent API.
