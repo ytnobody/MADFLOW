@@ -70,8 +70,8 @@ path = "."
 		t.Fatal(err)
 	}
 
-	if cfg.Agent.ContextResetMinutes != 8 {
-		t.Errorf("expected default 8, got %d", cfg.Agent.ContextResetMinutes)
+	if cfg.Agent.ContextResetMinutes != 15 {
+		t.Errorf("expected default 15, got %d", cfg.Agent.ContextResetMinutes)
 	}
 	if cfg.Agent.Models.Superintendent != "claude-sonnet-4-6" {
 		t.Errorf("expected default superintendent model claude-sonnet-4-6, got %s", cfg.Agent.Models.Superintendent)

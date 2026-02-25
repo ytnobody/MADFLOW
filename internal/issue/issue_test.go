@@ -374,6 +374,35 @@ func TestCommentIsBot_DefaultFalse(t *testing.T) {
 	}
 }
 
+func TestDelete(t *testing.T) {
+	dir := t.TempDir()
+	store := NewStore(dir)
+
+	iss, err := store.Create("To be deleted", "body")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.Delete(iss.ID); err != nil {
+		t.Fatalf("Delete failed: %v", err)
+	}
+
+	// Get should fail after deletion.
+	if _, err := store.Get(iss.ID); err == nil {
+		t.Error("expected Get to fail after Delete")
+	}
+}
+
+func TestDeleteIdempotent(t *testing.T) {
+	dir := t.TempDir()
+	store := NewStore(dir)
+
+	// Deleting a non-existent ID should not return an error.
+	if err := store.Delete("nonexistent-999"); err != nil {
+		t.Errorf("Delete of non-existent ID should be idempotent, got: %v", err)
+	}
+}
+
 func TestPendingApprovalNotAssignable(t *testing.T) {
 	// Verify that listing can be used to filter pending-approval issues.
 	dir := t.TempDir()

@@ -106,6 +106,10 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 
 	log.Println("[orchestrator] starting")
 
+	// Remove closed issues left over from previous runs so the
+	// superintendent does not waste iterations cleaning them up.
+	o.pruneClosedIssues()
+
 	var wg sync.WaitGroup
 
 	// Start all agents (teams + residents) concurrently
@@ -204,6 +208,25 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	wg.Wait()
 	log.Println("[orchestrator] stopped")
 	return ctx.Err()
+}
+
+// pruneClosedIssues removes all closed issue files from the store so
+// the superintendent does not spend iterations deleting them one by one.
+func (o *Orchestrator) pruneClosedIssues() {
+	all, err := o.store.List(issue.StatusFilter{})
+	if err != nil {
+		log.Printf("[orchestrator] pruneClosedIssues: list: %v", err)
+		return
+	}
+	for _, iss := range all {
+		if iss.Status == issue.StatusClosed {
+			if err := o.store.Delete(iss.ID); err != nil {
+				log.Printf("[orchestrator] pruneClosedIssues: delete %s: %v", iss.ID, err)
+			} else {
+				log.Printf("[orchestrator] pruned closed issue %s", iss.ID)
+			}
+		}
+	}
 }
 
 // startResidentAgents starts the superintendent.
@@ -309,13 +332,20 @@ func (o *Orchestrator) startAllTeams(ctx context.Context) {
 					log.Printf("[orchestrator] skipping issue %s (pending approval)", iss.ID)
 					continue
 				}
+				// Clear stale team assignments from previous runs so the
+				// issue gets correctly assigned to a newly created team.
+				if iss.Status == issue.StatusInProgress && iss.AssignedTeam != 0 {
+					log.Printf("[orchestrator] resetting stale AssignedTeam=%d on issue %s", iss.AssignedTeam, iss.ID)
+					iss.AssignedTeam = 0
+					o.store.Update(iss)
+				}
 				assignable = append(assignable, iss)
 			}
 		}
 	}
 
-	// Launch all teams concurrently
-	var twg sync.WaitGroup
+	// Launch all teams concurrently (fire-and-forget so startup is not
+	// blocked waiting for the first LLM response from each engineer).
 	for i := 0; i < maxTeams; i++ {
 		idx := i
 		var issueID string
@@ -323,13 +353,12 @@ func (o *Orchestrator) startAllTeams(ctx context.Context) {
 			issueID = assignable[idx].ID
 		}
 
-		twg.Add(1)
 		go func() {
-			defer twg.Done()
-
 			t, err := o.teams.Create(ctx, issueID)
 			if err != nil {
-				log.Printf("[orchestrator] start teams: team %d: %v", idx+1, err)
+				if ctx.Err() == nil {
+					log.Printf("[orchestrator] start teams: team %d: %v", idx+1, err)
+				}
 				return
 			}
 
@@ -345,9 +374,8 @@ func (o *Orchestrator) startAllTeams(ctx context.Context) {
 			}
 		}()
 	}
-	twg.Wait()
 
-	log.Printf("[orchestrator] started %d teams", o.teams.Count())
+	log.Printf("[orchestrator] launched %d teams (async)", maxTeams)
 }
 
 // runAgentWithRestart runs an agent and restarts it if it exits unexpectedly.
@@ -425,10 +453,19 @@ func (o *Orchestrator) handleTeamCreate(ctx context.Context, body string) {
 
 	// Validate that the issue exists in the store to reject malformed IDs
 	// (e.g. "issueID（2回目）extra text" from retried TEAM_CREATE messages).
-	if _, err := o.store.Get(issueID); err != nil {
+	existingIss, err := o.store.Get(issueID)
+	if err != nil {
 		log.Printf("[orchestrator] TEAM_CREATE rejected: issue %q not found: %v", issueID, err)
 		o.chatLog.Append("superintendent", "orchestrator",
 			fmt.Sprintf("TEAM_CREATE %s は拒否されました: イシューが見つかりません", issueID))
+		return
+	}
+
+	// Reject team creation for issues that are already closed or resolved.
+	if existingIss.Status == issue.StatusClosed || existingIss.Status == issue.StatusResolved {
+		log.Printf("[orchestrator] TEAM_CREATE rejected: issue %s is %s", issueID, existingIss.Status)
+		o.chatLog.Append("superintendent", "orchestrator",
+			fmt.Sprintf("TEAM_CREATE %s は拒否されました: イシューのステータスが %s です", issueID, existingIss.Status))
 		return
 	}
 

@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"log"
 	"os"
 
 	"github.com/BurntSushi/toml"
@@ -119,6 +120,7 @@ func Load(path string) (*Config, error) {
 	}
 
 	setDefaults(&cfg)
+	warnDefaults(&cfg)
 
 	if err := validate(&cfg); err != nil {
 		return nil, fmt.Errorf("validate config: %w", err)
@@ -129,7 +131,7 @@ func Load(path string) (*Config, error) {
 
 func setDefaults(cfg *Config) {
 	if cfg.Agent.ContextResetMinutes == 0 {
-		cfg.Agent.ContextResetMinutes = 8
+		cfg.Agent.ContextResetMinutes = 15
 	}
 	if cfg.Agent.Models.Superintendent == "" {
 		cfg.Agent.Models.Superintendent = "claude-sonnet-4-6"
@@ -181,6 +183,12 @@ func setDefaults(cfg *Config) {
 	}
 	// DormancyThresholdMinutes intentionally has no default (0 = disabled).
 	// Users must opt-in by setting a positive value in their config.
+}
+
+func warnDefaults(cfg *Config) {
+	if cfg.Agent.ContextResetMinutes < 10 {
+		log.Printf("[config] WARNING: context_reset_minutes=%d is below 10; short intervals cause redundant completions — consider 15+", cfg.Agent.ContextResetMinutes)
+	}
 }
 
 func validate(cfg *Config) error {

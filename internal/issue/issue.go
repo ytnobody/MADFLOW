@@ -194,6 +194,16 @@ func (s *Store) Update(issue *Issue) error {
 	return s.write(issue)
 }
 
+// Delete removes an issue file by ID. It is idempotent: deleting a
+// non-existent issue returns nil.
+func (s *Store) Delete(id string) error {
+	err := os.Remove(s.path(id))
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("delete issue %s: %w", id, err)
+	}
+	return nil
+}
+
 func (s *Store) write(issue *Issue) error {
 	path := s.path(issue.ID)
 	f, err := os.Create(path)
