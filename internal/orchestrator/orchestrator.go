@@ -24,6 +24,22 @@ func (o *Orchestrator) handleTeamCreate(ctx context.Context, body string) {
 		return
 	}
 
+	// Validate that the issue exists in the store and is not closed/resolved.
+	iss, err := o.store.Get(issueID)
+	if err != nil {
+		log.Printf("[orchestrator] TEAM_CREATE rejected: issue %q not found: %v", issueID, err)
+		o.chatLog.Append("superintendent", "orchestrator",
+			fmt.Sprintf("TEAM_CREATE %s は拒否されました: イシューが見つかりません", issueID))
+		return
+	}
+
+	if iss.Status == issue.StatusClosed || iss.Status == issue.StatusResolved {
+		log.Printf("[orchestrator] TEAM_CREATE rejected: issue %q is already %s", issueID, iss.Status)
+		o.chatLog.Append("superintendent", "orchestrator",
+			fmt.Sprintf("TEAM_CREATE %s は拒否されました: イシューは既に %s です", issueID, iss.Status))
+		return
+	}
+
 	t, err := o.teams.Create(ctx, issueID)
 	if err != nil {
 		log.Printf("[orchestrator] TEAM_CREATE failed for %s: %v", issueID, err)
