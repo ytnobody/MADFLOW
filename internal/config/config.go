@@ -43,6 +43,7 @@ type AgentConfig struct {
 	// fix PRs when discrepancies are found.
 	// 0 triggers the default of 24 hours.
 	DocCheckIntervalHours int `toml:"doc_check_interval_hours"`
+tTeamPersistenceMinutes int `toml:"team_persistence_minutes"`
 	// ExtraPrompt is appended to the system prompt of every agent.
 	// Use this to inject project-specific instructions that apply to all agents.
 	ExtraPrompt string `toml:"extra_prompt"`
@@ -134,6 +135,7 @@ func setDefaults(cfg *Config) {
 	}
 	if cfg.Agent.DocCheckIntervalHours == 0 {
 		cfg.Agent.DocCheckIntervalHours = 24
+t	cfg.Agent.TeamPersistenceMinutes = 5
 	}
 	if cfg.Branches.Main == "" {
 		cfg.Branches.Main = "main"
