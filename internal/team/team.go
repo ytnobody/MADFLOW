@@ -1,4 +1,22 @@
 package team
+nimport (
+	"encoding/json"
+	"io/ioutil"
+	"path/filepath"
+)
+
+// TeamState represents the serializable state of a team.
+type TeamState struct {
+	ID      int    `json:"id"`
+	IssueID string `json:"issue_id"`
+}
+
+// TeamsFile is the structure for serializing/deserializing all teams.
+type TeamsFile struct {
+	NextID int         `json:"next_id"`
+	Teams  []TeamState `json:"teams"`
+}
+
 
 import (
 	"context"
@@ -65,6 +83,7 @@ type Manager struct {
 	teams    map[int]*Team
 	nextID   int
 	maxTeams int
+tteamsPath string
 	factory  TeamFactory
 }
 

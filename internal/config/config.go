@@ -58,6 +58,9 @@ type AgentConfig struct {
 	// to run before being killed. This prevents agents from hanging indefinitely
 	// on commands that never finish. Defaults to 5 minutes.
 	BashTimeoutMinutes int `toml:"bash_timeout_minutes"`
+	// TeamPersistenceMinutes is the interval for team persistence.
+	// Defaults to 5 minutes.
+	TeamPersistenceMinutes int `toml:"team_persistence_minutes"`
 	// ExtraPrompt is appended to the system prompt of every agent.
 	// Use this to inject project-specific instructions that apply to all agents.
 	ExtraPrompt string `toml:"extra_prompt"`
@@ -150,6 +153,9 @@ func setDefaults(cfg *Config) {
 	}
 	if cfg.Agent.DocCheckIntervalHours == 0 {
 		cfg.Agent.DocCheckIntervalHours = 24
+	}
+	if cfg.Agent.TeamPersistenceMinutes == 0 {
+		cfg.Agent.TeamPersistenceMinutes = 5
 	}
 	if cfg.Agent.GeminiRPM == 0 {
 		cfg.Agent.GeminiRPM = 10
