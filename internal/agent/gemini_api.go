@@ -47,8 +47,24 @@ type GeminiAPIProcess struct {
 	testAPIURL string // overrides the endpoint in tests
 }
 
+// geminiSystemConstraints is prepended to the system prompt for Gemini models
+// to enforce strict tool-use discipline and prevent verbose text-only responses.
+const geminiSystemConstraints = `## 厳守事項（最優先ルール）
+
+1. **全アクションは bash ツール経由**: ファイル操作、git コマンド、チャットログ書き込み等、すべての操作は bash ツールコールで実行せよ。テキスト出力で代替してはならない。
+2. **チャットログへの書き込み**: 必ず bash ツールで echo コマンドを実行せよ。テキスト出力としてチャットログ形式のメッセージを返してはならない。
+3. **簡潔な応答**: テキスト応答は最小限にせよ。分析・計画・状況報告はすべて bash ツールでチャットログに書き込め。
+4. **思考プロセスの構造化**: 複雑な判断が必要な場合、まず bash ツールで情報を収集し、その結果に基づいて次のアクションを決定せよ。
+5. **1ターン1アクション**: 各応答では具体的なアクション（bash ツールコール）を1つ以上実行せよ。テキストのみの応答は禁止。
+6. **指示の厳守**: システムプロンプトの指示から逸脱してはならない。独自判断で指示にない作業を行ってはならない。
+
+`
+
 // NewGeminiAPIProcess creates a new GeminiAPIProcess.
 func NewGeminiAPIProcess(opts GeminiAPIOptions) *GeminiAPIProcess {
+	if opts.SystemPrompt != "" {
+		opts.SystemPrompt = geminiSystemConstraints + opts.SystemPrompt
+	}
 	return &GeminiAPIProcess{
 		opts:   opts,
 		client: &http.Client{Timeout: 300 * time.Second},

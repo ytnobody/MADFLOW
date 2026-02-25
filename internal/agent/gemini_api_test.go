@@ -371,8 +371,12 @@ func TestGeminiAPIProcess_Send_SystemPrompt(t *testing.T) {
 	if receivedReq.SystemInstruction == nil {
 		t.Fatal("expected system_instruction to be set")
 	}
-	if len(receivedReq.SystemInstruction.Parts) == 0 || receivedReq.SystemInstruction.Parts[0].Text != "You are a helpful assistant" {
-		t.Errorf("unexpected system_instruction: %+v", receivedReq.SystemInstruction)
+	sysText := receivedReq.SystemInstruction.Parts[0].Text
+	if !strings.Contains(sysText, "You are a helpful assistant") {
+		t.Errorf("expected system_instruction to contain original prompt, got: %s", sysText)
+	}
+	if !strings.HasPrefix(sysText, geminiSystemConstraints) {
+		t.Errorf("expected system_instruction to start with geminiSystemConstraints, got: %s", sysText[:100])
 	}
 }
 
@@ -490,5 +494,33 @@ func TestGeminiAPIProcess_Send_FinishReasonMaxTokens(t *testing.T) {
 	}
 	if result != "truncated response text" {
 		t.Errorf("expected 'truncated response text', got %q", result)
+	}
+}
+
+// TestNewGeminiAPIProcess_SystemConstraints verifies that constraints are prepended to a non-empty system prompt.
+func TestNewGeminiAPIProcess_SystemConstraints(t *testing.T) {
+	p := NewGeminiAPIProcess(GeminiAPIOptions{
+		SystemPrompt: "You are a helpful assistant",
+	})
+
+	if !strings.HasPrefix(p.opts.SystemPrompt, geminiSystemConstraints) {
+		t.Error("expected SystemPrompt to start with geminiSystemConstraints")
+	}
+	if !strings.Contains(p.opts.SystemPrompt, "You are a helpful assistant") {
+		t.Error("expected SystemPrompt to contain the original prompt")
+	}
+	if !strings.HasSuffix(p.opts.SystemPrompt, "You are a helpful assistant") {
+		t.Error("expected SystemPrompt to end with the original prompt")
+	}
+}
+
+// TestNewGeminiAPIProcess_EmptyPrompt verifies that constraints are NOT injected when system prompt is empty.
+func TestNewGeminiAPIProcess_EmptyPrompt(t *testing.T) {
+	p := NewGeminiAPIProcess(GeminiAPIOptions{
+		SystemPrompt: "",
+	})
+
+	if p.opts.SystemPrompt != "" {
+		t.Errorf("expected empty SystemPrompt, got: %q", p.opts.SystemPrompt)
 	}
 }
