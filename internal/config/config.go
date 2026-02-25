@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"log"
 	"os"
 
 	"github.com/BurntSushi/toml"
@@ -43,6 +44,20 @@ type AgentConfig struct {
 	// fix PRs when discrepancies are found.
 	// 0 triggers the default of 24 hours.
 	DocCheckIntervalHours int `toml:"doc_check_interval_hours"`
+	// GeminiRPM is the requests-per-minute limit for the Gemini API.
+	// All Gemini agents share a single sliding-window throttle based on this value.
+	// Defaults to 10.
+	GeminiRPM int `toml:"gemini_rpm"`
+	// DormancyProbeMinutes is the initial interval between rate-limit recovery probes
+	// when all agents enter dormancy due to a rate limit error.
+	// The interval doubles after each failed probe (exponential backoff), up to 60 minutes.
+	// Shorter values help recover faster from transient rate limits (useful for Gemini).
+	// Defaults to 3 minutes.
+	DormancyProbeMinutes int `toml:"dormancy_probe_minutes"`
+	// BashTimeoutMinutes is the maximum time a single bash command is allowed
+	// to run before being killed. This prevents agents from hanging indefinitely
+	// on commands that never finish. Defaults to 5 minutes.
+	BashTimeoutMinutes int `toml:"bash_timeout_minutes"`
 	// ExtraPrompt is appended to the system prompt of every agent.
 	// Use this to inject project-specific instructions that apply to all agents.
 	ExtraPrompt string `toml:"extra_prompt"`
@@ -105,6 +120,7 @@ func Load(path string) (*Config, error) {
 	}
 
 	setDefaults(&cfg)
+	warnDefaults(&cfg)
 
 	if err := validate(&cfg); err != nil {
 		return nil, fmt.Errorf("validate config: %w", err)
@@ -115,7 +131,7 @@ func Load(path string) (*Config, error) {
 
 func setDefaults(cfg *Config) {
 	if cfg.Agent.ContextResetMinutes == 0 {
-		cfg.Agent.ContextResetMinutes = 8
+		cfg.Agent.ContextResetMinutes = 15
 	}
 	if cfg.Agent.Models.Superintendent == "" {
 		cfg.Agent.Models.Superintendent = "claude-sonnet-4-6"
@@ -134,6 +150,15 @@ func setDefaults(cfg *Config) {
 	}
 	if cfg.Agent.DocCheckIntervalHours == 0 {
 		cfg.Agent.DocCheckIntervalHours = 24
+	}
+	if cfg.Agent.GeminiRPM == 0 {
+		cfg.Agent.GeminiRPM = 10
+	}
+	if cfg.Agent.DormancyProbeMinutes == 0 {
+		cfg.Agent.DormancyProbeMinutes = 3
+	}
+	if cfg.Agent.BashTimeoutMinutes == 0 {
+		cfg.Agent.BashTimeoutMinutes = 5
 	}
 	if cfg.Branches.Main == "" {
 		cfg.Branches.Main = "main"
@@ -158,6 +183,12 @@ func setDefaults(cfg *Config) {
 	}
 	// DormancyThresholdMinutes intentionally has no default (0 = disabled).
 	// Users must opt-in by setting a positive value in their config.
+}
+
+func warnDefaults(cfg *Config) {
+	if cfg.Agent.ContextResetMinutes < 10 {
+		log.Printf("[config] WARNING: context_reset_minutes=%d is below 10; short intervals cause redundant completions — consider 15+", cfg.Agent.ContextResetMinutes)
+	}
 }
 
 func validate(cfg *Config) error {

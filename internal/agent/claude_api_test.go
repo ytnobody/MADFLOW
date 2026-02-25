@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestClaudeAPIProcess_StripPrefix verifies the model name prefix stripping.
@@ -77,7 +78,7 @@ func TestClaudeAPIProcess_ExtractText(t *testing.T) {
 // TestClaudeAPIProcess_ExecuteTool_Unknown verifies unknown tools return an error.
 func TestClaudeAPIProcess_ExecuteTool_Unknown(t *testing.T) {
 	p := &ClaudeAPIProcess{}
-	result, isError := p.executeTool("unknown_tool", json.RawMessage(`{}`))
+	result, isError := p.executeTool(context.Background(), "unknown_tool", json.RawMessage(`{}`))
 	if !isError {
 		t.Error("expected isError=true for unknown tool")
 	}
@@ -89,7 +90,7 @@ func TestClaudeAPIProcess_ExecuteTool_Unknown(t *testing.T) {
 // TestClaudeAPIProcess_ExecuteTool_BashInvalidJSON verifies bash tool with bad JSON input.
 func TestClaudeAPIProcess_ExecuteTool_BashInvalidJSON(t *testing.T) {
 	p := &ClaudeAPIProcess{}
-	result, isError := p.executeTool("bash", json.RawMessage(`invalid`))
+	result, isError := p.executeTool(context.Background(), "bash", json.RawMessage(`invalid`))
 	if !isError {
 		t.Error("expected isError=true for invalid JSON")
 	}
@@ -101,7 +102,7 @@ func TestClaudeAPIProcess_ExecuteTool_BashInvalidJSON(t *testing.T) {
 // TestClaudeAPIProcess_RunBash_Simple verifies basic bash execution.
 func TestClaudeAPIProcess_RunBash_Simple(t *testing.T) {
 	p := &ClaudeAPIProcess{}
-	result, isError := p.runBash("echo hello")
+	result, isError := p.runBash(context.Background(), "echo hello")
 	if isError {
 		t.Errorf("expected no error, got isError=true; result: %s", result)
 	}
@@ -113,7 +114,7 @@ func TestClaudeAPIProcess_RunBash_Simple(t *testing.T) {
 // TestClaudeAPIProcess_RunBash_Error verifies error handling for failed commands.
 func TestClaudeAPIProcess_RunBash_Error(t *testing.T) {
 	p := &ClaudeAPIProcess{}
-	result, isError := p.runBash("exit 1")
+	result, isError := p.runBash(context.Background(), "exit 1")
 	if !isError {
 		t.Error("expected isError=true for failing command")
 	}
@@ -124,7 +125,7 @@ func TestClaudeAPIProcess_RunBash_Error(t *testing.T) {
 func TestClaudeAPIProcess_RunBash_WorkDir(t *testing.T) {
 	tmpDir := t.TempDir()
 	p := &ClaudeAPIProcess{opts: ClaudeAPIOptions{WorkDir: tmpDir}}
-	result, isError := p.runBash("pwd")
+	result, isError := p.runBash(context.Background(), "pwd")
 	if isError {
 		t.Errorf("expected no error, got: %s", result)
 	}
@@ -132,6 +133,16 @@ func TestClaudeAPIProcess_RunBash_WorkDir(t *testing.T) {
 	if result == "" {
 		t.Error("expected non-empty pwd output")
 	}
+}
+
+// TestClaudeAPIProcess_RunBash_Timeout verifies that bash commands are killed after timeout.
+func TestClaudeAPIProcess_RunBash_Timeout(t *testing.T) {
+	p := &ClaudeAPIProcess{opts: ClaudeAPIOptions{BashTimeout: 100 * time.Millisecond}}
+	result, isError := p.runBash(context.Background(), "sleep 10")
+	if !isError {
+		t.Error("expected isError=true for timed-out command")
+	}
+	_ = result
 }
 
 // TestClaudeAPIProcess_Send_NoAPIKey verifies that missing ANTHROPIC_API_KEY returns an error.
@@ -300,15 +311,15 @@ func TestNewAgentDispatch_AnthropicModel(t *testing.T) {
 	}
 }
 
-// TestNewAgentDispatch_GeminiModel verifies gemini- prefix still creates GeminiProcess.
+// TestNewAgentDispatch_GeminiModel verifies gemini- prefix creates GeminiAPIProcess.
 func TestNewAgentDispatch_GeminiModel(t *testing.T) {
 	cfg := AgentConfig{
 		ID:    AgentID{Role: RoleEngineer, TeamNum: 1},
 		Model: "gemini-flash-2-5",
 	}
 	agent := NewAgent(cfg)
-	if _, ok := agent.Process.(*GeminiProcess); !ok {
-		t.Errorf("expected *GeminiProcess, got %T", agent.Process)
+	if _, ok := agent.Process.(*GeminiAPIProcess); !ok {
+		t.Errorf("expected *GeminiAPIProcess, got %T", agent.Process)
 	}
 }
 

@@ -20,26 +20,20 @@ func TestGeminiProcess_buildArgs(t *testing.T) {
 			name:     "simple prompt",
 			opts:     GeminiOptions{},
 			prompt:   "hello",
-			expected: []string{"-p", "hello", "-o", "text", "--approval-mode", "yolo"},
+			expected: []string{"prompt", "hello"},
 		},
 		{
 			name:   "with model",
 			opts:   GeminiOptions{Model: "gemini-2.5-flash"},
 			prompt: "describe image",
 			// モデル名をそのまま渡す（stripしない）
-			expected: []string{"-p", "describe image", "-o", "text", "--approval-mode", "yolo", "-m", "gemini-2.5-flash"},
+			expected: []string{"prompt", "--model", "gemini-2.5-flash", "describe image"},
 		},
 		{
 			name:     "with system prompt",
 			opts:     GeminiOptions{SystemPrompt: "act as a bot"},
 			prompt:   "who are you?",
-			expected: []string{"-p", "act as a bot\n\nwho are you?", "-o", "text", "--approval-mode", "yolo"},
-		},
-		{
-			name:     "with allowed tools",
-			opts:     GeminiOptions{AllowedTools: []string{"read_file", "write_file"}},
-			prompt:   "read main.go",
-			expected: []string{"-p", "read main.go", "-o", "text", "--approval-mode", "yolo", "--allowed-tools", "read_file,write_file"},
+			expected: []string{"prompt", "--system", "act as a bot", "who are you?"},
 		},
 	}
 

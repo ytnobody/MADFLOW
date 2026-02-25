@@ -114,10 +114,19 @@ func (m *Manager) Create(ctx context.Context, issueID string) (*Team, error) {
 	m.teams[teamNum] = team
 	m.mu.Unlock()
 
-	// Start the engineer agent
+	// Start the engineer agent with restart on unexpected exit
 	go func() {
-		if err := engineer.Run(teamCtx); err != nil && teamCtx.Err() == nil {
-			log.Printf("[team-%d] engineer stopped: %v", teamNum, err)
+		for {
+			err := engineer.Run(teamCtx)
+			if teamCtx.Err() != nil {
+				return
+			}
+			log.Printf("[team-%d] engineer exited: %v, restarting in 5s", teamNum, err)
+			select {
+			case <-teamCtx.Done():
+				return
+			case <-time.After(5 * time.Second):
+			}
 		}
 	}()
 

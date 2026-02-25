@@ -70,8 +70,8 @@ path = "."
 		t.Fatal(err)
 	}
 
-	if cfg.Agent.ContextResetMinutes != 8 {
-		t.Errorf("expected default 8, got %d", cfg.Agent.ContextResetMinutes)
+	if cfg.Agent.ContextResetMinutes != 15 {
+		t.Errorf("expected default 15, got %d", cfg.Agent.ContextResetMinutes)
 	}
 	if cfg.Agent.Models.Superintendent != "claude-sonnet-4-6" {
 		t.Errorf("expected default superintendent model claude-sonnet-4-6, got %s", cfg.Agent.Models.Superintendent)
@@ -502,6 +502,165 @@ doc_check_interval_hours = 48
 
 	if cfg.Agent.DocCheckIntervalHours != 48 {
 		t.Errorf("expected doc_check_interval_hours 48, got %d", cfg.Agent.DocCheckIntervalHours)
+	}
+}
+
+func TestGeminiRPMDefault(t *testing.T) {
+	content := `
+[project]
+name = "test-app"
+
+[[project.repos]]
+name = "main"
+path = "."
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "madflow.toml")
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if cfg.Agent.GeminiRPM != 10 {
+		t.Errorf("expected default gemini_rpm 10, got %d", cfg.Agent.GeminiRPM)
+	}
+}
+
+func TestGeminiRPMCustom(t *testing.T) {
+	content := `
+[project]
+name = "test-app"
+
+[[project.repos]]
+name = "main"
+path = "."
+
+[agent]
+gemini_rpm = 10
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "madflow.toml")
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if cfg.Agent.GeminiRPM != 10 {
+		t.Errorf("expected gemini_rpm 10, got %d", cfg.Agent.GeminiRPM)
+	}
+}
+
+func TestDormancyProbeMinutesDefault(t *testing.T) {
+	content := `
+[project]
+name = "test-app"
+
+[[project.repos]]
+name = "main"
+path = "."
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "madflow.toml")
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if cfg.Agent.DormancyProbeMinutes != 3 {
+		t.Errorf("expected default dormancy_probe_minutes 3, got %d", cfg.Agent.DormancyProbeMinutes)
+	}
+}
+
+func TestDormancyProbeMinutesCustom(t *testing.T) {
+	content := `
+[project]
+name = "test-app"
+
+[[project.repos]]
+name = "main"
+path = "."
+
+[agent]
+dormancy_probe_minutes = 5
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "madflow.toml")
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if cfg.Agent.DormancyProbeMinutes != 5 {
+		t.Errorf("expected dormancy_probe_minutes 5, got %d", cfg.Agent.DormancyProbeMinutes)
+	}
+}
+
+func TestBashTimeoutMinutesDefault(t *testing.T) {
+	content := `
+[project]
+name = "test-app"
+
+[[project.repos]]
+name = "main"
+path = "."
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "madflow.toml")
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if cfg.Agent.BashTimeoutMinutes != 5 {
+		t.Errorf("expected default bash_timeout_minutes 5, got %d", cfg.Agent.BashTimeoutMinutes)
+	}
+}
+
+func TestBashTimeoutMinutesCustom(t *testing.T) {
+	content := `
+[project]
+name = "test-app"
+
+[[project.repos]]
+name = "main"
+path = "."
+
+[agent]
+bash_timeout_minutes = 10
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "madflow.toml")
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if cfg.Agent.BashTimeoutMinutes != 10 {
+		t.Errorf("expected bash_timeout_minutes 10, got %d", cfg.Agent.BashTimeoutMinutes)
 	}
 }
 

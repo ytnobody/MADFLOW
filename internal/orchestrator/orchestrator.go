@@ -33,6 +33,7 @@ type Orchestrator struct {
 	teams        *team.Manager
 	repos        map[string]*git.Repo // name -> repo
 	dormancy     *agent.Dormancy
+	throttle     *agent.Throttle
 	idleDetector *github.IdleDetector // shared idle state for GitHub polling
 
 	residentAgents []*agent.Agent
@@ -57,6 +58,8 @@ func New(cfg *config.Config, dataDir, promptDir string) *Orchestrator {
 		idleDetector.SetDormancyThreshold(time.Duration(cfg.GitHub.DormancyThresholdMinutes) * time.Minute)
 	}
 
+	probeInterval := time.Duration(cfg.Agent.DormancyProbeMinutes) * time.Minute
+
 	orc := &Orchestrator{
 		cfg:          cfg,
 		dataDir:      dataDir,
@@ -64,7 +67,8 @@ func New(cfg *config.Config, dataDir, promptDir string) *Orchestrator {
 		store:        issue.NewStore(issuesDir),
 		chatLog:      chatlog.New(chatLogPath),
 		repos:        repos,
-		dormancy:     agent.NewDormancy(),
+		dormancy:     agent.NewDormancy(probeInterval),
+		throttle:     agent.NewThrottle(cfg.Agent.GeminiRPM),
 		idleDetector: idleDetector,
 	}
 
@@ -101,6 +105,10 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	}
 
 	log.Println("[orchestrator] starting")
+
+	// Remove closed issues left over from previous runs so the
+	// superintendent does not waste iterations cleaning them up.
+	o.pruneClosedIssues()
 
 	var wg sync.WaitGroup
 
@@ -202,9 +210,29 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	return ctx.Err()
 }
 
+// pruneClosedIssues removes all closed issue files from the store so
+// the superintendent does not spend iterations deleting them one by one.
+func (o *Orchestrator) pruneClosedIssues() {
+	all, err := o.store.List(issue.StatusFilter{})
+	if err != nil {
+		log.Printf("[orchestrator] pruneClosedIssues: list: %v", err)
+		return
+	}
+	for _, iss := range all {
+		if iss.Status == issue.StatusClosed {
+			if err := o.store.Delete(iss.ID); err != nil {
+				log.Printf("[orchestrator] pruneClosedIssues: delete %s: %v", iss.ID, err)
+			} else {
+				log.Printf("[orchestrator] pruned closed issue %s", iss.ID)
+			}
+		}
+	}
+}
+
 // startResidentAgents starts the superintendent.
 func (o *Orchestrator) startResidentAgents(ctx context.Context, wg *sync.WaitGroup) error {
 	resetInterval := time.Duration(o.cfg.Agent.ContextResetMinutes) * time.Minute
+	bashTimeout := time.Duration(o.cfg.Agent.BashTimeoutMinutes) * time.Minute
 
 	residents := []struct {
 		role  agent.Role
@@ -231,7 +259,7 @@ func (o *Orchestrator) startResidentAgents(ctx context.Context, wg *sync.WaitGro
 			systemPrompt += "\n\n" + o.cfg.Agent.ExtraPrompt
 		}
 
-		ag := agent.NewAgent(agent.AgentConfig{
+		agentCfg := agent.AgentConfig{
 			ID:            agent.AgentID{Role: r.role},
 			Role:          r.role,
 			SystemPrompt:  systemPrompt,
@@ -240,8 +268,13 @@ func (o *Orchestrator) startResidentAgents(ctx context.Context, wg *sync.WaitGro
 			ChatLogPath:   o.chatLog.Path(),
 			MemosDir:      filepath.Join(o.dataDir, "memos"),
 			ResetInterval: resetInterval,
+			BashTimeout:   bashTimeout,
 			Dormancy:      o.dormancy,
-		})
+		}
+		if strings.HasPrefix(r.model, "gemini-") {
+			agentCfg.Throttle = o.throttle
+		}
+		ag := agent.NewAgent(agentCfg)
 
 		o.mu.Lock()
 		o.residentAgents = append(o.residentAgents, ag)
@@ -299,13 +332,20 @@ func (o *Orchestrator) startAllTeams(ctx context.Context) {
 					log.Printf("[orchestrator] skipping issue %s (pending approval)", iss.ID)
 					continue
 				}
+				// Clear stale team assignments from previous runs so the
+				// issue gets correctly assigned to a newly created team.
+				if iss.Status == issue.StatusInProgress && iss.AssignedTeam != 0 {
+					log.Printf("[orchestrator] resetting stale AssignedTeam=%d on issue %s", iss.AssignedTeam, iss.ID)
+					iss.AssignedTeam = 0
+					o.store.Update(iss)
+				}
 				assignable = append(assignable, iss)
 			}
 		}
 	}
 
-	// Launch all teams concurrently
-	var twg sync.WaitGroup
+	// Launch all teams concurrently (fire-and-forget so startup is not
+	// blocked waiting for the first LLM response from each engineer).
 	for i := 0; i < maxTeams; i++ {
 		idx := i
 		var issueID string
@@ -313,13 +353,12 @@ func (o *Orchestrator) startAllTeams(ctx context.Context) {
 			issueID = assignable[idx].ID
 		}
 
-		twg.Add(1)
 		go func() {
-			defer twg.Done()
-
 			t, err := o.teams.Create(ctx, issueID)
 			if err != nil {
-				log.Printf("[orchestrator] start teams: team %d: %v", idx+1, err)
+				if ctx.Err() == nil {
+					log.Printf("[orchestrator] start teams: team %d: %v", idx+1, err)
+				}
 				return
 			}
 
@@ -335,9 +374,8 @@ func (o *Orchestrator) startAllTeams(ctx context.Context) {
 			}
 		}()
 	}
-	twg.Wait()
 
-	log.Printf("[orchestrator] started %d teams", o.teams.Count())
+	log.Printf("[orchestrator] launched %d teams (async)", maxTeams)
 }
 
 // runAgentWithRestart runs an agent and restarts it if it exits unexpectedly.
@@ -415,10 +453,19 @@ func (o *Orchestrator) handleTeamCreate(ctx context.Context, body string) {
 
 	// Validate that the issue exists in the store to reject malformed IDs
 	// (e.g. "issueID（2回目）extra text" from retried TEAM_CREATE messages).
-	if _, err := o.store.Get(issueID); err != nil {
+	existingIss, err := o.store.Get(issueID)
+	if err != nil {
 		log.Printf("[orchestrator] TEAM_CREATE rejected: issue %q not found: %v", issueID, err)
 		o.chatLog.Append("superintendent", "orchestrator",
 			fmt.Sprintf("TEAM_CREATE %s は拒否されました: イシューが見つかりません", issueID))
+		return
+	}
+
+	// Reject team creation for issues that are already closed or resolved.
+	if existingIss.Status == issue.StatusClosed || existingIss.Status == issue.StatusResolved {
+		log.Printf("[orchestrator] TEAM_CREATE rejected: issue %s is %s", issueID, existingIss.Status)
+		o.chatLog.Append("superintendent", "orchestrator",
+			fmt.Sprintf("TEAM_CREATE %s は拒否されました: イシューのステータスが %s です", issueID, existingIss.Status))
 		return
 	}
 
@@ -596,6 +643,7 @@ func (o *Orchestrator) runGitHubSync(ctx context.Context) {
 // CreateTeamAgents implements team.TeamFactory.
 func (o *Orchestrator) CreateTeamAgents(teamNum int, issueID string) (engineer *agent.Agent, err error) {
 	resetInterval := time.Duration(o.cfg.Agent.ContextResetMinutes) * time.Minute
+	bashTimeout := time.Duration(o.cfg.Agent.BashTimeoutMinutes) * time.Minute
 	teamNumStr := fmt.Sprintf("%d", teamNum)
 
 	// Load the issue for context
@@ -635,7 +683,7 @@ func (o *Orchestrator) CreateTeamAgents(teamNum int, issueID string) (engineer *
 			systemPrompt += "\n\n" + o.cfg.Agent.ExtraPrompt
 		}
 
-		agents[i] = agent.NewAgent(agent.AgentConfig{
+		agentCfg := agent.AgentConfig{
 			ID:            agent.AgentID{Role: r.role, TeamNum: teamNum},
 			Role:          r.role,
 			SystemPrompt:  systemPrompt,
@@ -644,9 +692,14 @@ func (o *Orchestrator) CreateTeamAgents(teamNum int, issueID string) (engineer *
 			ChatLogPath:   o.chatLog.Path(),
 			MemosDir:      filepath.Join(o.dataDir, "memos"),
 			ResetInterval: resetInterval,
+			BashTimeout:   bashTimeout,
 			OriginalTask:  originalTask,
 			Dormancy:      o.dormancy,
-		})
+		}
+		if strings.HasPrefix(r.model, "gemini-") {
+			agentCfg.Throttle = o.throttle
+		}
+		agents[i] = agent.NewAgent(agentCfg)
 	}
 
 	return agents[0], nil
