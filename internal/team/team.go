@@ -1,5 +1,5 @@
 package team
-nimport (
+import (
 	"encoding/json"
 	"io/ioutil"
 	"path/filepath"
@@ -22,17 +22,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"os"
-	"sync"
-	"time"
-
-	"github.com/ytnobody/madflow/internal/agent"
-	"github.com/ytnobody/madflow/internal/chatlog"
-)
-
-// announceStart は各エージェントの作業開始をチャットログに報告する。
-// イシューが割り当てられている場合は、正しいエンジニアIDに直接割り当てメッセージも送信する。
-// これにより、監督が誤ったエンジニアIDに送信してもエンジニアが確実に作業を受け取れる。
 func announceStart(team *Team) {
 	// 監督にチーム開始を通知（監督が正しいエンジニアIDを知るために必要）
 	line := chatlog.FormatMessage(
