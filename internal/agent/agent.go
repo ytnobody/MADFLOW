@@ -133,7 +133,30 @@ func (a *Agent) Run(ctx context.Context) error {
 			}
 			if response != "" {
 				log.Printf("[%s] response: %s", recipient, truncate(response, 200))
+				a.rescueChatLogMessages(response)
 			}
+		}
+	}
+}
+
+// rescueChatLogMessages detects chatlog-formatted lines in a text response
+// and writes them to the chatlog file. This handles the case where the AI
+// model returns chatlog messages as text output instead of using bash echo.
+func (a *Agent) rescueChatLogMessages(response string) {
+	f, err := os.OpenFile(a.ChatLog.Path(), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+
+	for _, line := range strings.Split(response, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if _, err := chatlog.ParseMessage(line); err == nil {
+			fmt.Fprintln(f, line)
+			log.Printf("[%s] rescued chatlog message from text response", a.ID.String())
 		}
 	}
 }
