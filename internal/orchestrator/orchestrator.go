@@ -1,3 +1,46 @@
+// handleTeamCreate creates a new team for an issue.
+// Expected format: TEAM_CREATE issue-id
+func (o *Orchestrator) handleTeamCreate(ctx context.Context, body string) {
+	parts := strings.Fields(body)
+	if len(parts) < 2 {
+		log.Printf("[orchestrator] TEAM_CREATE missing issue ID")
+		return
+	}
+	issueID := parts[1]
+
+	// Validate that the issue exists in the store and is not closed/resolved.
+	iss, err := o.store.Get(issueID)
+	if err != nil {
+		log.Printf("[orchestrator] TEAM_CREATE rejected: issue %q not found: %v", issueID, err)
+		o.chatLog.Append("superintendent", "orchestrator",
+			fmt.Sprintf("TEAM_CREATE %s は拒否されました: イシューが見つかりません", issueID))
+		return
+	}
+
+	if iss.Status == issue.StatusClosed || iss.Status == issue.StatusResolved {
+		log.Printf("[orchestrator] TEAM_CREATE rejected: issue %q is already %s", issueID, iss.Status)
+		o.chatLog.Append("superintendent", "orchestrator",
+			fmt.Sprintf("TEAM_CREATE %s は拒否されました: イシューは既に %s です", issueID, iss.Status))
+		return
+	}
+
+	t, err := o.teams.Create(ctx, issueID)
+	if err != nil {
+		log.Printf("[orchestrator] TEAM_CREATE failed for %s: %v", issueID, err)
+		o.chatLog.Append("superintendent", "orchestrator",
+			fmt.Sprintf("TEAM_CREATE %s に失敗しました: %v", issueID, err))
+		return
+	}
+
+	// Update issue with assigned team
+	iss.AssignedTeam = t.ID
+	iss.Status = issue.StatusInProgress
+	o.store.Update(iss)
+
+	log.Printf("[orchestrator] team %d created for issue %s", t.ID, issueID)
+	o.chatLog.Append("superintendent", "orchestrator",
+		fmt.Sprintf("TEAM_CREATE %s: チーム %d を作成しました", issueID, t.ID))
+}
 package orchestrator
 
 import (
@@ -407,12 +450,6 @@ func (o *Orchestrator) handleWakeGitHub() {
 // Expected format: TEAM_CREATE issue-id
 // handleTeamCreate creates a new team for an issue.
 // Expected format: TEAM_CREATE issue-id
-func (o *Orchestrator) handleTeamCreate(ctx context.Context, body string) {
-	parts := strings.Fields(body)
-	if len(parts) < 2 {
-		log.Printf("[orchestrator] TEAM_CREATE missing issue ID")
-		return
-	}
 	issueID := parts[1]
 
 	// Validate that the issue exists in the store and is not closed/resolved.
