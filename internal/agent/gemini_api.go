@@ -66,10 +66,10 @@ func (g *GeminiAPIProcess) apiURL(model string) string {
 // --- Gemini API types ---
 
 type geminiRequest struct {
-	SystemInstruction *geminiContent    `json:"system_instruction,omitempty"`
-	Contents          []geminiContent   `json:"contents"`
-	Tools             []geminiToolDecl  `json:"tools,omitempty"`
-	GenerationConfig  *geminiGenConfig  `json:"generation_config,omitempty"`
+	SystemInstruction *geminiContent   `json:"system_instruction,omitempty"`
+	Contents          []geminiContent  `json:"contents"`
+	Tools             []geminiToolDecl `json:"tools,omitempty"`
+	GenerationConfig  *geminiGenConfig `json:"generation_config,omitempty"`
 }
 
 type geminiContent struct {
@@ -78,9 +78,9 @@ type geminiContent struct {
 }
 
 type geminiPart struct {
-	Text             string                 `json:"text,omitempty"`
-	FunctionCall     *geminiFunctionCall    `json:"functionCall,omitempty"`
-	FunctionResponse *geminiFunctionResp    `json:"functionResponse,omitempty"`
+	Text             string              `json:"text,omitempty"`
+	FunctionCall     *geminiFunctionCall `json:"functionCall,omitempty"`
+	FunctionResponse *geminiFunctionResp `json:"functionResponse,omitempty"`
 }
 
 type geminiFunctionCall struct {

@@ -215,10 +215,10 @@ func parseDistilledMemo(agentID, raw string) reset.WorkMemo {
 }
 
 const (
-	sendMaxRetries        = 3
-	sendRetryBaseWait     = 2 * time.Second
-	maxContinuations      = 3 // max auto-continuations on MaxIterationsError (total: 4 × 25 = 100 tool calls)
-	continuationPrompt    = "作業の途中で中断されました。現在のディレクトリの状態を確認し（git status等）、中断した作業を再開してください。"
+	sendMaxRetries     = 3
+	sendRetryBaseWait  = 2 * time.Second
+	maxContinuations   = 3 // max auto-continuations on MaxIterationsError (total: 4 × 25 = 100 tool calls)
+	continuationPrompt = "作業の途中で中断されました。現在のディレクトリの状態を確認し（git status等）、中断した作業を再開してください。"
 )
 
 func (a *Agent) send(ctx context.Context, prompt string) (string, error) {
