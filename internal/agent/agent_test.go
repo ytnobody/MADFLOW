@@ -261,8 +261,8 @@ func TestRunReturnsOnMaxIterationsError(t *testing.T) {
 
 	maxIterErr := &MaxIterationsError{}
 	proc := &mockProcessCallCount{
-		responses: []string{"ok"},  // initial send succeeds
-		errAfter:  1,               // fail on second call (message processing)
+		responses: []string{"ok"}, // initial send succeeds
+		errAfter:  1,              // fail on second call (message processing)
 		err:       maxIterErr,
 	}
 
