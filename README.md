@@ -169,3 +169,28 @@ madflow start
 ## ライセンス
 
 MIT License
+
+## 開発ワークフロー
+
+MADFLOWフレームワークにおける開発では、複数のエージェントが同一のリポジトリで並行して作業を行うため、ブランチの競合が頻繁に発生します。これを回避するため、各エンジニアは必ず `git worktree` を使用して、自身の作業ディレクトリを分離してください。
+
+### `git worktree` のセットアップ
+
+新しいイシューに取り組む際は、以下のコマンドで新しいワークツリーを作成します。
+
+```bash
+# 例: イシュー local-002 の場合
+git worktree add -b feature/issue-local-002 ../madflow-worktree/local-002 develop
+```
+
+### 開発サイクル
+
+1.  **ワークツリー作成**: 上記のコマンドで、イシューごとのワークツリーを作成します。
+2.  **実装**: 作成したワークツリーのディレクトリに移動して、実装、コミットを行います。
+3.  **Pull Request作成**: GitHub CLI (`gh pr create`) を使ってPull Requestを作成します。
+4.  **ワークツリー削除**: Pull Requestがマージされたら、不要になったワークツリーを削除します。
+
+```bash
+# メインの作業ディレクトリに戻ってから実行
+git worktree remove ../madflow-worktree/local-002
+```
