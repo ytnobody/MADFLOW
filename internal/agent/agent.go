@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+	
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -96,7 +96,7 @@ func (a *Agent) markReady() { a.readyOnce.Do(func() { close(a.ready) }) }
 func (a *Agent) Run(ctx context.Context) error {
 	timer := reset.NewTimer(a.ResetInterval)
 	recipient := a.ID.String()
-	log.Printf("[%s] agent started", recipient)
+//	log.Printf("[%s] agent started", recipient)
 
 	memo, _ := reset.LoadLatestMemo(a.MemosDir, recipient)
 	_, initErr := a.sendWithRetry(ctx, a.buildInitialPrompt(memo))
@@ -105,14 +105,14 @@ func (a *Agent) Run(ctx context.Context) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		log.Printf("[%s] initial send failed: %v", recipient, initErr)
+//		log.Printf("[%s] initial send failed: %v", recipient, initErr)
 	}
 
 	msgCh := a.ChatLog.Watch(ctx, recipient)
 	for {
 		select {
 		case <-ctx.Done():
-			log.Printf("[%s] agent stopped", recipient)
+//			log.Printf("[%s] agent stopped", recipient)
 			return ctx.Err()
 		case msg, ok := <-msgCh:
 			if !ok {
@@ -120,7 +120,7 @@ func (a *Agent) Run(ctx context.Context) error {
 			}
 			if timer.Expired() {
 				if err := a.performReset(ctx, timer); err != nil {
-					log.Printf("[%s] reset failed: %v", recipient, err)
+//					log.Printf("[%s] reset failed: %v", recipient, err)
 				}
 			}
 			response, err := a.send(ctx, fmt.Sprintf("チャットログに新しいメッセージがあります:\n\n%s\n\n適切に対応してください。", msg.Raw))
@@ -129,14 +129,14 @@ func (a *Agent) Run(ctx context.Context) error {
 					return ctx.Err()
 				}
 				if IsMaxIterationsError(err) {
-					log.Printf("[%s] max iterations reached, restarting agent", recipient)
+//					log.Printf("[%s] max iterations reached, restarting agent", recipient)
 					return err
 				}
-				log.Printf("[%s] send failed: %v", recipient, err)
+//				log.Printf("[%s] send failed: %v", recipient, err)
 				continue
 			}
 			if response != "" {
-				log.Printf("[%s] response: %s", recipient, truncate(response, 200))
+//				log.Printf("[%s] response: %s", recipient, truncate(response, 200))
 				a.rescueChatLogMessages(response)
 			}
 		}
@@ -160,14 +160,14 @@ func (a *Agent) rescueChatLogMessages(response string) {
 		}
 		if _, err := chatlog.ParseMessage(line); err == nil {
 			fmt.Fprintln(f, line)
-			log.Printf("[%s] rescued chatlog message from text response", a.ID.String())
+//			log.Printf("[%s] rescued chatlog message from text response", a.ID.String())
 		}
 	}
 }
 
 func (a *Agent) performReset(ctx context.Context, timer *reset.Timer) error {
 	recipient := a.ID.String()
-	log.Printf("[%s] context reset triggered", recipient)
+//	log.Printf("[%s] context reset triggered", recipient)
 
 	distilled, err := a.send(ctx, reset.DistillPrompt)
 	if err != nil {
@@ -179,7 +179,7 @@ func (a *Agent) performReset(ctx context.Context, timer *reset.Timer) error {
 	if err != nil {
 		return fmt.Errorf("save memo: %w", err)
 	}
-	log.Printf("[%s] memo saved: %s", recipient, filepath.Base(memoPath))
+//	log.Printf("[%s] memo saved: %s", recipient, filepath.Base(memoPath))
 
 	memoContent, _ := os.ReadFile(memoPath)
 	if _, err := a.send(ctx, a.buildInitialPrompt(string(memoContent))); err != nil {
@@ -187,7 +187,7 @@ func (a *Agent) performReset(ctx context.Context, timer *reset.Timer) error {
 	}
 
 	timer.Reset()
-	log.Printf("[%s] context reset complete", recipient)
+//	log.Printf("[%s] context reset complete", recipient)
 	return nil
 }
 
@@ -257,7 +257,7 @@ func (a *Agent) send(ctx context.Context, prompt string) (string, error) {
 		// Handle MaxIterationsError: auto-continue up to maxContinuations
 		var maxIterErr *MaxIterationsError
 		if errors.As(err, &maxIterErr) && continuation < maxContinuations {
-			log.Printf("[%s] max iterations reached, continuing (%d/%d)", a.ID.String(), continuation+1, maxContinuations)
+//			log.Printf("[%s] max iterations reached, continuing (%d/%d)", a.ID.String(), continuation+1, maxContinuations)
 			currentPrompt = continuationPrompt
 			continue
 		}
@@ -279,7 +279,7 @@ func (a *Agent) sendOnce(ctx context.Context, prompt string) (string, error) {
 		}
 		resp, err := a.Process.Send(ctx, prompt)
 		if err != nil && a.Dormancy != nil && IsRateLimitError(err) {
-			log.Printf("[%s] rate limit detected, entering dormancy", a.ID.String())
+//			log.Printf("[%s] rate limit detected, entering dormancy", a.ID.String())
 			a.Dormancy.Enter(ctx, func(pctx context.Context) error {
 				_, perr := a.Process.Send(pctx, "hello")
 				return perr
@@ -311,7 +311,7 @@ func (a *Agent) sendWithRetry(ctx context.Context, prompt string) (string, error
 
 	wait := sendRetryBaseWait
 	for attempt := 1; attempt <= sendMaxRetries; attempt++ {
-		log.Printf("[%s] initial send failed (attempt %d/%d): %v, retrying in %v", a.ID.String(), attempt, sendMaxRetries, err, wait)
+//		log.Printf("[%s] initial send failed (attempt %d/%d): %v, retrying in %v", a.ID.String(), attempt, sendMaxRetries, err, wait)
 		select {
 		case <-ctx.Done():
 			return "", ctx.Err()
@@ -331,7 +331,7 @@ func (a *Agent) sendWithRetry(ctx context.Context, prompt string) (string, error
 func (a *Agent) retrySend(ctx context.Context, prompt string, lastErr error) (string, error) {
 	wait := sendRetryBaseWait
 	for attempt := 1; attempt <= sendMaxRetries; attempt++ {
-		log.Printf("[%s] send failed (attempt %d/%d): %v, retrying in %v", a.ID.String(), attempt, sendMaxRetries, lastErr, wait)
+//		log.Printf("[%s] send failed (attempt %d/%d): %v, retrying in %v", a.ID.String(), attempt, sendMaxRetries, lastErr, wait)
 		select {
 		case <-ctx.Done():
 			return "", ctx.Err()

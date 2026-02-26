@@ -211,7 +211,7 @@ func (g *GeminiAPIProcess) Send(ctx context.Context, prompt string) (string, err
 		switch candidate.FinishReason {
 		case "SAFETY", "RECITATION", "PROHIBITED_CONTENT":
 			text := g.extractText(candidate.Content.Parts)
-			log.Printf("[gemini-api] response blocked by finishReason=%s", candidate.FinishReason)
+//			log.Printf("[gemini-api] response blocked by finishReason=%s", candidate.FinishReason)
 			return text, fmt.Errorf("gemini-api: response blocked (finishReason=%s)", candidate.FinishReason)
 		case "MAX_TOKENS":
 			text := g.extractText(candidate.Content.Parts)
@@ -220,7 +220,7 @@ func (g *GeminiAPIProcess) Send(ctx context.Context, prompt string) (string, err
 			}
 			funcCalls := g.extractFunctionCalls(candidate.Content.Parts)
 			if len(funcCalls) > 0 {
-				log.Printf("[gemini-api] MAX_TOKENS with incomplete tool calls, returning partial text")
+//				log.Printf("[gemini-api] MAX_TOKENS with incomplete tool calls, returning partial text")
 			}
 			// Return whatever text we got; tool calls may be truncated
 			return lastText, nil
