@@ -100,10 +100,10 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 		os.MkdirAll(filepath.Join(o.dataDir, sub), 0755)
 	}
 
-	// Ensure chatlog file exists
-	if _, err := os.Stat(o.chatLog.Path()); os.IsNotExist(err) {
-		os.WriteFile(o.chatLog.Path(), nil, 0644)
-	}
+	// Truncate chatlog to start with a clean slate. Stale messages from
+	// previous runs confuse the superintendent (e.g. referencing engineers
+	// like engineer-4 that no longer exist, causing phantom TEAM_CREATE).
+	os.WriteFile(o.chatLog.Path(), nil, 0644)
 
 	log.Println("[orchestrator] starting")
 
