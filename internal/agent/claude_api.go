@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -19,6 +20,12 @@ const (
 	anthropicMaxTokens   = 8096
 	anthropicMaxIter     = 20 // maximum agentic loop iterations
 )
+
+// IsMaxIterationsError reports whether err is a MaxIterationsError.
+func IsMaxIterationsError(err error) bool {
+	var maxIterErr *MaxIterationsError
+	return errors.As(err, &maxIterErr)
+}
 
 // ClaudeAPIOptions configures the Anthropic API-based agent process.
 type ClaudeAPIOptions struct {
@@ -222,7 +229,7 @@ func (c *ClaudeAPIProcess) Send(ctx context.Context, prompt string) (string, err
 		})
 	}
 
-	return "", fmt.Errorf("claude-api: reached maximum iterations (%d) without completing", anthropicMaxIter)
+	return "", &MaxIterationsError{}
 }
 
 // callAPI sends a single request to the Anthropic Messages API.

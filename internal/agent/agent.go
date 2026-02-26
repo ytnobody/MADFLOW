@@ -128,6 +128,10 @@ func (a *Agent) Run(ctx context.Context) error {
 				if ctx.Err() != nil {
 					return ctx.Err()
 				}
+				if IsMaxIterationsError(err) {
+					log.Printf("[%s] max iterations reached, restarting agent", recipient)
+					return err
+				}
 				log.Printf("[%s] send failed: %v", recipient, err)
 				continue
 			}
@@ -282,18 +286,12 @@ func (a *Agent) sendOnce(ctx context.Context, prompt string) (string, error) {
 			})
 			continue
 		}
-		if err != nil && !IsRateLimitError(err) && !isMaxIterationsError(err) && !isPermanentError(err) {
+		if err != nil && !IsRateLimitError(err) && !IsMaxIterationsError(err) && !isPermanentError(err) {
 			// Retry transient errors (network, API 500, etc.) with exponential backoff.
 			resp, err = a.retrySend(ctx, prompt, err)
 		}
 		return resp, err
 	}
-}
-
-// isMaxIterationsError checks whether the error is a MaxIterationsError.
-func isMaxIterationsError(err error) bool {
-	var maxIterErr *MaxIterationsError
-	return errors.As(err, &maxIterErr)
 }
 
 // isPermanentError checks whether the error is a permanent error that should not be retried

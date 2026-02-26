@@ -230,6 +230,80 @@ func TestReadySignaledOnSendError(t *testing.T) {
 	}
 }
 
+// mockProcessCallCount is a test double that returns an error after N successful calls.
+type mockProcessCallCount struct {
+	responses []string
+	errAfter  int
+	err       error
+	count     int
+}
+
+func (m *mockProcessCallCount) Send(ctx context.Context, prompt string) (string, error) {
+	m.count++
+	if m.errAfter > 0 && m.count > m.errAfter {
+		return "", m.err
+	}
+	idx := m.count - 1
+	if idx < len(m.responses) {
+		return m.responses[idx], nil
+	}
+	return "ok", nil
+}
+
+// TestRunReturnsOnMaxIterationsError verifies that Run() returns when send
+// encounters a MaxIterationsError during message processing (not initial send).
+func TestRunReturnsOnMaxIterationsError(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "chatlog.txt")
+	os.WriteFile(logPath, nil, 0644)
+	memosDir := filepath.Join(dir, "memos")
+	os.MkdirAll(memosDir, 0755)
+
+	maxIterErr := &MaxIterationsError{}
+	proc := &mockProcessCallCount{
+		responses: []string{"ok"}, // initial send succeeds
+		errAfter:  1,              // fail on second call (message processing)
+		err:       maxIterErr,
+	}
+
+	ag := NewAgent(AgentConfig{
+		ID:            AgentID{Role: RoleEngineer, TeamNum: 1},
+		Role:          RoleEngineer,
+		SystemPrompt:  "test",
+		Model:         "test",
+		ChatLogPath:   logPath,
+		MemosDir:      memosDir,
+		ResetInterval: time.Hour,
+		Process:       proc,
+	})
+
+	// Use a generous timeout: send() retries MaxIterationsError up to 3 times
+	// (maxContinuations), and -race adds overhead. 30s is plenty.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Write a message to the chatlog to trigger message processing
+	go func() {
+		// Wait for agent to be ready, then write a message
+		<-ag.Ready()
+		cl := chatlog.New(logPath)
+		cl.Append("engineer-1", "superintendent", "タスクを実行してください")
+	}()
+
+	err := ag.Run(ctx)
+
+	// Run should return the MaxIterationsError (not block until context timeout)
+	if err == nil {
+		t.Fatal("expected Run to return an error")
+	}
+	if !IsMaxIterationsError(err) {
+		if ctx.Err() != nil {
+			t.Fatal("Run blocked until context timeout instead of returning MaxIterationsError")
+		}
+		t.Errorf("expected MaxIterationsError, got: %v", err)
+	}
+}
+
 func TestResetTimerIntegration(t *testing.T) {
 	timer := reset.NewTimer(50 * time.Millisecond)
 	if timer.Expired() {
@@ -326,7 +400,7 @@ func TestSendContinuationExhausted(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error after exhausting continuations")
 	}
-	if !isMaxIterationsError(err) {
+	if !IsMaxIterationsError(err) {
 		t.Errorf("expected MaxIterationsError, got: %T: %v", err, err)
 	}
 	// Should have been called maxContinuations+1 times (initial + 3 continuations)
