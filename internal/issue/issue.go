@@ -40,6 +40,7 @@ const (
 	StatusInProgress Status = "in_progress"
 	StatusResolved   Status = "resolved"
 	StatusClosed     Status = "closed"
+	StatusInProgressBySuperintendent Status = "in_progress_by_superintendent"
 )
 
 type Issue struct {
