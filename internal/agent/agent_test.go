@@ -277,7 +277,9 @@ func TestRunReturnsOnMaxIterationsError(t *testing.T) {
 		Process:       proc,
 	})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// Use a generous timeout: send() retries MaxIterationsError up to 3 times
+	// (maxContinuations), and -race adds overhead. 30s is plenty.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	// Write a message to the chatlog to trigger message processing
@@ -398,7 +400,7 @@ func TestSendContinuationExhausted(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error after exhausting continuations")
 	}
-	if !isMaxIterationsError(err) {
+	if !IsMaxIterationsError(err) {
 		t.Errorf("expected MaxIterationsError, got: %T: %v", err, err)
 	}
 	// Should have been called maxContinuations+1 times (initial + 3 continuations)
