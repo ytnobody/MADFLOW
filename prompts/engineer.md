@@ -88,22 +88,26 @@ cat {{ISSUES_DIR}}/<イシューID>.toml
 
 **重要**: イシューの `status` が `closed` または `resolved` になっていないかを必ず確認してください（上記「重複作業防止ルール」参照）。
 
-### 2. ブランチの作成と実装
+### 2. ワークツリーの作成と実装
 
-feature ブランチを作成して実装を行います。まず既存ブランチがあるか確認します:
+**重要**: プロジェクトルート (`{{REPO_PATH}}`) のブランチを直接切り替えてはいけません。
+必ず git worktree を使用して隔離された作業ディレクトリを作成してください。
+
 ```bash
-cd <リポジトリパス>
-git branch -a | grep {{FEATURE_PREFIX}}<イシューID>
+# 既存のワークツリーを確認
+git -C {{REPO_PATH}} worktree list | grep {{FEATURE_PREFIX}}<イシューID>
+
+# ワークツリーがない場合: 新規作成
+git -C {{REPO_PATH}} fetch origin
+git -C {{REPO_PATH}} worktree add -b {{FEATURE_PREFIX}}<イシューID> \
+  {{REPO_PATH}}/.worktrees/team-{{TEAM_NUM}} \
+  origin/{{DEVELOP_BRANCH}}
+
+# ワークツリーがある場合: 既存のワークツリーに移動
+# (git worktree list の出力からパスを取得)
 ```
 
-- **既存ブランチがある場合**: そのブランチをチェックアウトして作業を継続します
-  ```bash
-  git checkout {{FEATURE_PREFIX}}<イシューID>
-  ```
-- **既存ブランチがない場合**: 新規作成します
-  ```bash
-  git checkout -b {{FEATURE_PREFIX}}<イシューID> {{DEVELOP_BRANCH}}
-  ```
+**以降の全ての git 操作・ファイル編集は、ワークツリーディレクトリ (`{{REPO_PATH}}/.worktrees/team-{{TEAM_NUM}}`) 内で行ってください。**
 
 #### 既存PRの確認
 
@@ -150,7 +154,7 @@ git commit -m "feat: <変更内容の説明>"
 PR はレビュープロセスの基盤であり、PR が存在しない状態でレビュー依頼を出してはなりません。
 
 ```bash
-cd <リポジトリパス>
+cd {{REPO_PATH}}/.worktrees/team-{{TEAM_NUM}}
 git push -u origin {{FEATURE_PREFIX}}<イシューID>
 gh pr create --base {{DEVELOP_BRANCH}} --title "<イシューID>: <変更内容の要約>" --body "Issue: <イシューID>"
 ```
@@ -181,8 +185,14 @@ gh pr list --head {{FEATURE_PREFIX}}<イシューID> --state open
    ```bash
    git push
    ```
+4. **リモートとの差分がないこと**:
+   ```bash
+   git diff origin/{{FEATURE_PREFIX}}<イシューID> --stat
+   ```
+   差分がある場合は `git push` を再実行してください。
 
 **ビルドまたはテストが失敗する場合は、実装完了を報告してはいけません。** 問題を修正してから再度確認してください。
+**push が完了していることを確認するまで、レビュー依頼を出してはいけません。**
 
 #### レビュー依頼の送信
 
@@ -246,3 +256,5 @@ GitHub の Issue コメント・PR コメント・PR 説明文において、`@u
 - **コミットメッセージ**: 変更内容がわかるよう具体的に書く
 - **テスト実施**: テストが通ることを確認してからレビュー依頼を出す
 - **仕様遵守**: 監督の指示や要件から逸脱しないよう注意する
+- **git worktree の使用**: プロジェクトルートのブランチを直接切り替えず、必ず git worktree を使用すること
+- **作業中断時のpush義務**: 作業を中断・終了する前に、必ず途中の変更を commit & push すること。未pushの変更を残してはならない

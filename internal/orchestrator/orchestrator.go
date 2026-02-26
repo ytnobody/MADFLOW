@@ -345,6 +345,14 @@ func (o *Orchestrator) startAllTeams(ctx context.Context) {
 		}
 	}
 
+	// Mark assignable issues as in_progress immediately (before async team
+	// creation) to prevent the superintendent from sending a duplicate
+	// TEAM_CREATE during the window where the team is being created.
+	for i := 0; i < len(assignable) && i < maxTeams; i++ {
+		assignable[i].Status = issue.StatusInProgress
+		o.store.Update(assignable[i])
+	}
+
 	// Launch all teams concurrently (fire-and-forget so startup is not
 	// blocked waiting for the first LLM response from each engineer).
 	for i := 0; i < maxTeams; i++ {
@@ -467,6 +475,23 @@ func (o *Orchestrator) handleTeamCreate(ctx context.Context, body string) {
 		log.Printf("[orchestrator] TEAM_CREATE rejected: issue %s is %s", issueID, existingIss.Status)
 		o.chatLog.Append("superintendent", "orchestrator",
 			fmt.Sprintf("TEAM_CREATE %s は拒否されました: イシューのステータスが %s です", issueID, existingIss.Status))
+		return
+	}
+
+	// Reject if issue is already assigned to a team.
+	if existingIss.AssignedTeam > 0 {
+		log.Printf("[orchestrator] TEAM_CREATE rejected: issue %s already assigned to team %d", issueID, existingIss.AssignedTeam)
+		o.chatLog.Append("superintendent", "orchestrator",
+			fmt.Sprintf("TEAM_CREATE %s は拒否されました: 既にチーム %d にアサイン済みです", issueID, existingIss.AssignedTeam))
+		return
+	}
+
+	// Reject if an active team is already working on this issue
+	// (covers the race window where AssignedTeam is not yet updated).
+	if o.teams.HasIssue(issueID) {
+		log.Printf("[orchestrator] TEAM_CREATE rejected: active team already exists for issue %s", issueID)
+		o.chatLog.Append("superintendent", "orchestrator",
+			fmt.Sprintf("TEAM_CREATE %s は拒否されました: 既にアクティブなチームが存在します", issueID))
 		return
 	}
 
@@ -730,6 +755,7 @@ func (o *Orchestrator) CreateTeamAgents(teamNum int, issueID string) (engineer *
 			MainBranch:    o.cfg.Branches.Main,
 			FeaturePrefix: o.cfg.Branches.FeaturePrefix,
 			TeamNum:       teamNumStr,
+			RepoPath:      o.firstRepoPath(),
 		}
 
 		systemPrompt, err := agent.LoadPrompt(o.promptDir, r.role, vars)

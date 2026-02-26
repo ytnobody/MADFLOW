@@ -122,3 +122,20 @@ func TestSubstituteVars(t *testing.T) {
 		t.Error("empty var should leave placeholder intact")
 	}
 }
+
+func TestSubstituteVarsRepoPath(t *testing.T) {
+	content := "repo={{REPO_PATH}} agent={{AGENT_ID}}"
+	vars := PromptVars{
+		AgentID:  "engineer-1",
+		RepoPath: "/home/user/myproject",
+	}
+
+	result := substituteVars(content, vars)
+
+	if strings.Contains(result, "{{REPO_PATH}}") {
+		t.Error("REPO_PATH not replaced")
+	}
+	if !strings.Contains(result, "/home/user/myproject") {
+		t.Error("expected /home/user/myproject in result")
+	}
+}

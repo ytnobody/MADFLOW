@@ -200,6 +200,18 @@ func (m *Manager) List() []TeamInfo {
 	return infos
 }
 
+// HasIssue returns true if any active team is assigned to the given issue.
+func (m *Manager) HasIssue(issueID string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, t := range m.teams {
+		if t.IssueID == issueID {
+			return true
+		}
+	}
+	return false
+}
+
 // Count returns the number of active teams.
 func (m *Manager) Count() int {
 	m.mu.Lock()

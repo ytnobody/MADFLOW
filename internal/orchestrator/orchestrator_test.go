@@ -492,6 +492,95 @@ func TestHandleTeamCreateRejectsClosedIssue(t *testing.T) {
 	}
 }
 
+func TestHandleTeamCreateRejectsAlreadyAssigned(t *testing.T) {
+	dir := t.TempDir()
+	cfg := testConfig(dir)
+	os.MkdirAll(filepath.Join(dir, "issues"), 0755)
+	chatlogPath := filepath.Join(dir, "chatlog.txt")
+	os.WriteFile(chatlogPath, nil, 0644)
+
+	orc := New(cfg, dir, t.TempDir())
+	orc.teams = team.NewManager(newMockTeamFactory(t), 3)
+
+	// Create an issue already assigned to a team.
+	iss, _ := orc.Store().Create("Assigned Issue", "body")
+	iss.Status = issue.StatusInProgress
+	iss.AssignedTeam = 5
+	orc.Store().Update(iss)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	teamsBefore := orc.Teams().Count()
+	orc.handleTeamCreate(ctx, fmt.Sprintf("TEAM_CREATE %s", iss.ID))
+
+	// No new team should be created.
+	if orc.Teams().Count() != teamsBefore {
+		t.Errorf("expected no new team for already-assigned issue, but team count changed from %d to %d", teamsBefore, orc.Teams().Count())
+	}
+
+	// Chatlog should contain a rejection message about already assigned.
+	cl := chatlog.New(chatlogPath)
+	msgs, _ := cl.Poll("superintendent")
+	found := false
+	for _, m := range msgs {
+		if contains(m.Body, "拒否されました") && contains(m.Body, "アサイン済み") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected rejection message in chatlog for already-assigned issue TEAM_CREATE")
+	}
+}
+
+func TestHandleTeamCreateRejectsActiveTeam(t *testing.T) {
+	dir := t.TempDir()
+	cfg := testConfig(dir)
+	os.MkdirAll(filepath.Join(dir, "issues"), 0755)
+	chatlogPath := filepath.Join(dir, "chatlog.txt")
+	os.WriteFile(chatlogPath, nil, 0644)
+
+	orc := New(cfg, dir, t.TempDir())
+	orc.teams = team.NewManager(newMockTeamFactory(t), 3)
+
+	// Create an issue with AssignedTeam=0 but an active team already exists.
+	iss, _ := orc.Store().Create("Active Team Issue", "body")
+	iss.Status = issue.StatusInProgress
+	orc.Store().Update(iss)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Create a team for this issue via the manager directly (simulates race window).
+	_, err := orc.Teams().Create(ctx, iss.ID)
+	if err != nil {
+		t.Fatalf("create team: %v", err)
+	}
+
+	teamsBefore := orc.Teams().Count()
+	orc.handleTeamCreate(ctx, fmt.Sprintf("TEAM_CREATE %s", iss.ID))
+
+	// No new team should be created.
+	if orc.Teams().Count() != teamsBefore {
+		t.Errorf("expected no new team when active team exists, but team count changed from %d to %d", teamsBefore, orc.Teams().Count())
+	}
+
+	// Chatlog should contain a rejection message about active team.
+	cl := chatlog.New(chatlogPath)
+	msgs, _ := cl.Poll("superintendent")
+	found := false
+	for _, m := range msgs {
+		if contains(m.Body, "拒否されました") && contains(m.Body, "アクティブなチーム") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected rejection message in chatlog for active-team TEAM_CREATE")
+	}
+}
+
 func TestStartAllTeamsResetsStaleAssignment(t *testing.T) {
 	dir := t.TempDir()
 	cfg := testConfig(dir)
