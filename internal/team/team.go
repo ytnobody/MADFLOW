@@ -61,11 +61,13 @@ const DefaultMaxTeams = 4
 
 // Manager manages the lifecycle of task force teams.
 type Manager struct {
-	mu       sync.Mutex
-	teams    map[int]*Team
-	nextID   int
-	maxTeams int
-	factory  TeamFactory
+	mu            sync.Mutex
+	teams         map[int]*Team
+	pendingIssues map[string]bool // issues currently being created (not yet in teams)
+	pendingCount  int             // number of teams being created (not yet in teams)
+	nextID        int
+	maxTeams      int
+	factory       TeamFactory
 }
 
 // TeamFactory creates agents for a team. Provided by the orchestrator.
@@ -78,26 +80,44 @@ func NewManager(factory TeamFactory, maxTeams int) *Manager {
 		maxTeams = DefaultMaxTeams
 	}
 	return &Manager{
-		teams:    make(map[int]*Team),
-		nextID:   1,
-		maxTeams: maxTeams,
-		factory:  factory,
+		teams:         make(map[int]*Team),
+		pendingIssues: make(map[string]bool),
+		nextID:        1,
+		maxTeams:      maxTeams,
+		factory:       factory,
 	}
 }
 
 // Create creates and starts a new team for the given issue.
 func (m *Manager) Create(ctx context.Context, issueID string) (*Team, error) {
 	m.mu.Lock()
-	if len(m.teams) >= m.maxTeams {
+	// Count both active teams and teams being created to prevent maxTeams bypass.
+	totalSlots := len(m.teams) + m.pendingCount
+	if totalSlots >= m.maxTeams {
 		m.mu.Unlock()
 		return nil, fmt.Errorf("maximum number of concurrent teams reached (%d)", m.maxTeams)
 	}
+	// Check if this issue is already being created (pending) to prevent duplicates.
+	if issueID != "" && m.pendingIssues[issueID] {
+		m.mu.Unlock()
+		return nil, fmt.Errorf("team creation already in progress for issue %s", issueID)
+	}
 	teamNum := m.nextID
 	m.nextID++
+	// Mark this slot and issue as pending before releasing the lock.
+	m.pendingCount++
+	if issueID != "" {
+		m.pendingIssues[issueID] = true
+	}
 	m.mu.Unlock()
 
+	// Clean up pending state if CreateTeamAgents fails.
 	engineer, err := m.factory.CreateTeamAgents(teamNum, issueID)
 	if err != nil {
+		m.mu.Lock()
+		m.pendingCount--
+		delete(m.pendingIssues, issueID)
+		m.mu.Unlock()
 		return nil, fmt.Errorf("create team agents: %w", err)
 	}
 
@@ -110,8 +130,11 @@ func (m *Manager) Create(ctx context.Context, issueID string) (*Team, error) {
 		cancel:   cancel,
 	}
 
+	// Move from pending to active.
 	m.mu.Lock()
 	m.teams[teamNum] = team
+	m.pendingCount--
+	delete(m.pendingIssues, issueID)
 	m.mu.Unlock()
 
 	// Start the engineer agent with restart on unexpected exit
@@ -200,10 +223,14 @@ func (m *Manager) List() []TeamInfo {
 	return infos
 }
 
-// HasIssue returns true if any active team is assigned to the given issue.
+// HasIssue returns true if any active or pending team is assigned to the given issue.
 func (m *Manager) HasIssue(issueID string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	// Check teams being created (not yet in m.teams).
+	if m.pendingIssues[issueID] {
+		return true
+	}
 	for _, t := range m.teams {
 		if t.IssueID == issueID {
 			return true
@@ -212,11 +239,11 @@ func (m *Manager) HasIssue(issueID string) bool {
 	return false
 }
 
-// Count returns the number of active teams.
+// Count returns the number of active and pending teams.
 func (m *Manager) Count() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return len(m.teams)
+	return len(m.teams) + m.pendingCount
 }
 
 // TeamInfo is a read-only snapshot of a team's state.

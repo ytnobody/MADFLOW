@@ -566,12 +566,12 @@ func TestHandleTeamCreateRejectsActiveTeam(t *testing.T) {
 		t.Errorf("expected no new team when active team exists, but team count changed from %d to %d", teamsBefore, orc.Teams().Count())
 	}
 
-	// Chatlog should contain a rejection message about active team.
+	// Chatlog should contain a rejection message about active/pending team.
 	cl := chatlog.New(chatlogPath)
 	msgs, _ := cl.Poll("superintendent")
 	found := false
 	for _, m := range msgs {
-		if contains(m.Body, "拒否されました") && contains(m.Body, "アクティブなチーム") {
+		if contains(m.Body, "拒否されました") && contains(m.Body, "アクティブ") {
 			found = true
 			break
 		}

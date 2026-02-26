@@ -111,6 +111,14 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	// superintendent does not waste iterations cleaning them up.
 	o.pruneClosedIssues()
 
+	// Clean up stale worktrees from previous runs to prevent conflicts
+	// when new teams are created with the same team-N directory names.
+	o.cleanStaleWorktrees()
+
+	// Ensure the main repo is on the develop branch. A previous engineer
+	// may have left it on a feature branch.
+	o.ensureDevelopBranch()
+
 	var wg sync.WaitGroup
 
 	// Start all agents (teams + residents) concurrently
@@ -225,6 +233,37 @@ func (o *Orchestrator) pruneClosedIssues() {
 				log.Printf("[orchestrator] pruneClosedIssues: delete %s: %v", iss.ID, err)
 			} else {
 				log.Printf("[orchestrator] pruned closed issue %s", iss.ID)
+			}
+		}
+	}
+}
+
+// cleanStaleWorktrees removes leftover .worktrees/team-* directories from
+// previous runs. Without this, new team creation can collide with stale
+// worktrees that still reference old branches.
+func (o *Orchestrator) cleanStaleWorktrees() {
+	for name, repo := range o.repos {
+		removed := repo.CleanWorktrees("team-")
+		if len(removed) > 0 {
+			log.Printf("[orchestrator] cleaned %d stale worktree(s) in %s: %v", len(removed), name, removed)
+		}
+	}
+}
+
+// ensureDevelopBranch ensures the main repo is on the develop branch at startup.
+// This prevents issues where a previous engineer left the repo on a feature branch.
+func (o *Orchestrator) ensureDevelopBranch() {
+	for name, repo := range o.repos {
+		branch, err := repo.CurrentBranch()
+		if err != nil {
+			log.Printf("[orchestrator] ensureDevelopBranch: %s: %v", name, err)
+			continue
+		}
+		develop := o.cfg.Branches.Develop
+		if branch != develop {
+			log.Printf("[orchestrator] repo %s is on branch %q, switching to %q", name, branch, develop)
+			if err := repo.Checkout(develop); err != nil {
+				log.Printf("[orchestrator] ensureDevelopBranch: checkout %s on %s failed: %v", develop, name, err)
 			}
 		}
 	}
@@ -452,6 +491,10 @@ func (o *Orchestrator) handleWakeGitHub() {
 
 // handleTeamCreate creates a new team for an issue.
 // Expected format: TEAM_CREATE issue-id
+//
+// The expensive Create call is run in a goroutine so the watchCommands loop
+// is not blocked while waiting for the LLM to respond (which can take 10+ min).
+// Pre-validation checks are synchronous and fast.
 func (o *Orchestrator) handleTeamCreate(ctx context.Context, body string) {
 	parts := strings.Fields(body)
 	if len(parts) < 2 {
@@ -486,34 +529,46 @@ func (o *Orchestrator) handleTeamCreate(ctx context.Context, body string) {
 		return
 	}
 
-	// Reject if an active team is already working on this issue
-	// (covers the race window where AssignedTeam is not yet updated).
+	// Reject if an active or pending team is already working on this issue
+	// (covers both the race window where AssignedTeam is not yet updated
+	// and the window where Create() is still in progress).
 	if o.teams.HasIssue(issueID) {
-		log.Printf("[orchestrator] TEAM_CREATE rejected: active team already exists for issue %s", issueID)
+		log.Printf("[orchestrator] TEAM_CREATE rejected: active/pending team already exists for issue %s", issueID)
 		o.chatLog.Append("superintendent", "orchestrator",
-			fmt.Sprintf("TEAM_CREATE %s は拒否されました: 既にアクティブなチームが存在します", issueID))
+			fmt.Sprintf("TEAM_CREATE %s は拒否されました: 既にアクティブまたは作成中のチームが存在します", issueID))
 		return
 	}
 
-	t, err := o.teams.Create(ctx, issueID)
-	if err != nil {
-		log.Printf("[orchestrator] TEAM_CREATE failed for %s: %v", issueID, err)
+	// Mark issue as in_progress immediately to prevent the superintendent
+	// from sending duplicate TEAM_CREATE commands while the team is being created.
+	existingIss.Status = issue.StatusInProgress
+	o.store.Update(existingIss)
+
+	log.Printf("[orchestrator] TEAM_CREATE %s: starting async team creation", issueID)
+
+	// Run the expensive Create call in a goroutine to avoid blocking
+	// the watchCommands loop (Create can take 10+ minutes waiting for LLM).
+	go func() {
+		t, err := o.teams.Create(ctx, issueID)
+		if err != nil {
+			log.Printf("[orchestrator] TEAM_CREATE failed for %s: %v", issueID, err)
+			o.chatLog.Append("superintendent", "orchestrator",
+				fmt.Sprintf("TEAM_CREATE %s に失敗しました: %v", issueID, err))
+			return
+		}
+
+		// Update issue with assigned team
+		iss, err := o.store.Get(issueID)
+		if err == nil {
+			iss.AssignedTeam = t.ID
+			iss.Status = issue.StatusInProgress
+			o.store.Update(iss)
+		}
+
+		log.Printf("[orchestrator] team %d created for issue %s", t.ID, issueID)
 		o.chatLog.Append("superintendent", "orchestrator",
-			fmt.Sprintf("TEAM_CREATE %s に失敗しました: %v", issueID, err))
-		return
-	}
-
-	// Update issue with assigned team
-	iss, err := o.store.Get(issueID)
-	if err == nil {
-		iss.AssignedTeam = t.ID
-		iss.Status = issue.StatusInProgress
-		o.store.Update(iss)
-	}
-
-	log.Printf("[orchestrator] team %d created for issue %s", t.ID, issueID)
-	o.chatLog.Append("superintendent", "orchestrator",
-		fmt.Sprintf("TEAM_CREATE %s: チーム %d を作成しました", issueID, t.ID))
+			fmt.Sprintf("TEAM_CREATE %s: チーム %d を作成しました", issueID, t.ID))
+	}()
 }
 
 // handleTeamDisband disbands the team for an issue.
