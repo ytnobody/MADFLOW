@@ -119,6 +119,12 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	// may have left it on a feature branch.
 	o.ensureDevelopBranch()
 
+	// Run initial GitHub sync before starting teams so that issues closed
+	// on GitHub are reflected locally and won't be assigned to teams.
+	if o.cfg.GitHub != nil {
+		o.initialGitHubSync()
+	}
+
 	var wg sync.WaitGroup
 
 	// Start all agents (teams + residents) concurrently
@@ -608,6 +614,22 @@ func (o *Orchestrator) handleRelease(_ string) {
 			continue
 		}
 		log.Printf("[orchestrator] release: merged %s -> %s on %s", o.cfg.Branches.Develop, o.cfg.Branches.Main, name)
+	}
+}
+
+// initialGitHubSync performs a one-shot GitHub sync to reflect closed issues
+// before teams are started.  This prevents stale open/in_progress issues from
+// being assigned to teams at startup.
+func (o *Orchestrator) initialGitHubSync() {
+	gh := o.cfg.GitHub
+	botPatterns := o.compileBotPatterns()
+	syncer := github.NewSyncer(o.store, gh.Owner, gh.Repos, 0).
+		WithAuthorizedUsers(o.cfg.AuthorizedUsers).
+		WithBotCommentPatterns(botPatterns)
+	if err := syncer.SyncOnce(); err != nil {
+		log.Printf("[orchestrator] initial github sync failed: %v", err)
+	} else {
+		log.Println("[orchestrator] initial github sync completed")
 	}
 }
 

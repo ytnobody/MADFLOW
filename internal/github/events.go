@@ -382,6 +382,25 @@ func (w *EventWatcher) handleIssuesEvent(repo string, ev ghEvent) {
 		return
 	}
 
+	// Handle issue close events: mark local issue as closed.
+	if payload.Action == "closed" {
+		localID := FormatID(w.owner, repo, payload.Issue.Number)
+		existing, err := w.store.Get(localID)
+		if err != nil {
+			return // unknown issue, nothing to do
+		}
+		if existing.Status == issue.StatusClosed || existing.Status == issue.StatusResolved {
+			return // already closed
+		}
+		existing.Status = issue.StatusClosed
+		if err := w.store.Update(existing); err != nil {
+			log.Printf("[event-watcher] close %s failed: %v", localID, err)
+		} else {
+			log.Printf("[event-watcher] closed %s (GitHub close event)", localID)
+		}
+		return
+	}
+
 	if payload.Action != "opened" && payload.Action != "edited" {
 		return
 	}

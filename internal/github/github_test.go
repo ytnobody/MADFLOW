@@ -459,6 +459,161 @@ func containsApprove(body string) bool {
 	return strings.Contains(strings.ToLower(body), "/approve")
 }
 
+// --- belongsToRepo tests ---
+
+func TestBelongsToRepo_ByReposField(t *testing.T) {
+	iss := &issue.Issue{
+		ID:    "owner-myrepo-001",
+		URL:   "https://github.com/owner/myrepo/issues/1",
+		Repos: []string{"myrepo"},
+	}
+	if !belongsToRepo(iss, "myrepo") {
+		t.Error("expected belongsToRepo=true when repo is in Repos field")
+	}
+	if belongsToRepo(iss, "other-repo") {
+		t.Error("expected belongsToRepo=false for a different repo")
+	}
+}
+
+func TestBelongsToRepo_ByURL(t *testing.T) {
+	iss := &issue.Issue{
+		ID:  "owner-myrepo-001",
+		URL: "https://github.com/owner/myrepo/issues/1",
+	}
+	if !belongsToRepo(iss, "myrepo") {
+		t.Error("expected belongsToRepo=true when URL contains repo name")
+	}
+	if belongsToRepo(iss, "other-repo") {
+		t.Error("expected belongsToRepo=false for a different repo via URL")
+	}
+}
+
+func TestBelongsToRepo_NoURLNoRepos(t *testing.T) {
+	iss := &issue.Issue{
+		ID: "local-001",
+	}
+	if belongsToRepo(iss, "myrepo") {
+		t.Error("expected belongsToRepo=false for local issue with no URL or Repos")
+	}
+}
+
+// --- closeStaleIssues tests ---
+
+func TestCloseStaleIssues_ClosesStaleIssue(t *testing.T) {
+	dir := t.TempDir()
+	store := issue.NewStore(dir)
+
+	// Create an in_progress issue that belongs to "repo"
+	store.Update(&issue.Issue{
+		ID:     "owner-repo-001",
+		Title:  "Stale Issue",
+		URL:    "https://github.com/owner/repo/issues/1",
+		Status: issue.StatusInProgress,
+		Repos:  []string{"repo"},
+	})
+
+	s := NewSyncer(store, "owner", []string{"repo"}, 0)
+
+	// openIDs is empty → issue should be closed
+	s.closeStaleIssues("repo", map[string]struct{}{})
+
+	iss, _ := store.Get("owner-repo-001")
+	if iss.Status != issue.StatusClosed {
+		t.Errorf("expected status=closed, got %s", iss.Status)
+	}
+}
+
+func TestCloseStaleIssues_KeepsOpenIssue(t *testing.T) {
+	dir := t.TempDir()
+	store := issue.NewStore(dir)
+
+	store.Update(&issue.Issue{
+		ID:     "owner-repo-002",
+		Title:  "Open Issue",
+		URL:    "https://github.com/owner/repo/issues/2",
+		Status: issue.StatusOpen,
+		Repos:  []string{"repo"},
+	})
+
+	s := NewSyncer(store, "owner", []string{"repo"}, 0)
+
+	// Issue is in the open set → should NOT be closed
+	openIDs := map[string]struct{}{"owner-repo-002": {}}
+	s.closeStaleIssues("repo", openIDs)
+
+	iss, _ := store.Get("owner-repo-002")
+	if iss.Status != issue.StatusOpen {
+		t.Errorf("expected status=open, got %s", iss.Status)
+	}
+}
+
+func TestCloseStaleIssues_SkipsAlreadyClosed(t *testing.T) {
+	dir := t.TempDir()
+	store := issue.NewStore(dir)
+
+	store.Update(&issue.Issue{
+		ID:     "owner-repo-003",
+		Title:  "Already Closed",
+		URL:    "https://github.com/owner/repo/issues/3",
+		Status: issue.StatusClosed,
+		Repos:  []string{"repo"},
+	})
+
+	s := NewSyncer(store, "owner", []string{"repo"}, 0)
+
+	// Should not error or change anything
+	s.closeStaleIssues("repo", map[string]struct{}{})
+
+	iss, _ := store.Get("owner-repo-003")
+	if iss.Status != issue.StatusClosed {
+		t.Errorf("expected status=closed (unchanged), got %s", iss.Status)
+	}
+}
+
+func TestCloseStaleIssues_SkipsLocalIssues(t *testing.T) {
+	dir := t.TempDir()
+	store := issue.NewStore(dir)
+
+	// Local issue (no URL) should be untouched
+	store.Update(&issue.Issue{
+		ID:     "local-001",
+		Title:  "Local Issue",
+		Status: issue.StatusOpen,
+	})
+
+	s := NewSyncer(store, "owner", []string{"repo"}, 0)
+	s.closeStaleIssues("repo", map[string]struct{}{})
+
+	iss, _ := store.Get("local-001")
+	if iss.Status != issue.StatusOpen {
+		t.Errorf("expected local issue status=open (unchanged), got %s", iss.Status)
+	}
+}
+
+func TestCloseStaleIssues_SkipsOtherRepo(t *testing.T) {
+	dir := t.TempDir()
+	store := issue.NewStore(dir)
+
+	// Issue belongs to "other-repo", not "repo"
+	store.Update(&issue.Issue{
+		ID:     "owner-other-repo-001",
+		Title:  "Other Repo Issue",
+		URL:    "https://github.com/owner/other-repo/issues/1",
+		Status: issue.StatusInProgress,
+		Repos:  []string{"other-repo"},
+	})
+
+	s := NewSyncer(store, "owner", []string{"repo", "other-repo"}, 0)
+
+	// Sync "repo" with empty openIDs — should NOT close the "other-repo" issue
+	s.closeStaleIssues("repo", map[string]struct{}{})
+
+	iss, _ := store.Get("owner-other-repo-001")
+	if iss.Status != issue.StatusInProgress {
+		t.Errorf("expected status=in_progress (belongs to other repo), got %s", iss.Status)
+	}
+}
+
 func TestIsBotUser_BotType(t *testing.T) {
 	// A user with type "Bot" should be identified as a bot regardless of login.
 	if !isBotUser("some-app", "Bot") {

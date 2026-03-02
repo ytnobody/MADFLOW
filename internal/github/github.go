@@ -255,8 +255,12 @@ func (s *Syncer) syncRepo(repo string) error {
 		return err
 	}
 
+	// Build a set of open issue IDs from GitHub for stale-close detection.
+	openIDs := make(map[string]struct{}, len(issues))
+
 	for _, gh := range issues {
 		localID := formatID(s.owner, repo, gh.Number)
+		openIDs[localID] = struct{}{}
 
 		// Determine authorization - unauthorized issues are stored with PendingApproval=true
 		// instead of being skipped, so that an authorized user can later approve them.
@@ -317,7 +321,60 @@ func (s *Syncer) syncRepo(repo string) error {
 		s.syncComments(repo, gh.Number, localID)
 	}
 
+	// Close local issues that are no longer open on GitHub.
+	s.closeStaleIssues(repo, openIDs)
+
 	return nil
+}
+
+// closeStaleIssues marks local open/in_progress issues as closed if they no
+// longer appear in the GitHub open-issue list for the given repo.
+func (s *Syncer) closeStaleIssues(repo string, openIDs map[string]struct{}) {
+	allLocal, err := s.store.List(issue.StatusFilter{})
+	if err != nil {
+		log.Printf("[github-sync] closeStaleIssues: list: %v", err)
+		return
+	}
+	for _, iss := range allLocal {
+		// Skip local-only issues (not from GitHub).
+		if iss.URL == "" {
+			continue
+		}
+		// Skip issues not belonging to this repo.
+		if !belongsToRepo(iss, repo) {
+			continue
+		}
+		// Skip already closed/resolved issues.
+		if iss.Status == issue.StatusClosed || iss.Status == issue.StatusResolved {
+			continue
+		}
+		// Skip issues that are still open on GitHub.
+		if _, ok := openIDs[iss.ID]; ok {
+			continue
+		}
+		// Issue was closed on GitHub — update local status.
+		iss.Status = issue.StatusClosed
+		if err := s.store.Update(iss); err != nil {
+			log.Printf("[github-sync] closeStaleIssues: update %s failed: %v", iss.ID, err)
+		} else {
+			log.Printf("[github-sync] closed %s (no longer open on GitHub)", iss.ID)
+		}
+	}
+}
+
+// belongsToRepo reports whether the issue belongs to the given repo.
+// It checks the Repos field first, then falls back to checking the URL.
+func belongsToRepo(iss *issue.Issue, repo string) bool {
+	for _, r := range iss.Repos {
+		if r == repo {
+			return true
+		}
+	}
+	// Fallback: check if the URL contains the repo name.
+	if iss.URL != "" && strings.Contains(iss.URL, "/"+repo+"/") {
+		return true
+	}
+	return false
 }
 
 // syncComments fetches and persists comments for a single issue.
