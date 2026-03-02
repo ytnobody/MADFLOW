@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -28,6 +29,12 @@ type MaxIterationsError struct {
 
 func (e *MaxIterationsError) Error() string {
 	return fmt.Sprintf("gemini-api: reached maximum iterations (%d) without completing", geminiMaxIter)
+}
+
+// IsMaxIterationsError reports whether err is a MaxIterationsError.
+func IsMaxIterationsError(err error) bool {
+	var maxIterErr *MaxIterationsError
+	return errors.As(err, &maxIterErr)
 }
 
 // GeminiAPIOptions configures the Gemini API-based agent process.
