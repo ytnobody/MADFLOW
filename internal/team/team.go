@@ -137,10 +137,13 @@ func (m *Manager) Create(ctx context.Context, issueID string) (*Team, error) {
 	delete(m.pendingIssues, issueID)
 	m.mu.Unlock()
 
-	// Start the engineer agent with restart on unexpected exit
+	// Start the engineer agent with restart on unexpected exit.
+	// Watch is created once outside the restart loop so that messages
+	// arriving during the restart delay are buffered and not lost.
 	go func() {
+		msgCh := engineer.ChatLog.Watch(teamCtx, engineer.ID.String())
 		for {
-			err := engineer.Run(teamCtx)
+			err := engineer.Run(teamCtx, msgCh)
 			if teamCtx.Err() != nil {
 				return
 			}

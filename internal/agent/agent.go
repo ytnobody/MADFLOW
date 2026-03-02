@@ -86,7 +86,7 @@ func (a *Agent) Ready() <-chan struct{} { return a.ready }
 
 func (a *Agent) markReady() { a.readyOnce.Do(func() { close(a.ready) }) }
 
-func (a *Agent) Run(ctx context.Context) error {
+func (a *Agent) Run(ctx context.Context, msgCh <-chan chatlog.Message) error {
 	defer a.Process.Close()
 
 	timer := reset.NewTimer(a.ResetInterval)
@@ -94,10 +94,6 @@ func (a *Agent) Run(ctx context.Context) error {
 	log.Printf("[%s] agent started", recipient)
 
 	memo, _ := reset.LoadLatestMemo(a.MemosDir, recipient)
-	// Watch must be started before markReady() to avoid a race condition:
-	// markReady() signals test goroutines to write messages, and if Watch()
-	// is called after markReady(), those messages may be missed.
-	msgCh := a.ChatLog.Watch(ctx, recipient)
 	_, initErr := a.sendWithRetry(ctx, a.buildInitialPrompt(memo))
 	a.markReady()
 	if initErr != nil {
@@ -115,12 +111,27 @@ func (a *Agent) Run(ctx context.Context) error {
 			if !ok {
 				return nil
 			}
+			// Drain: collect all pending messages from the channel
+			messages := []chatlog.Message{msg}
+		drain:
+			for {
+				select {
+				case m, ok := <-msgCh:
+					if !ok {
+						break drain
+					}
+					messages = append(messages, m)
+				default:
+					break drain
+				}
+			}
 			if timer.Expired() {
 				if err := a.performReset(ctx, timer); err != nil {
 					log.Printf("[%s] reset failed: %v", recipient, err)
 				}
 			}
-			response, err := a.send(ctx, fmt.Sprintf("チャットログに新しいメッセージがあります:\n\n%s\n\n適切に対応してください。", msg.Raw))
+			prompt := buildMessagePrompt(messages)
+			response, err := a.send(ctx, prompt)
 			if err != nil {
 				if ctx.Err() != nil {
 					return ctx.Err()
@@ -138,6 +149,21 @@ func (a *Agent) Run(ctx context.Context) error {
 			}
 		}
 	}
+}
+
+// buildMessagePrompt creates a single prompt from one or more messages.
+func buildMessagePrompt(messages []chatlog.Message) string {
+	if len(messages) == 1 {
+		return fmt.Sprintf("チャットログに新しいメッセージがあります:\n\n%s\n\n適切に対応してください。", messages[0].Raw)
+	}
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("チャットログに新しいメッセージが %d 件あります:\n\n", len(messages)))
+	for _, m := range messages {
+		sb.WriteString(m.Raw)
+		sb.WriteString("\n")
+	}
+	sb.WriteString("\nすべてのメッセージに適切に対応してください。")
+	return sb.String()
 }
 
 // rescueChatLogMessages detects chatlog-formatted lines in a text response

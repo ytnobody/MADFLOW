@@ -40,24 +40,18 @@ func TestTwoAgentsChatLogCommunication(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Start both agents
-	go agentEngineer.Run(ctx)
+	// Create Watch before Run so messages are not lost.
+	msgCh := agentEngineer.ChatLog.Watch(ctx, agentEngineer.ID.String())
 
-	// エージェントの初回プロンプト送信（call 1）が完了し、
-	// chatlog.Watch が開始されるまで待機する。
-	// Watch は「ファイル末尾から監視」を開始するため、
-	// Watch 開始前に書き込んだメッセージは検出されない。
+	// Start the agent
+	go agentEngineer.Run(ctx, msgCh)
+
+	// エージェントの初回プロンプト送信（call 1）が完了するまで待機する。
 	select {
 	case <-agentEngineer.Ready():
 	case <-time.After(5 * time.Second):
 		t.Fatal("agent did not become ready in time")
 	}
-
-	// Wait for the agent's chatlog Watch goroutine to initialize.
-	// markReady() is called before Watch() is set up in agent.Run(), so we need
-	// to give the goroutine time to record the current file offset before writing.
-	// One full polling interval (500ms) plus margin is sufficient.
-	time.Sleep(700 * time.Millisecond)
 
 	// Write a message to engineer (Watch 開始後に書き込む)
 	writer := NewChatLogWriter(logPath)
@@ -176,7 +170,8 @@ func TestAgentContextReset(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go ag.Run(ctx)
+	msgCh := ag.ChatLog.Watch(ctx, ag.ID.String())
+	go ag.Run(ctx, msgCh)
 
 	// Wait for initial prompt
 	time.Sleep(200 * time.Millisecond)

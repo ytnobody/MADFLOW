@@ -433,9 +433,12 @@ func (o *Orchestrator) startAllTeams(ctx context.Context) {
 }
 
 // runAgentWithRestart runs an agent and restarts it if it exits unexpectedly.
+// Watch is created once outside the restart loop so that messages arriving
+// during the restart delay are buffered in the channel and not lost.
 func (o *Orchestrator) runAgentWithRestart(ctx context.Context, ag *agent.Agent) {
+	msgCh := ag.ChatLog.Watch(ctx, ag.ID.String())
 	for {
-		err := ag.Run(ctx)
+		err := ag.Run(ctx, msgCh)
 		if ctx.Err() != nil {
 			return // Normal shutdown
 		}

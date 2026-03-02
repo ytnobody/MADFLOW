@@ -184,8 +184,9 @@ func TestReadySignaledAfterRun(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	// Run in background; it will send initial prompt then block on chatlog watch
+	msgCh := ag.ChatLog.Watch(ctx, ag.ID.String())
 	go func() {
-		ag.Run(ctx)
+		ag.Run(ctx, msgCh)
 	}()
 
 	// Wait for Ready signal
@@ -220,8 +221,9 @@ func TestReadySignaledOnSendError(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // pre-cancel
 
+	msgCh := ag.ChatLog.Watch(ctx, ag.ID.String())
 	go func() {
-		ag.Run(ctx)
+		ag.Run(ctx, msgCh)
 	}()
 
 	select {
@@ -286,6 +288,9 @@ func TestRunReturnsOnMaxIterationsError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
+	// Create Watch before Run so messages written after Ready are buffered.
+	msgCh := ag.ChatLog.Watch(ctx, ag.ID.String())
+
 	// Write a message to the chatlog to trigger message processing
 	go func() {
 		// Wait for agent to be ready, then write a message
@@ -294,7 +299,7 @@ func TestRunReturnsOnMaxIterationsError(t *testing.T) {
 		cl.Append("engineer-1", "superintendent", "タスクを実行してください")
 	}()
 
-	err := ag.Run(ctx)
+	err := ag.Run(ctx, msgCh)
 
 	// Run should return the MaxIterationsError (not block until context timeout)
 	if err == nil {
