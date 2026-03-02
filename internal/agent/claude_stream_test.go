@@ -119,9 +119,9 @@ func TestStreamUserMessageJSON(t *testing.T) {
 
 func TestExtractResultText(t *testing.T) {
 	tests := []struct {
-		name string
+		name  string
 		event streamEvent
-		want string
+		want  string
 	}{
 		{
 			name:  "result field",
