@@ -343,3 +343,15 @@ func (c *ClaudeAPIProcess) extractText(blocks []anthropicRawBlock) string {
 func (c *ClaudeAPIProcess) stripPrefix(model string) string {
 	return strings.TrimPrefix(model, "anthropic/")
 }
+
+// Reset implements the Process interface (no-op for stateless HTTP API client).
+func (c *ClaudeAPIProcess) Reset(ctx context.Context) error {
+	// ClaudeAPIProcess は stateless HTTP クライアントなので、リセット処理は不要
+	return nil
+}
+
+// Close implements the Process interface (no-op for stateless HTTP API client).
+func (c *ClaudeAPIProcess) Close() error {
+	// ClaudeAPIProcess は長期接続を持たないので、クローズ処理は不要
+	return nil
+}
