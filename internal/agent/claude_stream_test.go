@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -23,6 +24,7 @@ func TestBuildStreamArgs(t *testing.T) {
 			opts: ClaudeOptions{},
 			wantArgs: []string{
 				"--print",
+				"--verbose",
 				"--input-format", "stream-json",
 				"--output-format", "stream-json",
 				"--no-session-persistence",
@@ -456,9 +458,18 @@ func TestSendWriteFailureResetsProcess(t *testing.T) {
 	pr, pw := io.Pipe()
 	pw.Close() // close immediately — writes will fail
 
+	// Start a long-running dummy process so cmd.Process is non-nil
+	// and ensureStarted() sees it as already running.
+	cmd := exec.Command("sleep", "60")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("failed to start dummy process: %v", err)
+	}
+	defer cmd.Process.Kill()
+
 	p := &ClaudeStreamProcess{
 		opts:    ClaudeOptions{},
 		started: true,
+		cmd:     cmd,
 		stdin:   pw,
 		scanner: newTestScanner(pr),
 	}

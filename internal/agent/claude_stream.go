@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -140,8 +141,10 @@ func (c *ClaudeStreamProcess) ensureStarted(ctx context.Context) error {
 		cmd.Dir = c.opts.WorkDir
 	}
 
-	// Remove CLAUDECODE env var to allow nested invocations.
-	cmd.Env = filterEnv(os.Environ(), "CLAUDECODE")
+	// Remove CLAUDECODE/CLAUDE_CODE_ENTRYPOINT env vars to allow nested invocations.
+	env := filterEnv(os.Environ(), "CLAUDECODE")
+	env = filterEnv(env, "CLAUDE_CODE_ENTRYPOINT")
+	cmd.Env = env
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -154,8 +157,9 @@ func (c *ClaudeStreamProcess) ensureStarted(ctx context.Context) error {
 		return fmt.Errorf("create stdout pipe: %w", err)
 	}
 
-	// Discard stderr to avoid blocking
-	cmd.Stderr = io.Discard
+	// Capture stderr (limited) for diagnostics on startup failures.
+	var stderrBuf bytes.Buffer
+	cmd.Stderr = &limitedWriter{w: &stderrBuf, max: 4096}
 
 	if err := cmd.Start(); err != nil {
 		stdin.Close()
@@ -171,9 +175,14 @@ func (c *ClaudeStreamProcess) ensureStarted(ctx context.Context) error {
 
 	// Wait for init event
 	if err := c.waitForInit(ctx); err != nil {
+		stderrMsg := strings.TrimSpace(stderrBuf.String())
+		if stderrMsg != "" {
+			log.Printf("[claude-stream] stderr: %s", stderrMsg)
+		}
 		c.killAndReset()
 		return fmt.Errorf("wait for init: %w", err)
 	}
+
 
 	log.Printf("[claude-stream] process started (session=%s)", c.sessionID)
 	return nil
@@ -339,6 +348,7 @@ func (c *ClaudeStreamProcess) killAndReset() {
 func (c *ClaudeStreamProcess) buildStreamArgs() []string {
 	args := []string{
 		"--print",
+		"--verbose",
 		"--input-format", "stream-json",
 		"--output-format", "stream-json",
 		"--no-session-persistence",
@@ -363,4 +373,24 @@ func (c *ClaudeStreamProcess) buildStreamArgs() []string {
 	args = append(args, "--dangerously-skip-permissions")
 
 	return args
+}
+
+// limitedWriter writes up to max bytes and silently discards the rest.
+type limitedWriter struct {
+	w   io.Writer
+	max int
+	n   int
+}
+
+func (lw *limitedWriter) Write(p []byte) (int, error) {
+	if lw.n >= lw.max {
+		return len(p), nil // discard
+	}
+	remaining := lw.max - lw.n
+	if len(p) > remaining {
+		p = p[:remaining]
+	}
+	n, err := lw.w.Write(p)
+	lw.n += n
+	return len(p), err
 }

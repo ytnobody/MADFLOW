@@ -47,9 +47,11 @@ func (c *ClaudeProcess) Send(ctx context.Context, prompt string) (string, error)
 		cmd.Dir = c.opts.WorkDir
 	}
 
-	// Remove CLAUDECODE env var to allow nested invocations.
+	// Remove CLAUDECODE/CLAUDE_CODE_ENTRYPOINT env vars to allow nested invocations.
 	// MADFLOW intentionally spawns claude as subprocesses.
-	cmd.Env = filterEnv(os.Environ(), "CLAUDECODE")
+	env := filterEnv(os.Environ(), "CLAUDECODE")
+	env = filterEnv(env, "CLAUDE_CODE_ENTRYPOINT")
+	cmd.Env = env
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
