@@ -114,15 +114,18 @@ func (c *ChatLog) Poll(recipient string) ([]Message, error) {
 func (c *ChatLog) Watch(ctx context.Context, recipient string) <-chan Message {
 	ch := make(chan Message, 16)
 
+	// オフセットをゴルーチン外（呼び出し元スレッド）で取得することで、
+	// Watch() 呼び出し後にゴルーチン起動前に書かれたメッセージを
+	// 見落とすレース条件を防ぐ。
+	var initialOffset int64
+	if info, err := os.Stat(c.path); err == nil {
+		initialOffset = info.Size()
+	}
+
 	go func() {
 		defer close(ch)
 
-		// Start from end of file
-		var offset int64
-		if info, err := os.Stat(c.path); err == nil {
-			offset = info.Size()
-		}
-
+		offset := initialOffset
 		ticker := time.NewTicker(500 * time.Millisecond)
 		defer ticker.Stop()
 
@@ -154,14 +157,16 @@ func (c *ChatLog) Watch(ctx context.Context, recipient string) <-chan Message {
 func (c *ChatLog) WatchAll(ctx context.Context) <-chan Message {
 	ch := make(chan Message, 16)
 
+	// Watch() と同様に、オフセットをゴルーチン外で取得してレース条件を防ぐ。
+	var initialOffset int64
+	if info, err := os.Stat(c.path); err == nil {
+		initialOffset = info.Size()
+	}
+
 	go func() {
 		defer close(ch)
 
-		var offset int64
-		if info, err := os.Stat(c.path); err == nil {
-			offset = info.Size()
-		}
-
+		offset := initialOffset
 		ticker := time.NewTicker(500 * time.Millisecond)
 		defer ticker.Stop()
 

@@ -77,6 +77,9 @@ func (m *MockProcess) CallCount() int {
 	return m.callIdx
 }
 
+func (m *MockProcess) Reset(ctx context.Context) error { return nil }
+func (m *MockProcess) Close() error                    { return nil }
+
 // Verify interface compliance.
 var _ agent.Process = (*MockProcess)(nil)
 

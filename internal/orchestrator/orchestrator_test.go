@@ -238,6 +238,8 @@ type mockProcess struct{}
 func (m *mockProcess) Send(_ context.Context, _ string) (string, error) {
 	return "ok", nil
 }
+func (m *mockProcess) Reset(_ context.Context) error { return nil }
+func (m *mockProcess) Close() error                  { return nil }
 
 // mockTeamFactory creates agents with mock processes for testing.
 type mockTeamFactory struct {

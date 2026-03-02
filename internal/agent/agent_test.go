@@ -152,6 +152,8 @@ type mockProcess struct {
 func (m *mockProcess) Send(ctx context.Context, prompt string) (string, error) {
 	return m.response, m.err
 }
+func (m *mockProcess) Reset(ctx context.Context) error { return nil }
+func (m *mockProcess) Close() error                    { return nil }
 
 func TestReadySignaledAfterRun(t *testing.T) {
 	dir := t.TempDir()
@@ -249,6 +251,8 @@ func (m *mockProcessCallCount) Send(ctx context.Context, prompt string) (string,
 	}
 	return "ok", nil
 }
+func (m *mockProcessCallCount) Reset(ctx context.Context) error { return nil }
+func (m *mockProcessCallCount) Close() error                    { return nil }
 
 // TestRunReturnsOnMaxIterationsError verifies that Run() returns when send
 // encounters a MaxIterationsError during message processing (not initial send).
@@ -335,6 +339,8 @@ func (m *maxIterProcess) Send(_ context.Context, prompt string) (string, error) 
 	}
 	return "completed", nil
 }
+func (m *maxIterProcess) Reset(ctx context.Context) error { return nil }
+func (m *maxIterProcess) Close() error                    { return nil }
 
 // TestSendContinuation verifies that send() auto-continues on MaxIterationsError.
 func TestSendContinuation(t *testing.T) {
@@ -423,6 +429,8 @@ func (m *retryCountProcess) Send(_ context.Context, _ string) (string, error) {
 	}
 	return "ok", nil
 }
+func (m *retryCountProcess) Reset(ctx context.Context) error { return nil }
+func (m *retryCountProcess) Close() error                    { return nil }
 
 // TestSendWithRetry verifies initial retry logic in sendWithRetry.
 func TestSendWithRetry(t *testing.T) {

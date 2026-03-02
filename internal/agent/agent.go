@@ -60,7 +60,7 @@ func NewAgent(cfg AgentConfig) *Agent {
 				BashTimeout:  cfg.BashTimeout,
 			})
 		default:
-			proc = NewClaudeProcess(ClaudeOptions{
+			proc = NewClaudeStreamProcess(ClaudeOptions{
 				SystemPrompt: cfg.SystemPrompt,
 				Model:        cfg.Model,
 				WorkDir:      cfg.WorkDir,
@@ -87,6 +87,8 @@ func (a *Agent) Ready() <-chan struct{} { return a.ready }
 func (a *Agent) markReady() { a.readyOnce.Do(func() { close(a.ready) }) }
 
 func (a *Agent) Run(ctx context.Context) error {
+	defer a.Process.Close()
+
 	timer := reset.NewTimer(a.ResetInterval)
 	recipient := a.ID.String()
 	log.Printf("[%s] agent started", recipient)
@@ -173,6 +175,11 @@ func (a *Agent) performReset(ctx context.Context, timer *reset.Timer) error {
 		return fmt.Errorf("save memo: %w", err)
 	}
 	log.Printf("[%s] memo saved: %s", recipient, filepath.Base(memoPath))
+
+	// Kill the current process so next Send() starts a fresh one with clean context.
+	if err := a.Process.Reset(ctx); err != nil {
+		log.Printf("[%s] process reset failed: %v", recipient, err)
+	}
 
 	memoContent, _ := os.ReadFile(memoPath)
 	if _, err := a.send(ctx, a.buildInitialPrompt(string(memoContent))); err != nil {
@@ -288,10 +295,14 @@ func (a *Agent) sendOnce(ctx context.Context, prompt string) (string, error) {
 }
 
 // isPermanentError checks whether the error is a permanent error that should not be retried
-// (e.g., executable not found).
+// (e.g., executable not found, stream process startup failure).
 func isPermanentError(err error) bool {
 	var execErr *exec.Error
-	return errors.As(err, &execErr)
+	if errors.As(err, &execErr) {
+		return true
+	}
+	var startErr *ProcessStartError
+	return errors.As(err, &startErr)
 }
 
 // sendWithRetry wraps send() with initial retry logic (exponential backoff).

@@ -78,6 +78,9 @@ func NewGeminiAPIProcess(opts GeminiAPIOptions) *GeminiAPIProcess {
 	}
 }
 
+func (g *GeminiAPIProcess) Reset(ctx context.Context) error { return nil }
+func (g *GeminiAPIProcess) Close() error                    { return nil }
+
 // apiURL returns the effective API endpoint URL (test override or production).
 func (g *GeminiAPIProcess) apiURL(model string) string {
 	if g.testAPIURL != "" {

@@ -62,6 +62,9 @@ func (g *GeminiProcess) Send(ctx context.Context, prompt string) (string, error)
 	return "", wrappedErr
 }
 
+func (g *GeminiProcess) Reset(ctx context.Context) error { return nil }
+func (g *GeminiProcess) Close() error                    { return nil }
+
 func (g *GeminiProcess) buildArgs(prompt string) []string {
 	args := []string{"prompt"}
 
