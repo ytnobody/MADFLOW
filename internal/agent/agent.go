@@ -92,6 +92,9 @@ func (a *Agent) Run(ctx context.Context) error {
 	log.Printf("[%s] agent started", recipient)
 
 	memo, _ := reset.LoadLatestMemo(a.MemosDir, recipient)
+	// Watch を markReady() より前に開始することで、ready シグナル後に書き込まれた
+	// メッセージを見落とすレース条件を防ぐ。
+	msgCh := a.ChatLog.Watch(ctx, recipient)
 	_, initErr := a.sendWithRetry(ctx, a.buildInitialPrompt(memo))
 	a.markReady()
 	if initErr != nil {
@@ -100,8 +103,6 @@ func (a *Agent) Run(ctx context.Context) error {
 		}
 		log.Printf("[%s] initial send failed: %v", recipient, initErr)
 	}
-
-	msgCh := a.ChatLog.Watch(ctx, recipient)
 	for {
 		select {
 		case <-ctx.Done():
