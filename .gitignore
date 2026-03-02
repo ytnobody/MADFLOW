@@ -31,3 +31,4 @@ Thumbs.db
 
 # MADFLOW config (project-specific, should not be in repo)
 madflow.toml
+.worktrees/

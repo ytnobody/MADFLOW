@@ -3,7 +3,9 @@ package git
 import (
 	"bytes"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
@@ -116,6 +118,33 @@ func (r *Repo) RemoveWorktree(path string) error {
 		return fmt.Errorf("remove worktree %s: %w", path, err)
 	}
 	return nil
+}
+
+// CleanWorktrees removes all worktrees under the .worktrees/ directory
+// that match the given prefix (e.g. "team-"). This is used at startup to
+// clean up stale worktrees from previous runs.
+func (r *Repo) CleanWorktrees(prefix string) (removed []string) {
+	worktreeDir := filepath.Join(r.path, ".worktrees")
+	entries, err := os.ReadDir(worktreeDir)
+	if err != nil {
+		return nil // directory doesn't exist; nothing to clean
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		if prefix != "" && !strings.HasPrefix(entry.Name(), prefix) {
+			continue
+		}
+		wtPath := filepath.Join(worktreeDir, entry.Name())
+		if err := r.RemoveWorktree(wtPath); err != nil {
+			// If git worktree remove fails, try to prune and remove manually.
+			r.run("worktree", "prune")
+			os.RemoveAll(wtPath)
+		}
+		removed = append(removed, entry.Name())
+	}
+	return removed
 }
 
 // PrepareWorktree ensures the develop branch exists (creating from main if needed)

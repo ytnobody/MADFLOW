@@ -4,12 +4,27 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/ytnobody/madflow/internal/chatlog"
 	"github.com/ytnobody/madflow/internal/config"
 	"github.com/ytnobody/madflow/internal/issue"
 	"github.com/ytnobody/madflow/internal/orchestrator"
 )
+
+// waitForTeams polls until the team manager reaches the expected count
+// or the timeout expires. Needed because handleTeamCreate is now async.
+func waitForTeams(t *testing.T, orc *orchestrator.Orchestrator, want int, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if orc.Teams().Count() >= want {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %d teams, got %d", want, orc.Teams().Count())
+}
 
 // TestIssueToTeamCreateFlow tests the flow from issue creation
 // to team creation via orchestrator command handling.
@@ -72,18 +87,17 @@ func TestIssueToTeamCreateFlow(t *testing.T) {
 	}
 	orc.HandleCommandForTest(ctx, msg)
 
-	// Step 3: Verify team was created
+	// Step 3: Verify team was created (handleTeamCreate is async, so wait)
 	teams := orc.Teams()
-	if teams.Count() != 1 {
-		t.Fatalf("expected 1 team, got %d", teams.Count())
-	}
+	waitForTeams(t, orc, 1, 5*time.Second)
 
 	infos := teams.List()
 	if infos[0].IssueID != iss.ID {
 		t.Errorf("expected team for %s, got %s", iss.ID, infos[0].IssueID)
 	}
 
-	// Step 4: Verify issue was updated
+	// Step 4: Verify issue was updated (wait briefly for async goroutine)
+	time.Sleep(100 * time.Millisecond)
 	updated, err := store.Get(iss.ID)
 	if err != nil {
 		t.Fatalf("get issue: %v", err)
@@ -203,11 +217,12 @@ func TestMultipleIssuesAndTeams(t *testing.T) {
 	iss2, _ := store.Create("Issue 2", "Body 2")
 	iss3, _ := store.Create("Issue 3", "Body 3")
 
-	// Create teams for issue 1 and 2
+	// Create teams for issue 1 and 2 (handleTeamCreate is async)
 	orc.HandleCommandForTest(ctx, chatlog.Message{Sender: "superintendent", Body: "TEAM_CREATE " + iss1.ID})
 	orc.HandleCommandForTest(ctx, chatlog.Message{Sender: "superintendent", Body: "TEAM_CREATE " + iss2.ID})
 
 	teams := orc.Teams()
+	waitForTeams(t, orc, 2, 5*time.Second)
 	if teams.Count() != 2 {
 		t.Fatalf("expected 2 teams, got %d", teams.Count())
 	}

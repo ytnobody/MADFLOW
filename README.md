@@ -20,7 +20,7 @@ MADFLOW（Multi-Agent Development Flow）は、複数の AI エージェント�
 - Git
 - 以下のいずれか（使用するバックエンドによって異なります）:
   - [Claude Code](https://claude.com/claude-code)（`claude` コマンド）- Claude CLI バックエンド使用時
-  - [gmn](https://github.com/tomohiro-owada/gmn)（`gmn` コマンド）- Gemini モデル使用時
+  - [gemini-cli](https://github.com/google-gemini/gemini-cli)（`gemini-cli` コマンド）- Gemini モデル使用時
   - `ANTHROPIC_API_KEY` 環境変数 - Anthropic API キーバックエンド使用時（追加インストール不要）
 - GitHub CLI（`gh`）（GitHub Issue 同期を使用する場合）
 
@@ -120,10 +120,10 @@ sync_interval_minutes = 5
 |-----------|---------------|----------|------|
 | `claude` | claude-sonnet-4-6 | claude-sonnet-4-6 | Claude CLI（Pro/Max必要）|
 | `claude-cheap` | claude-sonnet-4-6 | claude-haiku-4-5 | Claude CLI コスト削減版 |
-| `gemini` | gemini-pro-2-5 | gemini-pro-2-5 | Gemini CLI（gmn必要）|
-| `gemini-cheap` | gemini-flash-2-5 | gemini-flash-2-5 | Gemini 高速・低コスト版 |
-| `hybrid` | claude-sonnet-4-6 | gemini-pro-2-5 | ハイブリッド構成 |
-| `hybrid-cheap` | claude-sonnet-4-6 | gemini-flash-2-5 | ハイブリッド低コスト版 |
+| `gemini` | gemini-2.5-pro | gemini-2.5-pro | Gemini CLI（gemini-cli必要）|
+| `gemini-cheap` | gemini-2.5-flash | gemini-2.5-flash | Gemini 高速・低コスト版 |
+| `hybrid` | claude-sonnet-4-6 | gemini-2.5-pro | ハイブリッド構成 |
+| `hybrid-cheap` | claude-sonnet-4-6 | gemini-2.5-flash | ハイブリッド低コスト版 |
 | `claude-api-standard` | anthropic/claude-sonnet-4-6 | anthropic/claude-haiku-4-5 | **Anthropic API キー方式** |
 | `claude-api-cheap` | anthropic/claude-haiku-4-5 | anthropic/claude-haiku-4-5 | **Anthropic API キー方式・最安** |
 
@@ -158,7 +158,7 @@ madflow start
 | Claude Max (5x) | ¥15,000 | サブスクリプション固定費 |
 | `claude-api-standard` | ¥3,000〜8,000 | 従量課金・利用量による |
 | `claude-api-cheap` | ¥1,000〜3,000 | Haiku モデル使用 |
-| `hybrid-cheap` | gmn 無料枠内 | Gemini Flash は無料枠あり |
+| `hybrid-cheap` | gemini-cli 無料枠内 | Gemini Flash は無料枠あり |
 
 > ※ API 料金は 2026 年 2 月時点の概算です。実際の料金は [Anthropic 公式サイト](https://www.anthropic.com/pricing) を参照してください。
 
@@ -169,3 +169,28 @@ madflow start
 ## ライセンス
 
 MIT License
+
+## 開発ワークフロー
+
+MADFLOWフレームワークにおける開発では、複数のエージェントが同一のリポジトリで並行して作業を行うため、ブランチの競合が頻繁に発生します。これを回避するため、各エンジニアは必ず `git worktree` を使用して、自身の作業ディレクトリを分離してください。
+
+### `git worktree` のセットアップ
+
+新しいイシューに取り組む際は、以下のコマンドで新しいワークツリーを作成します。
+
+```bash
+# 例: イシュー local-002 の場合
+git worktree add -b feature/issue-local-002 ../madflow-worktree/local-002 develop
+```
+
+### 開発サイクル
+
+1.  **ワークツリー作成**: 上記のコマンドで、イシューごとのワークツリーを作成します。
+2.  **実装**: 作成したワークツリーのディレクトリに移動して、実装、コミットを行います。
+3.  **Pull Request作成**: GitHub CLI (`gh pr create`) を使ってPull Requestを作成します。
+4.  **ワークツリー削除**: Pull Requestがマージされたら、不要になったワークツリーを削除します。
+
+```bash
+# メインの作業ディレクトリに戻ってから実行
+git worktree remove ../madflow-worktree/local-002
+```

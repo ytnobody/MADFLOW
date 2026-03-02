@@ -23,33 +23,24 @@ var presets = map[string]presetModels{
 		Engineer:       "claude-sonnet-4-6",
 	},
 	"gemini": {
-		Superintendent: "gemini-pro-2-5",
-		Engineer:       "gemini-pro-2-5",
+		Superintendent: "gemini-2.5-pro",
+		Engineer:       "gemini-2.5-pro",
 	},
 	"claude-cheap": {
 		Superintendent: "claude-sonnet-4-6",
 		Engineer:       "claude-haiku-4-5",
 	},
 	"gemini-cheap": {
-		Superintendent: "gemini-flash-2-5",
-		Engineer:       "gemini-flash-2-5",
+		Superintendent: "gemini-2.5-flash",
+		Engineer:       "gemini-2.5-flash",
 	},
 	"hybrid": {
 		Superintendent: "claude-sonnet-4-6",
-		Engineer:       "gemini-pro-2-5",
+		Engineer:       "gemini-2.5-pro",
 	},
 	"hybrid-cheap": {
 		Superintendent: "claude-sonnet-4-6",
-		Engineer:       "gemini-flash-2-5",
-	},
-	// Anthropic API key-based presets (require ANTHROPIC_API_KEY)
-	"claude-api-standard": {
-		Superintendent: "anthropic/claude-sonnet-4-6",
-		Engineer:       "anthropic/claude-haiku-4-5",
-	},
-	"claude-api-cheap": {
-		Superintendent: "anthropic/claude-haiku-4-5",
-		Engineer:       "anthropic/claude-haiku-4-5",
+		Engineer:       "gemini-2.5-flash",
 	},
 }
 
@@ -113,7 +104,6 @@ func updateModelsSection(content, superintendent, engineer string) (string, erro
 func formatPresets() string {
 	names := []string{
 		"claude", "gemini", "claude-cheap", "gemini-cheap", "hybrid", "hybrid-cheap",
-		"claude-api-standard", "claude-api-cheap",
 	}
 	var sb strings.Builder
 	for _, name := range names {

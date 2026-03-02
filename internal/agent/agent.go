@@ -2,9 +2,11 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -23,6 +25,7 @@ type Agent struct {
 	SystemPrompt  string
 	OriginalTask  string
 	Dormancy      *Dormancy
+	Throttle      *Throttle
 	ready         chan struct{}
 	readyOnce     sync.Once
 }
@@ -36,9 +39,11 @@ type AgentConfig struct {
 	ChatLogPath   string
 	MemosDir      string
 	ResetInterval time.Duration
+	BashTimeout   time.Duration
 	OriginalTask  string
 	Process       Process
 	Dormancy      *Dormancy
+	Throttle      *Throttle
 }
 
 func NewAgent(cfg AgentConfig) *Agent {
@@ -48,19 +53,14 @@ func NewAgent(cfg AgentConfig) *Agent {
 	} else {
 		switch {
 		case strings.HasPrefix(cfg.Model, "gemini-"):
-			proc = NewGeminiProcess(GeminiOptions{
+			proc = NewGeminiAPIProcess(GeminiAPIOptions{
 				SystemPrompt: cfg.SystemPrompt,
 				Model:        cfg.Model,
 				WorkDir:      cfg.WorkDir,
-			})
-		case strings.HasPrefix(cfg.Model, "anthropic/"):
-			proc = NewClaudeAPIProcess(ClaudeAPIOptions{
-				SystemPrompt: cfg.SystemPrompt,
-				Model:        cfg.Model,
-				WorkDir:      cfg.WorkDir,
+				BashTimeout:  cfg.BashTimeout,
 			})
 		default:
-			proc = NewClaudeProcess(ClaudeOptions{
+			proc = NewClaudeStreamProcess(ClaudeOptions{
 				SystemPrompt: cfg.SystemPrompt,
 				Model:        cfg.Model,
 				WorkDir:      cfg.WorkDir,
@@ -77,6 +77,7 @@ func NewAgent(cfg AgentConfig) *Agent {
 		SystemPrompt:  cfg.SystemPrompt,
 		OriginalTask:  cfg.OriginalTask,
 		Dormancy:      cfg.Dormancy,
+		Throttle:      cfg.Throttle,
 		ready:         make(chan struct{}),
 	}
 }
@@ -86,12 +87,18 @@ func (a *Agent) Ready() <-chan struct{} { return a.ready }
 func (a *Agent) markReady() { a.readyOnce.Do(func() { close(a.ready) }) }
 
 func (a *Agent) Run(ctx context.Context) error {
+	defer a.Process.Close()
+
 	timer := reset.NewTimer(a.ResetInterval)
 	recipient := a.ID.String()
 	log.Printf("[%s] agent started", recipient)
 
 	memo, _ := reset.LoadLatestMemo(a.MemosDir, recipient)
-	_, initErr := a.send(ctx, a.buildInitialPrompt(memo))
+	// Watch must be started before markReady() to avoid a race condition:
+	// markReady() signals test goroutines to write messages, and if Watch()
+	// is called after markReady(), those messages may be missed.
+	msgCh := a.ChatLog.Watch(ctx, recipient)
+	_, initErr := a.sendWithRetry(ctx, a.buildInitialPrompt(memo))
 	a.markReady()
 	if initErr != nil {
 		if ctx.Err() != nil {
@@ -99,8 +106,6 @@ func (a *Agent) Run(ctx context.Context) error {
 		}
 		log.Printf("[%s] initial send failed: %v", recipient, initErr)
 	}
-
-	msgCh := a.ChatLog.Watch(ctx, recipient)
 	for {
 		select {
 		case <-ctx.Done():
@@ -120,12 +125,39 @@ func (a *Agent) Run(ctx context.Context) error {
 				if ctx.Err() != nil {
 					return ctx.Err()
 				}
+				if IsMaxIterationsError(err) {
+					log.Printf("[%s] max iterations reached, restarting agent", recipient)
+					return err
+				}
 				log.Printf("[%s] send failed: %v", recipient, err)
 				continue
 			}
 			if response != "" {
 				log.Printf("[%s] response: %s", recipient, truncate(response, 200))
+				a.rescueChatLogMessages(response)
 			}
+		}
+	}
+}
+
+// rescueChatLogMessages detects chatlog-formatted lines in a text response
+// and writes them to the chatlog file. This handles the case where the AI
+// model returns chatlog messages as text output instead of using bash echo.
+func (a *Agent) rescueChatLogMessages(response string) {
+	f, err := os.OpenFile(a.ChatLog.Path(), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+
+	for _, line := range strings.Split(response, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if _, err := chatlog.ParseMessage(line); err == nil {
+			fmt.Fprintln(f, line)
+			log.Printf("[%s] rescued chatlog message from text response", a.ID.String())
 		}
 	}
 }
@@ -145,6 +177,11 @@ func (a *Agent) performReset(ctx context.Context, timer *reset.Timer) error {
 		return fmt.Errorf("save memo: %w", err)
 	}
 	log.Printf("[%s] memo saved: %s", recipient, filepath.Base(memoPath))
+
+	// Kill the current process so next Send() starts a fresh one with clean context.
+	if err := a.Process.Reset(ctx); err != nil {
+		log.Printf("[%s] process reset failed: %v", recipient, err)
+	}
 
 	memoContent, _ := os.ReadFile(memoPath)
 	if _, err := a.send(ctx, a.buildInitialPrompt(string(memoContent))); err != nil {
@@ -207,8 +244,36 @@ func parseDistilledMemo(agentID, raw string) reset.WorkMemo {
 	return memo
 }
 
+const (
+	sendMaxRetries     = 3
+	sendRetryBaseWait  = 2 * time.Second
+	maxContinuations   = 3 // max auto-continuations on MaxIterationsError (total: 4 × 25 = 100 tool calls)
+	continuationPrompt = "作業の途中で中断されました。現在のディレクトリの状態を確認し（git status等）、中断した作業を再開してください。"
+)
+
 func (a *Agent) send(ctx context.Context, prompt string) (string, error) {
+	currentPrompt := prompt
+	for continuation := 0; ; continuation++ {
+		resp, err := a.sendOnce(ctx, currentPrompt)
+
+		// Handle MaxIterationsError: auto-continue up to maxContinuations
+		var maxIterErr *MaxIterationsError
+		if errors.As(err, &maxIterErr) && continuation < maxContinuations {
+			log.Printf("[%s] max iterations reached, continuing (%d/%d)", a.ID.String(), continuation+1, maxContinuations)
+			currentPrompt = continuationPrompt
+			continue
+		}
+
+		return resp, err
+	}
+}
+
+// sendOnce performs a single send with throttle, dormancy, and retry handling.
+func (a *Agent) sendOnce(ctx context.Context, prompt string) (string, error) {
 	for {
+		if err := a.Throttle.Wait(ctx); err != nil {
+			return "", err
+		}
 		if a.Dormancy != nil {
 			if err := a.Dormancy.Wait(ctx); err != nil {
 				return "", err
@@ -223,8 +288,73 @@ func (a *Agent) send(ctx context.Context, prompt string) (string, error) {
 			})
 			continue
 		}
+		if err != nil && !IsRateLimitError(err) && !IsMaxIterationsError(err) && !isPermanentError(err) {
+			// Retry transient errors (network, API 500, etc.) with exponential backoff.
+			resp, err = a.retrySend(ctx, prompt, err)
+		}
 		return resp, err
 	}
+}
+
+// isPermanentError checks whether the error is a permanent error that should not be retried
+// (e.g., executable not found, stream process startup failure).
+func isPermanentError(err error) bool {
+	var execErr *exec.Error
+	if errors.As(err, &execErr) {
+		return true
+	}
+	var startErr *ProcessStartError
+	return errors.As(err, &startErr)
+}
+
+// sendWithRetry wraps send() with initial retry logic (exponential backoff).
+// Used for the first send in Run() where failure should be retried before falling back to chatlog watch.
+func (a *Agent) sendWithRetry(ctx context.Context, prompt string) (string, error) {
+	resp, err := a.send(ctx, prompt)
+	if err == nil || ctx.Err() != nil || IsRateLimitError(err) || isPermanentError(err) {
+		return resp, err
+	}
+
+	wait := sendRetryBaseWait
+	for attempt := 1; attempt <= sendMaxRetries; attempt++ {
+		log.Printf("[%s] initial send failed (attempt %d/%d): %v, retrying in %v", a.ID.String(), attempt, sendMaxRetries, err, wait)
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(wait):
+		}
+		resp, err = a.send(ctx, prompt)
+		if err == nil || ctx.Err() != nil {
+			return resp, err
+		}
+		wait *= 2
+	}
+	return resp, err
+}
+
+// retrySend retries a failed send up to sendMaxRetries times with exponential backoff.
+// It is only called for non-rate-limit errors; rate limits are handled by the dormancy system.
+func (a *Agent) retrySend(ctx context.Context, prompt string, lastErr error) (string, error) {
+	wait := sendRetryBaseWait
+	for attempt := 1; attempt <= sendMaxRetries; attempt++ {
+		log.Printf("[%s] send failed (attempt %d/%d): %v, retrying in %v", a.ID.String(), attempt, sendMaxRetries, lastErr, wait)
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(wait):
+		}
+		resp, err := a.Process.Send(ctx, prompt)
+		if err == nil {
+			return resp, nil
+		}
+		if IsRateLimitError(err) {
+			// Hand off to the dormancy system on the next loop iteration.
+			return "", err
+		}
+		lastErr = err
+		wait *= 2
+	}
+	return "", lastErr
 }
 
 func truncate(s string, maxLen int) string {

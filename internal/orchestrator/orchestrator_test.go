@@ -25,7 +25,7 @@ func testConfig(repoPath string) *config.Config {
 			},
 		},
 		Agent: config.AgentConfig{
-			ContextResetMinutes: 8,
+			ContextResetMinutes: 15,
 			Models: config.ModelConfig{
 				Superintendent: "claude-opus-4-6",
 				Engineer:       "claude-sonnet-4-6",
@@ -238,6 +238,8 @@ type mockProcess struct{}
 func (m *mockProcess) Send(_ context.Context, _ string) (string, error) {
 	return "ok", nil
 }
+func (m *mockProcess) Reset(_ context.Context) error { return nil }
+func (m *mockProcess) Close() error                  { return nil }
 
 // mockTeamFactory creates agents with mock processes for testing.
 type mockTeamFactory struct {
@@ -270,6 +272,21 @@ func (f *mockTeamFactory) CreateTeamAgents(teamNum int, issueID string) (enginee
 		nil
 }
 
+// waitForTeamCount polls until the team manager reaches the expected count
+// or the timeout expires. This is needed because startAllTeams is now
+// non-blocking (fire-and-forget goroutines).
+func waitForTeamCount(t *testing.T, orc *Orchestrator, want int, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if orc.Teams().Count() >= want {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %d teams, got %d", want, orc.Teams().Count())
+}
+
 func TestStartAllTeamsCreatesMaxTeamsUnconditionally(t *testing.T) {
 	dir := t.TempDir()
 	cfg := testConfig(dir)
@@ -285,6 +302,7 @@ func TestStartAllTeamsCreatesMaxTeamsUnconditionally(t *testing.T) {
 
 	// No issues exist — should still create 3 standby teams
 	orc.startAllTeams(ctx)
+	waitForTeamCount(t, orc, 3, 5*time.Second)
 
 	if orc.Teams().Count() != 3 {
 		t.Errorf("expected 3 standby teams, got %d", orc.Teams().Count())
@@ -316,6 +334,7 @@ func TestStartAllTeamsAssignsIssues(t *testing.T) {
 	defer cancel()
 
 	orc.startAllTeams(ctx)
+	waitForTeamCount(t, orc, 4, 5*time.Second)
 
 	// All 4 teams created (2 with issues + 2 standby)
 	if orc.Teams().Count() != 4 {
@@ -323,6 +342,8 @@ func TestStartAllTeamsAssignsIssues(t *testing.T) {
 	}
 
 	// Open and in_progress issues should be assigned
+	// Wait briefly for async goroutines to update issue assignments.
+	time.Sleep(100 * time.Millisecond)
 	issues, _ := orc.Store().List(issue.StatusFilter{})
 	for _, iss := range issues {
 		switch iss.Status {
@@ -365,11 +386,15 @@ func TestStartAllTeamsSkipsPendingApproval(t *testing.T) {
 	defer cancel()
 
 	orc.startAllTeams(ctx)
+	waitForTeamCount(t, orc, 3, 5*time.Second)
 
 	// 3 teams should be created (1 for regular + 2 standby)
 	if orc.Teams().Count() != 3 {
 		t.Errorf("expected 3 teams, got %d", orc.Teams().Count())
 	}
+
+	// Wait briefly for async goroutines to update issue assignments.
+	time.Sleep(100 * time.Millisecond)
 
 	// Regular issue should be assigned, pending issue should NOT be assigned.
 	gotRegular, _ := orc.Store().Get(regular.ID)
@@ -380,6 +405,216 @@ func TestStartAllTeamsSkipsPendingApproval(t *testing.T) {
 	gotPending, _ := orc.Store().Get(pending.ID)
 	if gotPending.AssignedTeam != 0 {
 		t.Error("pending-approval issue should NOT have assigned team")
+	}
+}
+
+func TestPruneClosedIssues(t *testing.T) {
+	dir := t.TempDir()
+	cfg := testConfig(dir)
+	os.MkdirAll(filepath.Join(dir, "issues"), 0755)
+	os.WriteFile(filepath.Join(dir, "chatlog.txt"), nil, 0644)
+
+	orc := New(cfg, dir, t.TempDir())
+
+	// Create issues with various statuses.
+	open, _ := orc.Store().Create("Open", "body")
+
+	closed1, _ := orc.Store().Create("Closed 1", "body")
+	closed1.Status = issue.StatusClosed
+	orc.Store().Update(closed1)
+
+	resolved, _ := orc.Store().Create("Resolved", "body")
+	resolved.Status = issue.StatusResolved
+	orc.Store().Update(resolved)
+
+	closed2, _ := orc.Store().Create("Closed 2", "body")
+	closed2.Status = issue.StatusClosed
+	orc.Store().Update(closed2)
+
+	orc.pruneClosedIssues()
+
+	// Only closed issues should be deleted.
+	remaining, err := orc.Store().List(issue.StatusFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(remaining) != 2 {
+		t.Fatalf("expected 2 remaining issues (open + resolved), got %d", len(remaining))
+	}
+	ids := map[string]bool{}
+	for _, iss := range remaining {
+		ids[iss.ID] = true
+	}
+	if !ids[open.ID] {
+		t.Errorf("open issue %s should remain", open.ID)
+	}
+	if !ids[resolved.ID] {
+		t.Errorf("resolved issue %s should remain", resolved.ID)
+	}
+}
+
+func TestHandleTeamCreateRejectsClosedIssue(t *testing.T) {
+	dir := t.TempDir()
+	cfg := testConfig(dir)
+	os.MkdirAll(filepath.Join(dir, "issues"), 0755)
+	chatlogPath := filepath.Join(dir, "chatlog.txt")
+	os.WriteFile(chatlogPath, nil, 0644)
+
+	orc := New(cfg, dir, t.TempDir())
+	orc.teams = team.NewManager(newMockTeamFactory(t), 3)
+
+	// Create a closed issue.
+	iss, _ := orc.Store().Create("Closed Issue", "body")
+	iss.Status = issue.StatusClosed
+	orc.Store().Update(iss)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	teamsBefore := orc.Teams().Count()
+	orc.handleTeamCreate(ctx, fmt.Sprintf("TEAM_CREATE %s", iss.ID))
+
+	// No new team should be created.
+	if orc.Teams().Count() != teamsBefore {
+		t.Errorf("expected no new team for closed issue, but team count changed from %d to %d", teamsBefore, orc.Teams().Count())
+	}
+
+	// Chatlog should contain a rejection message.
+	cl := chatlog.New(chatlogPath)
+	msgs, _ := cl.Poll("superintendent")
+	found := false
+	for _, m := range msgs {
+		if contains(m.Body, "拒否されました") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected rejection message in chatlog for closed issue TEAM_CREATE")
+	}
+}
+
+func TestHandleTeamCreateRejectsAlreadyAssigned(t *testing.T) {
+	dir := t.TempDir()
+	cfg := testConfig(dir)
+	os.MkdirAll(filepath.Join(dir, "issues"), 0755)
+	chatlogPath := filepath.Join(dir, "chatlog.txt")
+	os.WriteFile(chatlogPath, nil, 0644)
+
+	orc := New(cfg, dir, t.TempDir())
+	orc.teams = team.NewManager(newMockTeamFactory(t), 3)
+
+	// Create an issue already assigned to a team.
+	iss, _ := orc.Store().Create("Assigned Issue", "body")
+	iss.Status = issue.StatusInProgress
+	iss.AssignedTeam = 5
+	orc.Store().Update(iss)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	teamsBefore := orc.Teams().Count()
+	orc.handleTeamCreate(ctx, fmt.Sprintf("TEAM_CREATE %s", iss.ID))
+
+	// No new team should be created.
+	if orc.Teams().Count() != teamsBefore {
+		t.Errorf("expected no new team for already-assigned issue, but team count changed from %d to %d", teamsBefore, orc.Teams().Count())
+	}
+
+	// Chatlog should contain a rejection message about already assigned.
+	cl := chatlog.New(chatlogPath)
+	msgs, _ := cl.Poll("superintendent")
+	found := false
+	for _, m := range msgs {
+		if contains(m.Body, "拒否されました") && contains(m.Body, "アサイン済み") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected rejection message in chatlog for already-assigned issue TEAM_CREATE")
+	}
+}
+
+func TestHandleTeamCreateRejectsActiveTeam(t *testing.T) {
+	dir := t.TempDir()
+	cfg := testConfig(dir)
+	os.MkdirAll(filepath.Join(dir, "issues"), 0755)
+	chatlogPath := filepath.Join(dir, "chatlog.txt")
+	os.WriteFile(chatlogPath, nil, 0644)
+
+	orc := New(cfg, dir, t.TempDir())
+	orc.teams = team.NewManager(newMockTeamFactory(t), 3)
+
+	// Create an issue with AssignedTeam=0 but an active team already exists.
+	iss, _ := orc.Store().Create("Active Team Issue", "body")
+	iss.Status = issue.StatusInProgress
+	orc.Store().Update(iss)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Create a team for this issue via the manager directly (simulates race window).
+	_, err := orc.Teams().Create(ctx, iss.ID)
+	if err != nil {
+		t.Fatalf("create team: %v", err)
+	}
+
+	teamsBefore := orc.Teams().Count()
+	orc.handleTeamCreate(ctx, fmt.Sprintf("TEAM_CREATE %s", iss.ID))
+
+	// No new team should be created.
+	if orc.Teams().Count() != teamsBefore {
+		t.Errorf("expected no new team when active team exists, but team count changed from %d to %d", teamsBefore, orc.Teams().Count())
+	}
+
+	// Chatlog should contain a rejection message about active/pending team.
+	cl := chatlog.New(chatlogPath)
+	msgs, _ := cl.Poll("superintendent")
+	found := false
+	for _, m := range msgs {
+		if contains(m.Body, "拒否されました") && contains(m.Body, "アクティブ") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected rejection message in chatlog for active-team TEAM_CREATE")
+	}
+}
+
+func TestStartAllTeamsResetsStaleAssignment(t *testing.T) {
+	dir := t.TempDir()
+	cfg := testConfig(dir)
+	cfg.Agent.MaxTeams = 2
+	os.MkdirAll(filepath.Join(dir, "issues"), 0755)
+	os.WriteFile(filepath.Join(dir, "chatlog.txt"), nil, 0644)
+
+	orc := New(cfg, dir, t.TempDir())
+	orc.teams = team.NewManager(newMockTeamFactory(t), 2)
+
+	// Create an in_progress issue with a stale team assignment.
+	iss, _ := orc.Store().Create("Stale Issue", "body")
+	iss.Status = issue.StatusInProgress
+	iss.AssignedTeam = 99
+	orc.Store().Update(iss)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	orc.startAllTeams(ctx)
+	waitForTeamCount(t, orc, 2, 5*time.Second)
+
+	// Wait briefly for async goroutines to update issue assignments.
+	time.Sleep(100 * time.Millisecond)
+
+	// The issue should have been re-assigned (team number != 99, i.e. reset then re-assigned).
+	got, _ := orc.Store().Get(iss.ID)
+	if got.AssignedTeam == 99 {
+		t.Errorf("expected stale AssignedTeam=99 to be reset, but it is still 99")
+	}
+	if got.AssignedTeam == 0 {
+		t.Errorf("expected issue to be re-assigned to a new team, but AssignedTeam is 0")
 	}
 }
 
@@ -539,6 +774,129 @@ func TestHandleGitHubEvent(t *testing.T) {
 				t.Errorf("%s: got notified=%v, want %v (messages: %v)", tc.description, notified, tc.wantNotify, msgs)
 			}
 		})
+	}
+}
+
+// --- PullRequestEvent / handlePRMerged tests ---
+
+func TestHandlePRMerged(t *testing.T) {
+	dir := t.TempDir()
+	cfg := testConfig(dir)
+	os.MkdirAll(filepath.Join(dir, "issues"), 0755)
+	chatlogPath := filepath.Join(dir, "chatlog.txt")
+	os.WriteFile(chatlogPath, nil, 0644)
+
+	orc := New(cfg, dir, t.TempDir())
+	orc.teams = team.NewManager(newMockTeamFactory(t), 3)
+
+	// Create an in-progress issue with an assigned team
+	iss := &issue.Issue{
+		ID:     "owner-repo-001",
+		Title:  "Test Issue",
+		URL:    "https://api.github.com/repos/owner/repo/issues/1",
+		Status: issue.StatusInProgress,
+	}
+	orc.Store().Update(iss)
+
+	// Create a team for this issue
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	tm, err := orc.Teams().Create(ctx, "owner-repo-001")
+	if err != nil {
+		t.Fatalf("create team: %v", err)
+	}
+	iss.AssignedTeam = tm.ID
+	orc.Store().Update(iss)
+
+	// Simulate handlePRMerged
+	orc.handlePRMerged("owner-repo-001")
+
+	// Verify issue status is closed
+	got, err := orc.Store().Get("owner-repo-001")
+	if err != nil {
+		t.Fatalf("get issue: %v", err)
+	}
+	if got.Status != issue.StatusClosed {
+		t.Errorf("expected status closed, got %s", got.Status)
+	}
+
+	// Verify chatlog notification
+	cl := chatlog.New(chatlogPath)
+	msgs, _ := cl.Poll("superintendent")
+	found := false
+	for _, m := range msgs {
+		if contains(m.Body, "PR merged") && contains(m.Body, "owner-repo-001") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected chatlog notification about PR merge")
+	}
+}
+
+func TestHandlePRMerged_AlreadyClosed(t *testing.T) {
+	dir := t.TempDir()
+	cfg := testConfig(dir)
+	os.MkdirAll(filepath.Join(dir, "issues"), 0755)
+	os.WriteFile(filepath.Join(dir, "chatlog.txt"), nil, 0644)
+
+	orc := New(cfg, dir, t.TempDir())
+
+	// Create an already-closed issue
+	iss := &issue.Issue{
+		ID:     "owner-repo-002",
+		Title:  "Already Closed",
+		Status: issue.StatusClosed,
+	}
+	orc.Store().Update(iss)
+
+	// Should not panic or change anything
+	orc.handlePRMerged("owner-repo-002")
+
+	// Status should remain closed
+	got, _ := orc.Store().Get("owner-repo-002")
+	if got.Status != issue.StatusClosed {
+		t.Errorf("expected status to remain closed, got %s", got.Status)
+	}
+}
+
+func TestHandlePRMerged_IssueNotFound(t *testing.T) {
+	dir := t.TempDir()
+	cfg := testConfig(dir)
+	os.MkdirAll(filepath.Join(dir, "issues"), 0755)
+	os.WriteFile(filepath.Join(dir, "chatlog.txt"), nil, 0644)
+
+	orc := New(cfg, dir, t.TempDir())
+
+	// Should not panic when issue is missing
+	orc.handlePRMerged("nonexistent-issue-999")
+}
+
+func TestHandleGitHubEvent_PullRequest(t *testing.T) {
+	dir := t.TempDir()
+	cfg := testConfig(dir)
+	os.MkdirAll(filepath.Join(dir, "issues"), 0755)
+	chatlogPath := filepath.Join(dir, "chatlog.txt")
+	os.WriteFile(chatlogPath, nil, 0644)
+
+	orc := New(cfg, dir, t.TempDir())
+
+	// Create an issue
+	iss := &issue.Issue{
+		ID:     "owner-repo-005",
+		Title:  "Test",
+		Status: issue.StatusInProgress,
+	}
+	orc.Store().Update(iss)
+
+	// Call handleGitHubEvent with PullRequest type
+	orc.handleGitHubEvent(githubPkg.EventTypePullRequest, "owner-repo-005", nil)
+
+	// Issue should be closed
+	got, _ := orc.Store().Get("owner-repo-005")
+	if got.Status != issue.StatusClosed {
+		t.Errorf("expected status closed, got %s", got.Status)
 	}
 }
 

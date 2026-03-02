@@ -13,6 +13,8 @@ import (
 // Process is the interface for sending prompts to an AI backend.
 type Process interface {
 	Send(ctx context.Context, prompt string) (string, error)
+	Reset(ctx context.Context) error // Reset conversation context (e.g. restart process)
+	Close() error                    // Clean up resources on agent shutdown
 }
 
 // ClaudeOptions configures a Claude Code subprocess.
@@ -45,9 +47,11 @@ func (c *ClaudeProcess) Send(ctx context.Context, prompt string) (string, error)
 		cmd.Dir = c.opts.WorkDir
 	}
 
-	// Remove CLAUDECODE env var to allow nested invocations.
+	// Remove CLAUDECODE/CLAUDE_CODE_ENTRYPOINT env vars to allow nested invocations.
 	// MADFLOW intentionally spawns claude as subprocesses.
-	cmd.Env = filterEnv(os.Environ(), "CLAUDECODE")
+	env := filterEnv(os.Environ(), "CLAUDECODE")
+	env = filterEnv(env, "CLAUDE_CODE_ENTRYPOINT")
+	cmd.Env = env
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -92,6 +96,9 @@ func (c *ClaudeProcess) buildArgs(prompt string) []string {
 
 	return args
 }
+
+func (c *ClaudeProcess) Reset(ctx context.Context) error { return nil }
+func (c *ClaudeProcess) Close() error                    { return nil }
 
 // RateLimitError はレート制限に抵触したことを示す専用エラー型。
 type RateLimitError struct {

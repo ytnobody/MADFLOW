@@ -21,11 +21,11 @@ func TestPresets_Models(t *testing.T) {
 		engineer       string
 	}{
 		{"claude", "claude-sonnet-4-6", "claude-sonnet-4-6"},
-		{"gemini", "gemini-pro-2-5", "gemini-pro-2-5"},
+		{"gemini", "gemini-2.5-pro", "gemini-2.5-pro"},
 		{"claude-cheap", "claude-sonnet-4-6", "claude-haiku-4-5"},
-		{"gemini-cheap", "gemini-flash-2-5", "gemini-flash-2-5"},
-		{"hybrid", "claude-sonnet-4-6", "gemini-pro-2-5"},
-		{"hybrid-cheap", "claude-sonnet-4-6", "gemini-flash-2-5"},
+		{"gemini-cheap", "gemini-2.5-flash", "gemini-2.5-flash"},
+		{"hybrid", "claude-sonnet-4-6", "gemini-2.5-pro"},
+		{"hybrid-cheap", "claude-sonnet-4-6", "gemini-2.5-flash"},
 	}
 
 	for _, tt := range tests {
@@ -60,14 +60,14 @@ main = "main"
 `
 
 	t.Run("switch to gemini preset", func(t *testing.T) {
-		result, err := updateModelsSection(input, "gemini-pro-2-5", "gemini-pro-2-5")
+		result, err := updateModelsSection(input, "gemini-2.5-pro", "gemini-2.5-pro")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if !strings.Contains(result, `superintendent = "gemini-pro-2-5"`) {
+		if !strings.Contains(result, `superintendent = "gemini-2.5-pro"`) {
 			t.Errorf("superintendent not updated: %s", result)
 		}
-		if !strings.Contains(result, `engineer = "gemini-pro-2-5"`) {
+		if !strings.Contains(result, `engineer = "gemini-2.5-pro"`) {
 			t.Errorf("engineer not updated: %s", result)
 		}
 		// Other sections must be preserved.
@@ -80,14 +80,14 @@ main = "main"
 	})
 
 	t.Run("switch to hybrid preset", func(t *testing.T) {
-		result, err := updateModelsSection(input, "claude-sonnet-4-6", "gemini-pro-2-5")
+		result, err := updateModelsSection(input, "claude-sonnet-4-6", "gemini-2.5-pro")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		if !strings.Contains(result, `superintendent = "claude-sonnet-4-6"`) {
 			t.Errorf("superintendent not updated: %s", result)
 		}
-		if !strings.Contains(result, `engineer = "gemini-pro-2-5"`) {
+		if !strings.Contains(result, `engineer = "gemini-2.5-pro"`) {
 			t.Errorf("engineer not updated: %s", result)
 		}
 	})
@@ -111,7 +111,7 @@ func TestUpdateModelsSection_MissingKeys(t *testing.T) {
 	inputMissingSuper := `[agent.models]
 engineer = "claude-sonnet-4-6"
 `
-	_, err := updateModelsSection(inputMissingSuper, "gemini-pro-2-5", "gemini-pro-2-5")
+	_, err := updateModelsSection(inputMissingSuper, "gemini-2.5-pro", "gemini-2.5-pro")
 	if err == nil {
 		t.Error("expected error for missing superintendent key, got nil")
 	}
@@ -120,7 +120,7 @@ engineer = "claude-sonnet-4-6"
 	inputMissingEng := `[agent.models]
 superintendent = "claude-sonnet-4-6"
 `
-	_, err = updateModelsSection(inputMissingEng, "gemini-pro-2-5", "gemini-pro-2-5")
+	_, err = updateModelsSection(inputMissingEng, "gemini-2.5-pro", "gemini-2.5-pro")
 	if err == nil {
 		t.Error("expected error for missing engineer key, got nil")
 	}

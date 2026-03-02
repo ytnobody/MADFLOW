@@ -198,6 +198,35 @@ func TestDisband(t *testing.T) {
 	}
 }
 
+func TestHasIssue(t *testing.T) {
+	factory := newMockFactory(t)
+	m := NewManager(factory, 0)
+
+	// No teams yet
+	if m.HasIssue("issue-001") {
+		t.Error("expected HasIssue to return false for empty manager")
+	}
+
+	createAndCancel(t, m, "issue-001")
+	createAndCancel(t, m, "issue-002")
+
+	if !m.HasIssue("issue-001") {
+		t.Error("expected HasIssue to return true for issue-001")
+	}
+	if !m.HasIssue("issue-002") {
+		t.Error("expected HasIssue to return true for issue-002")
+	}
+	if m.HasIssue("issue-999") {
+		t.Error("expected HasIssue to return false for non-existent issue")
+	}
+
+	// After disbanding, HasIssue should return false
+	m.DisbandByIssue("issue-001")
+	if m.HasIssue("issue-001") {
+		t.Error("expected HasIssue to return false after disbanding issue-001")
+	}
+}
+
 func TestDisbandNotFound(t *testing.T) {
 	m := NewManager(newMockFactory(t), 0)
 
