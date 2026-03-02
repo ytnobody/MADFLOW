@@ -23,14 +23,13 @@ func TestBuildStreamArgs(t *testing.T) {
 			name: "basic args",
 			opts: ClaudeOptions{},
 			wantArgs: []string{
-				"--print",
 				"--verbose",
 				"--input-format", "stream-json",
 				"--output-format", "stream-json",
 				"--no-session-persistence",
 				"--dangerously-skip-permissions",
 			},
-			notArgs: []string{"--system-prompt", "--model", "--allowedTools", "--max-budget-usd"},
+			notArgs: []string{"--print", "--system-prompt", "--model", "--allowedTools", "--max-budget-usd"},
 		},
 		{
 			name: "with system prompt and model",
@@ -374,56 +373,26 @@ func TestKillAndResetClearsState(t *testing.T) {
 	}
 }
 
-func TestWaitForInit(t *testing.T) {
-	tests := []struct {
-		name      string
-		lines     string
-		wantSID   string
-		wantErr   bool
-	}{
-		{
-			name:    "normal init",
-			lines:   `{"type":"system","session_id":"sess-abc"}` + "\n",
-			wantSID: "sess-abc",
-		},
-		{
-			name:    "skip non-system events before init",
-			lines:   "{\"type\":\"info\",\"message\":\"starting\"}\n{\"type\":\"system\",\"session_id\":\"sess-xyz\"}\n",
-			wantSID: "sess-xyz",
-		},
-		{
-			name:    "error before init",
-			lines:   `{"type":"error","error":{"code":"fatal","message":"cannot start"}}` + "\n",
-			wantErr: true,
-		},
-		{
-			name:    "eof before init",
-			lines:   "",
-			wantErr: true,
-		},
+func TestScanForResultCapturesSessionID(t *testing.T) {
+	lines := `{"type":"system","session_id":"sess-abc"}
+{"type":"assistant","message":"thinking..."}
+{"type":"result","result":"the answer"}
+`
+	r := io.NopCloser(strings.NewReader(lines))
+	p := &ClaudeStreamProcess{
+		scanner: newTestScanner(r),
+		started: true,
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			r := io.NopCloser(strings.NewReader(tt.lines))
-			p := &ClaudeStreamProcess{
-				scanner: newTestScanner(r),
-			}
-
-			err := p.waitForInit(context.Background())
-			if tt.wantErr {
-				if err == nil {
-					t.Fatal("expected error")
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			if p.sessionID != tt.wantSID {
-				t.Errorf("got sessionID=%q, want %q", p.sessionID, tt.wantSID)
-			}
-		})
+	result, err := p.scanForResult()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result != "the answer" {
+		t.Errorf("got result=%q, want %q", result, "the answer")
+	}
+	if p.sessionID != "sess-abc" {
+		t.Errorf("got sessionID=%q, want %q", p.sessionID, "sess-abc")
 	}
 }
 

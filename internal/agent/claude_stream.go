@@ -38,6 +38,7 @@ type ClaudeStreamProcess struct {
 	cmd       *exec.Cmd
 	stdin     io.WriteCloser
 	scanner   *bufio.Scanner
+	stderrBuf *bytes.Buffer
 	sessionID string
 	started   bool
 }
@@ -103,7 +104,13 @@ func (c *ClaudeStreamProcess) Send(ctx context.Context, prompt string) (string, 
 		return "", fmt.Errorf("write to claude stream: %w", err)
 	}
 
-	return c.readResult(ctx)
+	result, err := c.readResult(ctx)
+	if err != nil && c.stderrBuf != nil {
+		if stderrMsg := strings.TrimSpace(c.stderrBuf.String()); stderrMsg != "" {
+			log.Printf("[claude-stream] stderr: %s", stderrMsg)
+		}
+	}
+	return result, err
 }
 
 // Reset kills the current process so the next Send() starts a fresh one.
@@ -168,64 +175,14 @@ func (c *ClaudeStreamProcess) ensureStarted(ctx context.Context) error {
 
 	c.cmd = cmd
 	c.stdin = stdin
+	c.stderrBuf = &stderrBuf
 	c.scanner = bufio.NewScanner(stdout)
 	c.scanner.Buffer(make([]byte, 0, 1024*1024), 10*1024*1024) // 10MB max line
 	c.started = true
 	c.sessionID = ""
 
-	// Wait for init event
-	if err := c.waitForInit(ctx); err != nil {
-		stderrMsg := strings.TrimSpace(stderrBuf.String())
-		if stderrMsg != "" {
-			log.Printf("[claude-stream] stderr: %s", stderrMsg)
-		}
-		c.killAndReset()
-		return fmt.Errorf("wait for init: %w", err)
-	}
-
-
-	log.Printf("[claude-stream] process started (session=%s)", c.sessionID)
+	log.Printf("[claude-stream] process launched, waiting for first Send to complete init")
 	return nil
-}
-
-// waitForInit reads events until we get the system/init event with session_id.
-// Must be called with c.mu held.
-func (c *ClaudeStreamProcess) waitForInit(ctx context.Context) error {
-	for {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-
-		if !c.scanner.Scan() {
-			if err := c.scanner.Err(); err != nil {
-				return fmt.Errorf("scanner error waiting for init: %w", err)
-			}
-			return fmt.Errorf("claude stream process exited before init event")
-		}
-
-		line := c.scanner.Text()
-		if line == "" {
-			continue
-		}
-
-		var event streamEvent
-		if err := json.Unmarshal([]byte(line), &event); err != nil {
-			// Skip malformed lines
-			continue
-		}
-
-		switch event.Type {
-		case "system":
-			if event.SessionID != "" {
-				c.sessionID = event.SessionID
-				return nil
-			}
-		case "error":
-			if event.Error != nil {
-				return fmt.Errorf("claude stream init error: %s", event.Error.Message)
-			}
-		}
-	}
 }
 
 // readResult reads NDJSON events from stdout until a result event is found.
@@ -273,6 +230,12 @@ func (c *ClaudeStreamProcess) scanForResult() (string, error) {
 		}
 
 		switch event.Type {
+		case "system":
+			// Capture session_id from init event
+			if event.SessionID != "" && c.sessionID == "" {
+				c.sessionID = event.SessionID
+				log.Printf("[claude-stream] init received (session=%s)", c.sessionID)
+			}
 		case "result":
 			return extractResultText(event), nil
 		case "error":
@@ -340,6 +303,7 @@ func (c *ClaudeStreamProcess) killAndReset() {
 	}
 	c.cmd = nil
 	c.scanner = nil
+	c.stderrBuf = nil
 	c.sessionID = ""
 	c.started = false
 }
@@ -347,7 +311,6 @@ func (c *ClaudeStreamProcess) killAndReset() {
 // buildStreamArgs constructs CLI arguments for the stream-json mode.
 func (c *ClaudeStreamProcess) buildStreamArgs() []string {
 	args := []string{
-		"--print",
 		"--verbose",
 		"--input-format", "stream-json",
 		"--output-format", "stream-json",
