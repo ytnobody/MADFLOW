@@ -114,14 +114,17 @@ func (c *ChatLog) Poll(recipient string) ([]Message, error) {
 func (c *ChatLog) Watch(ctx context.Context, recipient string) <-chan Message {
 	ch := make(chan Message, 16)
 
+	// Capture the current file offset synchronously in the calling goroutine
+	// before spawning the background poller. This prevents a race condition
+	// where messages written between Watch() returning and the goroutine
+	// starting would be missed because the goroutine records a later offset.
+	var offset int64
+	if info, err := os.Stat(c.path); err == nil {
+		offset = info.Size()
+	}
+
 	go func() {
 		defer close(ch)
-
-		// Start from end of file
-		var offset int64
-		if info, err := os.Stat(c.path); err == nil {
-			offset = info.Size()
-		}
 
 		ticker := time.NewTicker(500 * time.Millisecond)
 		defer ticker.Stop()
@@ -154,13 +157,14 @@ func (c *ChatLog) Watch(ctx context.Context, recipient string) <-chan Message {
 func (c *ChatLog) WatchAll(ctx context.Context) <-chan Message {
 	ch := make(chan Message, 16)
 
+	// Capture offset synchronously (same reasoning as Watch).
+	var offset int64
+	if info, err := os.Stat(c.path); err == nil {
+		offset = info.Size()
+	}
+
 	go func() {
 		defer close(ch)
-
-		var offset int64
-		if info, err := os.Stat(c.path); err == nil {
-			offset = info.Size()
-		}
 
 		ticker := time.NewTicker(500 * time.Millisecond)
 		defer ticker.Stop()
