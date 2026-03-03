@@ -135,6 +135,7 @@ func (c *ChatLog) Watch(ctx context.Context, recipient string) <-chan Message {
 			case <-ticker.C:
 				newMessages, newOffset, err := c.readFrom(offset, recipient)
 				if err != nil {
+					log.Printf("[chatlog] Watch(%s): readFrom error: %v", recipient, err)
 					continue
 				}
 				offset = newOffset
@@ -175,6 +176,7 @@ func (c *ChatLog) WatchAll(ctx context.Context) <-chan Message {
 			case <-ticker.C:
 				newMessages, newOffset, err := c.readFrom(offset, "")
 				if err != nil {
+					log.Printf("[chatlog] WatchAll: readFrom error: %v", err)
 					continue
 				}
 				offset = newOffset
