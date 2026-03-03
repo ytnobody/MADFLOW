@@ -15,13 +15,19 @@ import (
 // announceStart は各エージェントの作業開始をチャットログに報告する。
 // イシューが割り当てられている場合は、正しいエンジニアIDに直接割り当てメッセージも送信する。
 // これにより、監督が誤ったエンジニアIDに送信してもエンジニアが確実に作業を受け取れる。
+// チャットログにはイシューのタイトルを含め、どの作業を行うか明確にする。
 func announceStart(team *Team) {
 	// 監督にチーム開始を通知（監督が正しいエンジニアIDを知るために必要）
-	line := chatlog.FormatMessage(
-		"superintendent",
-		team.Engineer.ID.String(),
-		fmt.Sprintf("チーム %d の %s として作業を開始します。イシュー: %s", team.ID, team.Engineer.ID.Role, team.IssueID),
-	)
+	// イシュータイトルがある場合は作業内容を明記する
+	var msg string
+	if team.IssueTitle != "" {
+		msg = fmt.Sprintf("チーム %d の %s として以下の作業を開始します。\nイシュー: %s\nタイトル: %s",
+			team.ID, team.Engineer.ID.Role, team.IssueID, team.IssueTitle)
+	} else {
+		msg = fmt.Sprintf("チーム %d の %s として作業を開始します。イシュー: %s",
+			team.ID, team.Engineer.ID.Role, team.IssueID)
+	}
+	line := chatlog.FormatMessage("superintendent", team.Engineer.ID.String(), msg)
 	appendLine(team.Engineer.ChatLog.Path(), line)
 
 	// イシューが割り当てられている場合、正しいエンジニアIDに直接割り当てメッセージを送信する。
@@ -50,10 +56,11 @@ func appendLine(path, line string) {
 
 // Team represents a task force team (engineer).
 type Team struct {
-	ID       int
-	IssueID  string
-	Engineer *agent.Agent
-	cancel   context.CancelFunc
+	ID         int
+	IssueID    string
+	IssueTitle string
+	Engineer   *agent.Agent
+	cancel     context.CancelFunc
 }
 
 // DefaultMaxTeams is the default maximum number of concurrent teams.
@@ -89,7 +96,8 @@ func NewManager(factory TeamFactory, maxTeams int) *Manager {
 }
 
 // Create creates and starts a new team for the given issue.
-func (m *Manager) Create(ctx context.Context, issueID string) (*Team, error) {
+// issueTitle is included in the chatlog announcement so it's clear what work will be done.
+func (m *Manager) Create(ctx context.Context, issueID, issueTitle string) (*Team, error) {
 	m.mu.Lock()
 	// Count both active teams and teams being created to prevent maxTeams bypass.
 	totalSlots := len(m.teams) + m.pendingCount
@@ -124,10 +132,11 @@ func (m *Manager) Create(ctx context.Context, issueID string) (*Team, error) {
 	teamCtx, cancel := context.WithCancel(ctx)
 
 	team := &Team{
-		ID:       teamNum,
-		IssueID:  issueID,
-		Engineer: engineer,
-		cancel:   cancel,
+		ID:         teamNum,
+		IssueID:    issueID,
+		IssueTitle: issueTitle,
+		Engineer:   engineer,
+		cancel:     cancel,
 	}
 
 	// Move from pending to active.
@@ -192,7 +201,8 @@ func (m *Manager) Disband(teamNum int) error {
 }
 
 // DisbandByIssue finds and disbands the team assigned to the given issue.
-func (m *Manager) DisbandByIssue(issueID string) error {
+// Returns the disbanded team number and any error.
+func (m *Manager) DisbandByIssue(issueID string) (int, error) {
 	m.mu.Lock()
 	var targetNum int
 	var found bool
@@ -206,9 +216,9 @@ func (m *Manager) DisbandByIssue(issueID string) error {
 	m.mu.Unlock()
 
 	if !found {
-		return fmt.Errorf("no team found for issue %s", issueID)
+		return 0, fmt.Errorf("no team found for issue %s", issueID)
 	}
-	return m.Disband(targetNum)
+	return targetNum, m.Disband(targetNum)
 }
 
 // List returns a snapshot of all active teams.

@@ -263,6 +263,19 @@ func (o *Orchestrator) cleanStaleWorktrees() {
 	}
 }
 
+// cleanTeamWorktrees removes worktrees for a specific team number.
+// This is called when a team is disbanded to free up disk space and
+// prevent stale worktrees from accumulating.
+func (o *Orchestrator) cleanTeamWorktrees(teamNum int) {
+	prefix := fmt.Sprintf("team-%d", teamNum)
+	for name, repo := range o.repos {
+		removed := repo.CleanWorktrees(prefix)
+		if len(removed) > 0 {
+			log.Printf("[orchestrator] cleaned %d worktree(s) for team %d in %s: %v", len(removed), teamNum, name, removed)
+		}
+	}
+}
+
 // ensureDevelopBranch ensures the main repo is on the develop branch at startup.
 // This prevents issues where a previous engineer left the repo on a feature branch.
 func (o *Orchestrator) ensureDevelopBranch() {
@@ -409,13 +422,14 @@ func (o *Orchestrator) startAllTeams(ctx context.Context) {
 	// blocked waiting for the first LLM response from each engineer).
 	for i := 0; i < maxTeams; i++ {
 		idx := i
-		var issueID string
+		var issueID, issueTitle string
 		if idx < len(assignable) {
 			issueID = assignable[idx].ID
+			issueTitle = assignable[idx].Title
 		}
 
 		go func() {
-			t, err := o.teams.Create(ctx, issueID)
+			t, err := o.teams.Create(ctx, issueID, issueTitle)
 			if err != nil {
 				if ctx.Err() == nil {
 					log.Printf("[orchestrator] start teams: team %d: %v", idx+1, err)
@@ -562,10 +576,12 @@ func (o *Orchestrator) handleTeamCreate(ctx context.Context, body string) {
 
 	log.Printf("[orchestrator] TEAM_CREATE %s: starting async team creation", issueID)
 
+	issueTitle := existingIss.Title
+
 	// Run the expensive Create call in a goroutine to avoid blocking
 	// the watchCommands loop (Create can take 10+ minutes waiting for LLM).
 	go func() {
-		t, err := o.teams.Create(ctx, issueID)
+		t, err := o.teams.Create(ctx, issueID, issueTitle)
 		if err != nil {
 			log.Printf("[orchestrator] TEAM_CREATE failed for %s: %v", issueID, err)
 			o.chatLog.Append("superintendent", "orchestrator",
@@ -587,7 +603,7 @@ func (o *Orchestrator) handleTeamCreate(ctx context.Context, body string) {
 	}()
 }
 
-// handleTeamDisband disbands the team for an issue.
+// handleTeamDisband disbands the team for an issue and cleans up its worktrees.
 // Expected format: TEAM_DISBAND issue-id
 func (o *Orchestrator) handleTeamDisband(body string) {
 	parts := strings.Fields(body)
@@ -597,12 +613,14 @@ func (o *Orchestrator) handleTeamDisband(body string) {
 	}
 	issueID := parts[1]
 
-	if err := o.teams.DisbandByIssue(issueID); err != nil {
+	teamNum, err := o.teams.DisbandByIssue(issueID)
+	if err != nil {
 		log.Printf("[orchestrator] TEAM_DISBAND failed for %s: %v", issueID, err)
 		return
 	}
 
-	log.Printf("[orchestrator] team disbanded for issue %s", issueID)
+	o.cleanTeamWorktrees(teamNum)
+	log.Printf("[orchestrator] team %d disbanded for issue %s (worktrees cleaned)", teamNum, issueID)
 }
 
 // handleRelease triggers a develop -> main merge.
@@ -729,10 +747,12 @@ func (o *Orchestrator) handlePRMerged(issueID string) {
 		log.Printf("[orchestrator] PR merged: update issue %s failed: %v", issueID, err)
 	}
 
-	// Disband the assigned team
+	// Disband the assigned team and clean up its worktrees
 	if iss.AssignedTeam > 0 {
-		if err := o.teams.DisbandByIssue(issueID); err != nil {
+		if teamNum, err := o.teams.DisbandByIssue(issueID); err != nil {
 			log.Printf("[orchestrator] PR merged: disband team for %s failed: %v", issueID, err)
+		} else {
+			o.cleanTeamWorktrees(teamNum)
 		}
 	}
 
