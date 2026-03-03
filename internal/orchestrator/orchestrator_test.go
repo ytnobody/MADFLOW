@@ -555,7 +555,7 @@ func TestHandleTeamCreateRejectsActiveTeam(t *testing.T) {
 	defer cancel()
 
 	// Create a team for this issue via the manager directly (simulates race window).
-	_, err := orc.Teams().Create(ctx, iss.ID)
+	_, err := orc.Teams().Create(ctx, iss.ID, iss.Title)
 	if err != nil {
 		t.Fatalf("create team: %v", err)
 	}
@@ -801,7 +801,7 @@ func TestHandlePRMerged(t *testing.T) {
 	// Create a team for this issue
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	tm, err := orc.Teams().Create(ctx, "owner-repo-001")
+	tm, err := orc.Teams().Create(ctx, "owner-repo-001", iss.Title)
 	if err != nil {
 		t.Fatalf("create team: %v", err)
 	}

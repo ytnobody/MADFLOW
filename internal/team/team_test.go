@@ -64,7 +64,7 @@ func createAndCancel(t *testing.T, mgr *Manager, issueID string) *Team {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel before Create
 
-	team, err := mgr.Create(ctx, issueID)
+	team, err := mgr.Create(ctx, issueID, "")
 	if err != nil {
 		t.Fatalf("Create failed: %v", err)
 	}
@@ -123,7 +123,7 @@ func TestCreateFactoryError(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	_, err := m.Create(ctx, "issue-001")
+	_, err := m.Create(ctx, "issue-001", "")
 	if err == nil {
 		t.Fatal("expected error from factory, got nil")
 	}
@@ -221,7 +221,7 @@ func TestHasIssue(t *testing.T) {
 	}
 
 	// After disbanding, HasIssue should return false
-	m.DisbandByIssue("issue-001")
+	_, _ = m.DisbandByIssue("issue-001")
 	if m.HasIssue("issue-001") {
 		t.Error("expected HasIssue to return false after disbanding issue-001")
 	}
@@ -243,7 +243,7 @@ func TestDisbandByIssue(t *testing.T) {
 	createAndCancel(t, m, "issue-001")
 	createAndCancel(t, m, "issue-002")
 
-	if err := m.DisbandByIssue("issue-001"); err != nil {
+	if _, err := m.DisbandByIssue("issue-001"); err != nil {
 		t.Fatalf("DisbandByIssue failed: %v", err)
 	}
 
@@ -261,7 +261,7 @@ func TestDisbandByIssue(t *testing.T) {
 func TestDisbandByIssueNotFound(t *testing.T) {
 	m := NewManager(newMockFactory(t), 0)
 
-	err := m.DisbandByIssue("nonexistent")
+	_, err := m.DisbandByIssue("nonexistent")
 	if err == nil {
 		t.Fatal("expected error for non-existent issue, got nil")
 	}
@@ -277,7 +277,7 @@ func TestCreateRespectsMaxTeams(t *testing.T) {
 	// 3rd team should fail
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err := m.Create(ctx, "issue-003")
+	_, err := m.Create(ctx, "issue-003", "")
 	if err == nil {
 		t.Fatal("expected error when exceeding max teams, got nil")
 	}
@@ -328,7 +328,7 @@ func TestDefaultMaxTeams(t *testing.T) {
 	// Next one should fail
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err := m.Create(ctx, "issue-over-limit")
+	_, err := m.Create(ctx, "issue-over-limit", "")
 	if err == nil {
 		t.Fatal("expected error when exceeding default max teams")
 	}
