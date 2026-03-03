@@ -70,6 +70,19 @@ func (r *Repo) DeleteBranch(name string) error {
 	return nil
 }
 
+// DeleteRemoteBranch deletes a remote branch on origin.
+// It also removes the local tracking branch if it exists.
+func (r *Repo) DeleteRemoteBranch(name string) error {
+	if _, err := r.run("push", "origin", "--delete", name); err != nil {
+		return fmt.Errorf("delete remote branch %s: %w", name, err)
+	}
+	// Remove the local branch if it exists (ignore errors).
+	if r.BranchExists(name) {
+		r.run("branch", "-d", name) //nolint:errcheck
+	}
+	return nil
+}
+
 // CurrentBranch returns the name of the current branch.
 func (r *Repo) CurrentBranch() (string, error) {
 	out, err := r.run("rev-parse", "--abbrev-ref", "HEAD")
