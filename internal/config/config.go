@@ -58,6 +58,10 @@ type AgentConfig struct {
 	// to run before being killed. This prevents agents from hanging indefinitely
 	// on commands that never finish. Defaults to 5 minutes.
 	BashTimeoutMinutes int `toml:"bash_timeout_minutes"`
+	// WorktreeCleanupIntervalMinutes specifies how often to check for and remove
+	// orphaned git worktrees (those not associated with any active team).
+	// 0 (default) disables periodic worktree cleanup.
+	WorktreeCleanupIntervalMinutes int `toml:"worktree_cleanup_interval_minutes"`
 	// ExtraPrompt is appended to the system prompt of every agent.
 	// Use this to inject project-specific instructions that apply to all agents.
 	ExtraPrompt string `toml:"extra_prompt"`

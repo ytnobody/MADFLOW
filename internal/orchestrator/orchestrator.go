@@ -179,6 +179,15 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 		o.runChatlogCleanup(ctx)
 	}()
 
+	// Start worktree cleanup goroutine if configured
+	if o.cfg.Agent.WorktreeCleanupIntervalMinutes > 0 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			o.runWorktreeCleanup(ctx)
+		}()
+	}
+
 	// Start branch cleanup goroutine if configured
 	if o.cfg.Branches.CleanupIntervalMinutes > 0 {
 		wg.Add(1)
@@ -1054,6 +1063,38 @@ func (o *Orchestrator) runBranchCleanup(ctx context.Context) {
 				}
 				if len(deleted) > 0 {
 					log.Printf("[branch-cleanup] %s: deleted %d merged branches: %v", name, len(deleted), deleted)
+				}
+			}
+		}
+	}
+}
+
+// runWorktreeCleanup periodically removes orphaned git worktrees that are
+// not associated with any active team. This prevents disk space accumulation
+// from worktrees left behind by crashed or improperly cleaned up teams.
+func (o *Orchestrator) runWorktreeCleanup(ctx context.Context) {
+	interval := time.Duration(o.cfg.Agent.WorktreeCleanupIntervalMinutes) * time.Minute
+	log.Printf("[worktree-cleanup] started (interval: %v)", interval)
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			log.Println("[worktree-cleanup] stopped")
+			return
+		case <-ticker.C:
+			// Build set of active team worktree directory names.
+			activeTeamDirs := make(map[string]bool)
+			for _, info := range o.teams.List() {
+				activeTeamDirs[fmt.Sprintf("team-%d", info.ID)] = true
+			}
+
+			for name, repo := range o.repos {
+				removed := repo.CleanOrphanedWorktrees(activeTeamDirs)
+				if len(removed) > 0 {
+					log.Printf("[worktree-cleanup] %s: removed %d orphaned worktree(s): %v", name, len(removed), removed)
 				}
 			}
 		}

@@ -147,6 +147,40 @@ func (r *Repo) CleanWorktrees(prefix string) (removed []string) {
 	return removed
 }
 
+// CleanOrphanedWorktrees removes worktree directories under .worktrees/ that
+// start with "team-" but are NOT in the activeTeamDirs set. This catches
+// orphaned worktrees from teams that crashed or were not properly cleaned up.
+// It also runs "git worktree prune" to clean stale internal references.
+func (r *Repo) CleanOrphanedWorktrees(activeTeamDirs map[string]bool) (removed []string) {
+	worktreeDir := filepath.Join(r.path, ".worktrees")
+	entries, err := os.ReadDir(worktreeDir)
+	if err != nil {
+		return nil // directory doesn't exist; nothing to clean
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if !strings.HasPrefix(name, "team-") {
+			continue
+		}
+		if activeTeamDirs[name] {
+			continue
+		}
+		wtPath := filepath.Join(worktreeDir, name)
+		if err := r.RemoveWorktree(wtPath); err != nil {
+			// If git worktree remove fails, try to prune and remove manually.
+			r.run("worktree", "prune")
+			os.RemoveAll(wtPath)
+		}
+		removed = append(removed, name)
+	}
+	// Always prune stale worktree references at the end.
+	r.run("worktree", "prune")
+	return removed
+}
+
 // PrepareWorktree ensures the develop branch exists (creating from main if needed)
 // and creates a worktree with a new feature branch based on develop.
 func (r *Repo) PrepareWorktree(path, featureBranch, developBranch, mainBranch string) error {
