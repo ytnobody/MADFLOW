@@ -120,6 +120,13 @@ func (r *Repo) RemoveWorktree(path string) error {
 	return nil
 }
 
+// PruneWorktrees removes stale worktree metadata from the git repository.
+// This is useful after manually deleting a worktree directory to keep the
+// git metadata consistent.
+func (r *Repo) PruneWorktrees() {
+	r.run("worktree", "prune") //nolint:errcheck // best-effort cleanup
+}
+
 // CleanWorktrees removes all worktrees under the .worktrees/ directory
 // that match the given prefix (e.g. "team-"). This is used at startup to
 // clean up stale worktrees from previous runs.

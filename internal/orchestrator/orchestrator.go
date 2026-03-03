@@ -263,6 +263,29 @@ func (o *Orchestrator) cleanStaleWorktrees() {
 	}
 }
 
+// cleanupTeamWorktrees removes the .worktrees/team-<N> directory for a given
+// team after it is disbanded. This prevents stale worktrees from accumulating
+// after PRs are merged or teams are explicitly disbanded.
+func (o *Orchestrator) cleanupTeamWorktrees(teamNum int) {
+	if teamNum <= 0 {
+		return
+	}
+	dirName := fmt.Sprintf("team-%d", teamNum)
+	for name, repo := range o.repos {
+		wtPath := filepath.Join(repo.Path(), ".worktrees", dirName)
+		if _, err := os.Stat(wtPath); os.IsNotExist(err) {
+			continue // worktree does not exist, nothing to do
+		}
+		if err := repo.RemoveWorktree(wtPath); err != nil {
+			// Fall back to manual removal (consistent with cleanStaleWorktrees).
+			log.Printf("[orchestrator] cleanupTeamWorktrees: remove %s in %s failed: %v; trying manual cleanup", dirName, name, err)
+			repo.PruneWorktrees()
+			os.RemoveAll(wtPath)
+		}
+		log.Printf("[orchestrator] cleanupTeamWorktrees: removed worktree %s in %s", dirName, name)
+	}
+}
+
 // ensureDevelopBranch ensures the main repo is on the develop branch at startup.
 // This prevents issues where a previous engineer left the repo on a feature branch.
 func (o *Orchestrator) ensureDevelopBranch() {
@@ -597,11 +620,18 @@ func (o *Orchestrator) handleTeamDisband(body string) {
 	}
 	issueID := parts[1]
 
+	// Retrieve team number before disbanding for worktree cleanup.
+	var teamNum int
+	if iss, err := o.store.Get(issueID); err == nil {
+		teamNum = iss.AssignedTeam
+	}
+
 	if err := o.teams.DisbandByIssue(issueID); err != nil {
 		log.Printf("[orchestrator] TEAM_DISBAND failed for %s: %v", issueID, err)
 		return
 	}
 
+	o.cleanupTeamWorktrees(teamNum)
 	log.Printf("[orchestrator] team disbanded for issue %s", issueID)
 }
 
@@ -729,10 +759,13 @@ func (o *Orchestrator) handlePRMerged(issueID string) {
 		log.Printf("[orchestrator] PR merged: update issue %s failed: %v", issueID, err)
 	}
 
-	// Disband the assigned team
+	// Disband the assigned team and clean up its worktree.
 	if iss.AssignedTeam > 0 {
+		teamNum := iss.AssignedTeam
 		if err := o.teams.DisbandByIssue(issueID); err != nil {
 			log.Printf("[orchestrator] PR merged: disband team for %s failed: %v", issueID, err)
+		} else {
+			o.cleanupTeamWorktrees(teamNum)
 		}
 	}
 

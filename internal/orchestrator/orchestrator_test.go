@@ -900,6 +900,137 @@ func TestHandleGitHubEvent_PullRequest(t *testing.T) {
 	}
 }
 
+// --- worktree cleanup tests ---
+
+// TestCleanupTeamWorktrees verifies that cleanupTeamWorktrees removes the
+// .worktrees/team-<N> directory for the specified team number.
+func TestCleanupTeamWorktrees(t *testing.T) {
+	dir := t.TempDir()
+	cfg := testConfig(dir)
+	orc := New(cfg, dir, t.TempDir())
+
+	// Create a fake worktree directory (not a real git worktree, but the
+	// fallback in cleanupTeamWorktrees uses os.RemoveAll, so this suffices).
+	wtPath := filepath.Join(dir, ".worktrees", "team-3")
+	if err := os.MkdirAll(wtPath, 0755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	orc.cleanupTeamWorktrees(3)
+
+	if _, err := os.Stat(wtPath); !os.IsNotExist(err) {
+		t.Errorf("expected worktree %s to be removed, but it still exists", wtPath)
+	}
+}
+
+// TestCleanupTeamWorktrees_NoOp verifies that cleanupTeamWorktrees does nothing
+// when the worktree directory does not exist (should not panic or error).
+func TestCleanupTeamWorktrees_NoOp(t *testing.T) {
+	dir := t.TempDir()
+	cfg := testConfig(dir)
+	orc := New(cfg, dir, t.TempDir())
+
+	// The .worktrees/team-99 directory does not exist – should be a no-op.
+	orc.cleanupTeamWorktrees(99)
+}
+
+// TestCleanupTeamWorktrees_ZeroTeamNum verifies that cleanupTeamWorktrees
+// does nothing when called with teamNum == 0.
+func TestCleanupTeamWorktrees_ZeroTeamNum(t *testing.T) {
+	dir := t.TempDir()
+	cfg := testConfig(dir)
+	orc := New(cfg, dir, t.TempDir())
+
+	// Should be a no-op without panicking.
+	orc.cleanupTeamWorktrees(0)
+}
+
+// TestHandlePRMerged_CleansUpWorktree verifies that handlePRMerged removes
+// the worktree directory associated with the disbanded team.
+func TestHandlePRMerged_CleansUpWorktree(t *testing.T) {
+	dir := t.TempDir()
+	cfg := testConfig(dir)
+	os.MkdirAll(filepath.Join(dir, "issues"), 0755)
+	os.WriteFile(filepath.Join(dir, "chatlog.txt"), nil, 0644)
+
+	orc := New(cfg, dir, t.TempDir())
+	orc.teams = team.NewManager(newMockTeamFactory(t), 3)
+
+	// Create an in-progress issue with an assigned team.
+	iss := &issue.Issue{
+		ID:     "owner-repo-wt-001",
+		Title:  "Test Issue Worktree",
+		Status: issue.StatusInProgress,
+	}
+	orc.Store().Update(iss)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	tm, err := orc.Teams().Create(ctx, "owner-repo-wt-001")
+	if err != nil {
+		t.Fatalf("create team: %v", err)
+	}
+	iss.AssignedTeam = tm.ID
+	orc.Store().Update(iss)
+
+	// Create a fake worktree directory for the team.
+	wtPath := filepath.Join(dir, ".worktrees", fmt.Sprintf("team-%d", tm.ID))
+	if err := os.MkdirAll(wtPath, 0755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	// Simulate handlePRMerged – this should disband the team and clean up the worktree.
+	orc.handlePRMerged("owner-repo-wt-001")
+
+	// Verify the worktree directory has been removed.
+	if _, err := os.Stat(wtPath); !os.IsNotExist(err) {
+		t.Errorf("expected worktree %s to be removed after PR merge, but it still exists", wtPath)
+	}
+}
+
+// TestHandleTeamDisband_CleansUpWorktree verifies that TEAM_DISBAND removes
+// the worktree directory associated with the disbanded team.
+func TestHandleTeamDisband_CleansUpWorktree(t *testing.T) {
+	dir := t.TempDir()
+	cfg := testConfig(dir)
+	os.MkdirAll(filepath.Join(dir, "issues"), 0755)
+	os.WriteFile(filepath.Join(dir, "chatlog.txt"), nil, 0644)
+
+	orc := New(cfg, dir, t.TempDir())
+	orc.teams = team.NewManager(newMockTeamFactory(t), 3)
+
+	// Create an in-progress issue with an assigned team.
+	iss := &issue.Issue{
+		ID:     "owner-repo-disband-001",
+		Title:  "Test Disband Worktree",
+		Status: issue.StatusInProgress,
+	}
+	orc.Store().Update(iss)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	tm, err := orc.Teams().Create(ctx, "owner-repo-disband-001")
+	if err != nil {
+		t.Fatalf("create team: %v", err)
+	}
+	iss.AssignedTeam = tm.ID
+	orc.Store().Update(iss)
+
+	// Create a fake worktree directory for the team.
+	wtPath := filepath.Join(dir, ".worktrees", fmt.Sprintf("team-%d", tm.ID))
+	if err := os.MkdirAll(wtPath, 0755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	// Simulate TEAM_DISBAND command – this should disband the team and clean up the worktree.
+	orc.handleTeamDisband("TEAM_DISBAND owner-repo-disband-001")
+
+	// Verify the worktree directory has been removed.
+	if _, err := os.Stat(wtPath); !os.IsNotExist(err) {
+		t.Errorf("expected worktree %s to be removed after TEAM_DISBAND, but it still exists", wtPath)
+	}
+}
+
 // TestRunGracefulShutdownDuringStartup verifies that Run returns nil (not an
 // error) when the context is cancelled while startAllTeams is still running.
 // Previously the system returned "wait for agents ready: context canceled"

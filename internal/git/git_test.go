@@ -443,3 +443,32 @@ func TestMergeConflict(t *testing.T) {
 	// and the merge was aborted). Both are acceptable.
 	_ = err
 }
+
+func TestPruneWorktrees(t *testing.T) {
+	repo := initTestRepo(t)
+
+	baseBranch, err := repo.CurrentBranch()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wtDir := filepath.Join(t.TempDir(), "wt-prune-test")
+	if err := repo.AddWorktree(wtDir, "feature-prune", baseBranch); err != nil {
+		t.Fatalf("AddWorktree failed: %v", err)
+	}
+
+	// Manually remove the directory (bypassing git worktree remove)
+	// to simulate a stale worktree state.
+	if err := os.RemoveAll(wtDir); err != nil {
+		t.Fatalf("RemoveAll failed: %v", err)
+	}
+
+	// PruneWorktrees should not panic or return an error even after
+	// the directory is already gone.
+	repo.PruneWorktrees()
+
+	// The directory should still not exist (we removed it manually).
+	if _, err := os.Stat(wtDir); !os.IsNotExist(err) {
+		t.Error("expected worktree directory to remain absent after PruneWorktrees")
+	}
+}
