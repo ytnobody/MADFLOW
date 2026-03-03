@@ -119,18 +119,25 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	// may have left it on a feature branch.
 	o.ensureDevelopBranch()
 
-	// Run initial GitHub sync before starting teams so that issues closed
-	// on GitHub are reflected locally and won't be assigned to teams.
+	var wg sync.WaitGroup
+
+	// Start resident agents (superintendent) immediately — no need to wait for
+	// GitHub sync first. The superintendent can warm up its context while the
+	// initial sync runs in the background.
+	if err := o.startResidentAgents(ctx, &wg); err != nil {
+		return fmt.Errorf("start resident agents: %w", err)
+	}
+
+	// Run initial GitHub sync concurrently with the superintendent startup.
+	// We must still complete sync before assigning issues to teams, so we
+	// wait for it to finish before calling startAllTeams.
+	// WithSkipComments(true) makes this sync fast (one API call per repo
+	// instead of one call per repo + one per issue), reducing startup lag
+	// from minutes to seconds for repositories with many issues.
 	if o.cfg.GitHub != nil {
 		o.initialGitHubSync()
 	}
 
-	var wg sync.WaitGroup
-
-	// Start all agents (teams + residents) concurrently
-	if err := o.startResidentAgents(ctx, &wg); err != nil {
-		return fmt.Errorf("start resident agents: %w", err)
-	}
 	o.startAllTeams(ctx)
 
 	// If context was cancelled during team startup (e.g. Ctrl+C or SIGTERM
@@ -623,12 +630,16 @@ func (o *Orchestrator) handleRelease(_ string) {
 // initialGitHubSync performs a one-shot GitHub sync to reflect closed issues
 // before teams are started.  This prevents stale open/in_progress issues from
 // being assigned to teams at startup.
+// Comment sync is intentionally skipped (WithSkipComments) to keep this fast:
+// the primary goal here is issue status (open/closed) — comments are fetched
+// by the subsequent runGitHubSync loop.
 func (o *Orchestrator) initialGitHubSync() {
 	gh := o.cfg.GitHub
 	botPatterns := o.compileBotPatterns()
 	syncer := github.NewSyncer(o.store, gh.Owner, gh.Repos, 0).
 		WithAuthorizedUsers(o.cfg.AuthorizedUsers).
-		WithBotCommentPatterns(botPatterns)
+		WithBotCommentPatterns(botPatterns).
+		WithSkipComments(true)
 	if err := syncer.SyncOnce(); err != nil {
 		log.Printf("[orchestrator] initial github sync failed: %v", err)
 	} else {

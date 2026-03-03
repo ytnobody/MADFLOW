@@ -109,6 +109,7 @@ type Syncer struct {
 	idleInterval    time.Duration    // effective only when idleDetector is set
 	authorizedUsers []string         // empty = all users trusted
 	botPatterns     []*regexp.Regexp // compiled bot comment patterns; nil = no pattern check
+	skipComments    bool             // if true, skip comment sync (for fast startup)
 }
 
 // NewSyncer creates a new GitHub issue syncer.
@@ -135,6 +136,17 @@ func (s *Syncer) WithAuthorizedUsers(users []string) *Syncer {
 // Use CompileBotPatterns to compile the raw string patterns from the config.
 func (s *Syncer) WithBotCommentPatterns(patterns []*regexp.Regexp) *Syncer {
 	s.botPatterns = patterns
+	return s
+}
+
+// WithSkipComments configures the Syncer to skip comment synchronization.
+// When true, syncComments is not called for any issue during SyncOnce.
+// This dramatically reduces startup time when there are many issues, since
+// each comment fetch requires a separate GitHub API call.
+// Comment sync will still occur on subsequent calls (e.g. via Run's loop)
+// where skipComments is false.
+func (s *Syncer) WithSkipComments(skip bool) *Syncer {
+	s.skipComments = skip
 	return s
 }
 
@@ -289,8 +301,10 @@ func (s *Syncer) syncRepo(repo string) error {
 			} else {
 				log.Printf("[github-sync] imported %s: %s", localID, gh.Title)
 			}
-			// Sync comments for new issue (may contain /approve)
-			s.syncComments(repo, gh.Number, localID)
+			// Sync comments for new issue (may contain /approve), unless skipped.
+			if !s.skipComments {
+				s.syncComments(repo, gh.Number, localID)
+			}
 			continue
 		}
 
@@ -317,8 +331,10 @@ func (s *Syncer) syncRepo(repo string) error {
 			}
 		}
 
-		// Sync comments for existing issue
-		s.syncComments(repo, gh.Number, localID)
+		// Sync comments for existing issue, unless skipped.
+		if !s.skipComments {
+			s.syncComments(repo, gh.Number, localID)
+		}
 	}
 
 	// Close local issues that are no longer open on GitHub.
