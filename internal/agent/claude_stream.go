@@ -218,7 +218,6 @@ type readResultOutput struct {
 // scanForResult synchronously scans lines until a result or error event.
 func (c *ClaudeStreamProcess) scanForResult() (string, error) {
 	eventCount := 0
-	lastLog := time.Now()
 	for c.scanner.Scan() {
 		line := c.scanner.Text()
 		if line == "" {
@@ -247,11 +246,6 @@ func (c *ClaudeStreamProcess) scanForResult() (string, error) {
 			return "", classifyStreamError(event)
 		}
 
-		// Periodic heartbeat so the operator knows work is happening.
-		if time.Since(lastLog) >= 30*time.Second {
-			log.Printf("[claude-stream] processing... (%d events received, session=%s)", eventCount, c.sessionID)
-			lastLog = time.Now()
-		}
 	}
 
 	if err := c.scanner.Err(); err != nil {
