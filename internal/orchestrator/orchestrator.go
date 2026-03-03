@@ -276,6 +276,14 @@ func (o *Orchestrator) cleanTeamWorktrees(teamNum int) {
 	}
 }
 
+// appendOrLog appends a message to the chatlog, logging a warning if the write fails.
+// This prevents silent message loss when the chatlog file is inaccessible.
+func (o *Orchestrator) appendOrLog(recipient, sender, body string) {
+	if err := o.chatLog.Append(recipient, sender, body); err != nil {
+		log.Printf("[orchestrator] WARNING: failed to write chatlog (recipient=%s): %v — message: %s", recipient, err, body)
+	}
+}
+
 // ensureDevelopBranch ensures the main repo is on the develop branch at startup.
 // This prevents issues where a previous engineer left the repo on a feature branch.
 func (o *Orchestrator) ensureDevelopBranch() {
@@ -538,7 +546,7 @@ func (o *Orchestrator) handleTeamCreate(ctx context.Context, body string) {
 	existingIss, err := o.store.Get(issueID)
 	if err != nil {
 		log.Printf("[orchestrator] TEAM_CREATE rejected: issue %q not found: %v", issueID, err)
-		o.chatLog.Append("superintendent", "orchestrator",
+		o.appendOrLog("superintendent", "orchestrator",
 			fmt.Sprintf("TEAM_CREATE %s は拒否されました: イシューが見つかりません", issueID))
 		return
 	}
@@ -546,7 +554,7 @@ func (o *Orchestrator) handleTeamCreate(ctx context.Context, body string) {
 	// Reject team creation for issues that are already closed or resolved.
 	if existingIss.Status == issue.StatusClosed || existingIss.Status == issue.StatusResolved {
 		log.Printf("[orchestrator] TEAM_CREATE rejected: issue %s is %s", issueID, existingIss.Status)
-		o.chatLog.Append("superintendent", "orchestrator",
+		o.appendOrLog("superintendent", "orchestrator",
 			fmt.Sprintf("TEAM_CREATE %s は拒否されました: イシューのステータスが %s です", issueID, existingIss.Status))
 		return
 	}
@@ -554,7 +562,7 @@ func (o *Orchestrator) handleTeamCreate(ctx context.Context, body string) {
 	// Reject if issue is already assigned to a team.
 	if existingIss.AssignedTeam > 0 {
 		log.Printf("[orchestrator] TEAM_CREATE rejected: issue %s already assigned to team %d", issueID, existingIss.AssignedTeam)
-		o.chatLog.Append("superintendent", "orchestrator",
+		o.appendOrLog("superintendent", "orchestrator",
 			fmt.Sprintf("TEAM_CREATE %s は拒否されました: 既にチーム %d にアサイン済みです", issueID, existingIss.AssignedTeam))
 		return
 	}
@@ -564,7 +572,7 @@ func (o *Orchestrator) handleTeamCreate(ctx context.Context, body string) {
 	// and the window where Create() is still in progress).
 	if o.teams.HasIssue(issueID) {
 		log.Printf("[orchestrator] TEAM_CREATE rejected: active/pending team already exists for issue %s", issueID)
-		o.chatLog.Append("superintendent", "orchestrator",
+		o.appendOrLog("superintendent", "orchestrator",
 			fmt.Sprintf("TEAM_CREATE %s は拒否されました: 既にアクティブまたは作成中のチームが存在します", issueID))
 		return
 	}
@@ -572,20 +580,43 @@ func (o *Orchestrator) handleTeamCreate(ctx context.Context, body string) {
 	// Mark issue as in_progress immediately to prevent the superintendent
 	// from sending duplicate TEAM_CREATE commands while the team is being created.
 	existingIss.Status = issue.StatusInProgress
-	o.store.Update(existingIss)
+	if err := o.store.Update(existingIss); err != nil {
+		log.Printf("[orchestrator] TEAM_CREATE: failed to update issue %s status: %v", issueID, err)
+	}
 
 	log.Printf("[orchestrator] TEAM_CREATE %s: starting async team creation", issueID)
 
+	// Send immediate ACK to superintendent so they know the command was received.
+	// This prevents the superintendent from assuming the orchestrator is unresponsive
+	// and retrying or falling back to direct implementation prematurely.
+	o.appendOrLog("superintendent", "orchestrator",
+		fmt.Sprintf("TEAM_CREATE %s: 受信しました。チーム作成を開始します。", issueID))
+
 	issueTitle := existingIss.Title
+
+	// Use a context detached from the parent so that a shutdown signal does not
+	// cancel the in-flight team creation.  The goroutine will still respect its
+	// own internal timeouts, but it won't be killed by the orchestrator's
+	// context being cancelled during a graceful restart.
+	createCtx := context.WithoutCancel(ctx)
 
 	// Run the expensive Create call in a goroutine to avoid blocking
 	// the watchCommands loop (Create can take 10+ minutes waiting for LLM).
 	go func() {
-		t, err := o.teams.Create(ctx, issueID, issueTitle)
+		t, err := o.teams.Create(createCtx, issueID, issueTitle)
 		if err != nil {
 			log.Printf("[orchestrator] TEAM_CREATE failed for %s: %v", issueID, err)
-			o.chatLog.Append("superintendent", "orchestrator",
+			o.appendOrLog("superintendent", "orchestrator",
 				fmt.Sprintf("TEAM_CREATE %s に失敗しました: %v", issueID, err))
+
+			// Reset the issue status back to "open" so the superintendent can
+			// retry TEAM_CREATE instead of getting stuck with in_progress forever.
+			if iss, getErr := o.store.Get(issueID); getErr == nil {
+				iss.Status = issue.StatusOpen
+				if updErr := o.store.Update(iss); updErr != nil {
+					log.Printf("[orchestrator] TEAM_CREATE: failed to reset issue %s status: %v", issueID, updErr)
+				}
+			}
 			return
 		}
 
@@ -594,11 +625,13 @@ func (o *Orchestrator) handleTeamCreate(ctx context.Context, body string) {
 		if err == nil {
 			iss.AssignedTeam = t.ID
 			iss.Status = issue.StatusInProgress
-			o.store.Update(iss)
+			if updErr := o.store.Update(iss); updErr != nil {
+				log.Printf("[orchestrator] TEAM_CREATE: failed to update issue %s assignment: %v", issueID, updErr)
+			}
 		}
 
 		log.Printf("[orchestrator] team %d created for issue %s", t.ID, issueID)
-		o.chatLog.Append("superintendent", "orchestrator",
+		o.appendOrLog("superintendent", "orchestrator",
 			fmt.Sprintf("TEAM_CREATE %s: チーム %d を作成しました", issueID, t.ID))
 	}()
 }
@@ -687,7 +720,7 @@ func (o *Orchestrator) handleGitHubEvent(eventType github.EventType, issueID str
 	switch eventType {
 	case github.EventTypeIssues:
 		// Notify superintendent about new/updated issue
-		o.chatLog.Append("superintendent", "orchestrator",
+		o.appendOrLog("superintendent", "orchestrator",
 			fmt.Sprintf("GitHub Issue updated: %s", issueID))
 	case github.EventTypePullRequest:
 		o.handlePRMerged(issueID)
@@ -708,12 +741,12 @@ func (o *Orchestrator) handleGitHubEvent(eventType github.EventType, issueID str
 		// Notify superintendent and the assigned team's engineer
 		msg := fmt.Sprintf("New comment on %s by @%s: %s", issueID, comment.Author, comment.Body)
 
-		o.chatLog.Append("superintendent", "orchestrator", msg)
+		o.appendOrLog("superintendent", "orchestrator", msg)
 
 		// If the issue is assigned to a team, also notify the team engineer
 		if iss.AssignedTeam > 0 {
 			engineerID := fmt.Sprintf("engineer-%d", iss.AssignedTeam)
-			o.chatLog.Append(engineerID, "orchestrator", msg)
+			o.appendOrLog(engineerID, "orchestrator", msg)
 		}
 	}
 }
@@ -757,7 +790,7 @@ func (o *Orchestrator) handlePRMerged(issueID string) {
 	}
 
 	// Notify superintendent
-	o.chatLog.Append("superintendent", "orchestrator",
+	o.appendOrLog("superintendent", "orchestrator",
 		fmt.Sprintf("PR merged for issue %s. Issue auto-closed and team disbanded.", issueID))
 
 	log.Printf("[orchestrator] PR merged: issue %s closed, team disbanded", issueID)
@@ -954,7 +987,7 @@ func (o *Orchestrator) runMainCheck(ctx context.Context) {
 			return
 		case <-ticker.C:
 			log.Println("[main-check] sending main branch check request to superintendent")
-			o.chatLog.Append("superintendent", "orchestrator", mainCheckPrompt)
+			o.appendOrLog("superintendent", "orchestrator", mainCheckPrompt)
 		}
 	}
 }
@@ -990,7 +1023,7 @@ func (o *Orchestrator) runDocCheck(ctx context.Context) {
 			return
 		case <-ticker.C:
 			log.Println("[doc-check] sending doc consistency check request to superintendent")
-			o.chatLog.Append("superintendent", "orchestrator", docCheckPrompt)
+			o.appendOrLog("superintendent", "orchestrator", docCheckPrompt)
 		}
 	}
 }
