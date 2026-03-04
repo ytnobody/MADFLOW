@@ -108,18 +108,30 @@ cat {{ISSUES_DIR}}/<イシューID>.toml
 
 **必ず git worktree を使用して隔離された作業ディレクトリを作成してください。**
 
+#### develop ブランチの最新取得（必須）
+
+**作業開始前に必ずリモートの最新情報を取得してください。** 古い develop ブランチをベースに実装すると、マージコンフリクトや既に修正済みの問題を再実装するリスクがあります。
+
+```bash
+# 【必須】リモートの最新情報を取得
+git -C {{REPO_PATH}} fetch origin
+```
+
+#### ワークツリーの作成または再利用
+
 ```bash
 # 既存のワークツリーを確認
 git -C {{REPO_PATH}} worktree list | grep {{FEATURE_PREFIX}}<イシューID>
 
-# ワークツリーがない場合: 新規作成
-git -C {{REPO_PATH}} fetch origin
+# ワークツリーがない場合: 新規作成（origin/develop の最新から作成される）
 git -C {{REPO_PATH}} worktree add -b {{FEATURE_PREFIX}}<イシューID> \
   {{REPO_PATH}}/.worktrees/team-{{TEAM_NUM}} \
   origin/{{DEVELOP_BRANCH}}
 
-# ワークツリーがある場合: 既存のワークツリーに移動
-# (git worktree list の出力からパスを取得)
+# ワークツリーがある場合: 既存のワークツリーに移動し、develop の最新をマージ
+cd {{REPO_PATH}}/.worktrees/team-{{TEAM_NUM}}
+git merge origin/{{DEVELOP_BRANCH}}
+# コンフリクトが発生した場合は解決してから作業を続行してください
 ```
 
 **以降の全ての git 操作・ファイル編集は、ワークツリーディレクトリ (`{{REPO_PATH}}/.worktrees/team-{{TEAM_NUM}}`) 内で行ってください。**
