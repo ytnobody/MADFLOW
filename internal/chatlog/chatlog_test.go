@@ -278,8 +278,9 @@ func TestTruncate_EmptyFile(t *testing.T) {
 	}
 }
 
-// TestReadFrom_OffsetResetAfterTruncate verifies that readFrom skips to the
-// end of file when truncation is detected, instead of replaying old messages.
+// TestReadFrom_OffsetResetAfterTruncate verifies that readFrom re-reads the
+// truncated file from the beginning when truncation is detected, but uses
+// lastTimestamp to filter out already-processed old messages.
 // This prevents old TEAM_CREATE/TEAM_DISBAND commands from being re-processed
 // every time the chatlog cleanup goroutine truncates the file.
 func TestReadFrom_OffsetResetAfterTruncate(t *testing.T) {
@@ -308,19 +309,23 @@ func TestReadFrom_OffsetResetAfterTruncate(t *testing.T) {
 	}
 	offset := info.Size()
 
+	// lastTimestamp = timestamp of the last processed message (10:00:05)
+	lastTimestamp, _ := time.Parse("2006-01-02T15:04:05", "2026-02-21T10:00:05")
+
 	// Truncate to keep only 2 lines (file shrinks)
 	if err := cl.Truncate(2); err != nil {
 		t.Fatalf("Truncate failed: %v", err)
 	}
 
-	// readFrom should detect truncation and skip to end-of-file instead of
-	// re-reading from the beginning.  No messages should be returned.
-	messages, newOffset, err := cl.readFrom(offset, "superintendent")
+	// readFrom should detect truncation, re-read from beginning, and filter
+	// out already-processed messages (all remaining have T <= 10:00:05).
+	// Net result: 0 new messages returned.
+	messages, newOffset, err := cl.readFrom(offset, lastTimestamp, "superintendent")
 	if err != nil {
 		t.Fatalf("readFrom failed: %v", err)
 	}
 	if len(messages) != 0 {
-		t.Errorf("expected 0 messages after truncation (skip-to-end), got %d: %v", len(messages), messages)
+		t.Errorf("expected 0 messages after truncation (all old), got %d: %v", len(messages), messages)
 	}
 	// Offset must have been updated to the current (smaller) file size.
 	truncatedInfo, err := os.Stat(path)
@@ -341,7 +346,7 @@ func TestReadFrom_OffsetResetAfterTruncate(t *testing.T) {
 	f.WriteString(newMsg)
 	f.Close()
 
-	messages2, _, err := cl.readFrom(newOffset, "superintendent")
+	messages2, _, err := cl.readFrom(newOffset, lastTimestamp, "superintendent")
 	if err != nil {
 		t.Fatalf("second readFrom failed: %v", err)
 	}
@@ -350,5 +355,65 @@ func TestReadFrom_OffsetResetAfterTruncate(t *testing.T) {
 	}
 	if len(messages2) > 0 && messages2[0].Body != "新しいメッセージ" {
 		t.Errorf("expected new message body '新しいメッセージ', got: %s", messages2[0].Body)
+	}
+}
+
+// TestReadFrom_TruncationPreservesNewMessages verifies the core bug fix:
+// a message written to the chatlog just before a Truncate() call must not be
+// silently dropped.  This was the root cause of TEAM_CREATE commands being
+// missed by the orchestrator when the chatlog cleanup goroutine ran at an
+// inopportune time.
+func TestReadFrom_TruncationPreservesNewMessages(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "chatlog.txt")
+
+	// Write old messages that will be partially removed by Truncate.
+	oldLines := []string{
+		"[2026-02-21T10:00:01] [@orchestrator] superintendent: TEAM_CREATE 1",
+		"[2026-02-21T10:00:02] [@orchestrator] superintendent: TEAM_CREATE 2",
+		"[2026-02-21T10:00:03] [@orchestrator] superintendent: TEAM_CREATE 3",
+		"[2026-02-21T10:00:04] [@orchestrator] superintendent: TEAM_CREATE 4",
+		"[2026-02-21T10:00:05] [@orchestrator] superintendent: TEAM_CREATE 5",
+	}
+	content := strings.Join(oldLines, "\n") + "\n"
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cl := New(path)
+
+	// Simulate Watch(): offset = current file size, lastTimestamp = 10:00:05.
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	offset := info.Size()
+	lastTimestamp, _ := time.Parse("2006-01-02T15:04:05", "2026-02-21T10:00:05")
+
+	// A new TEAM_CREATE arrives just before the truncation goroutine runs.
+	newTeamCreate := "[2026-02-21T10:00:06] [@orchestrator] superintendent: TEAM_CREATE 6\n"
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.WriteString(newTeamCreate)
+	f.Close()
+
+	// Truncate keeps last 3 lines: TEAM_CREATE 4, 5, 6.
+	// File shrinks so its size is now less than the previous offset.
+	if err := cl.Truncate(3); err != nil {
+		t.Fatalf("Truncate failed: %v", err)
+	}
+
+	// readFrom must return TEAM_CREATE 6 despite the truncation.
+	messages, _, err := cl.readFrom(offset, lastTimestamp, "orchestrator")
+	if err != nil {
+		t.Fatalf("readFrom failed: %v", err)
+	}
+	if len(messages) != 1 {
+		t.Errorf("expected 1 new message preserved after truncation, got %d", len(messages))
+	}
+	if len(messages) > 0 && messages[0].Body != "TEAM_CREATE 6" {
+		t.Errorf("expected body 'TEAM_CREATE 6', got: %s", messages[0].Body)
 	}
 }
