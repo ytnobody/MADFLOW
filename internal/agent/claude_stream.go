@@ -217,6 +217,7 @@ type readResultOutput struct {
 
 // scanForResult synchronously scans lines until a result or error event.
 func (c *ClaudeStreamProcess) scanForResult() (string, error) {
+	eventCount := 0
 	for c.scanner.Scan() {
 		line := c.scanner.Text()
 		if line == "" {
@@ -229,6 +230,8 @@ func (c *ClaudeStreamProcess) scanForResult() (string, error) {
 			continue
 		}
 
+		eventCount++
+
 		switch event.Type {
 		case "system":
 			// Capture session_id from init event
@@ -237,11 +240,12 @@ func (c *ClaudeStreamProcess) scanForResult() (string, error) {
 				log.Printf("[claude-stream] init received (session=%s)", c.sessionID)
 			}
 		case "result":
+			log.Printf("[claude-stream] result received after %d events (session=%s)", eventCount, c.sessionID)
 			return extractResultText(event), nil
 		case "error":
 			return "", classifyStreamError(event)
 		}
-		// Skip other event types (assistant, content_block_*, tool_use, etc.)
+
 	}
 
 	if err := c.scanner.Err(); err != nil {

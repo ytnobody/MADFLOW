@@ -397,6 +397,92 @@ func TestPrepareWorktreeUseExistingDevelop(t *testing.T) {
 	repo.RemoveWorktree(wtDir)
 }
 
+func TestCleanOrphanedWorktrees(t *testing.T) {
+	repo := initTestRepo(t)
+
+	baseBranch, err := repo.CurrentBranch()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Create .worktrees directory with some team dirs
+	worktreeDir := filepath.Join(repo.Path(), ".worktrees")
+	if err := os.MkdirAll(worktreeDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create worktrees for team-1 (active) and team-2 (orphaned)
+	wt1 := filepath.Join(worktreeDir, "team-1")
+	wt2 := filepath.Join(worktreeDir, "team-2")
+	wt3 := filepath.Join(worktreeDir, "team-3")
+
+	for i, wtPath := range []string{wt1, wt2, wt3} {
+		branchName := filepath.Base(wtPath) + "-branch"
+		if err := repo.AddWorktree(wtPath, branchName, baseBranch); err != nil {
+			t.Fatalf("AddWorktree %d failed: %v", i+1, err)
+		}
+	}
+
+	// Mark team-1 as active
+	activeTeams := map[string]bool{
+		"team-1": true,
+	}
+
+	removed := repo.CleanOrphanedWorktrees(activeTeams)
+
+	// team-2 and team-3 should be removed, team-1 should remain
+	if len(removed) != 2 {
+		t.Errorf("expected 2 removed worktrees, got %d: %v", len(removed), removed)
+	}
+
+	// team-1 directory should still exist
+	if _, err := os.Stat(wt1); os.IsNotExist(err) {
+		t.Error("expected team-1 worktree to still exist (active team)")
+	}
+
+	// team-2 and team-3 directories should be gone
+	for _, wtPath := range []string{wt2, wt3} {
+		if _, err := os.Stat(wtPath); !os.IsNotExist(err) {
+			t.Errorf("expected %s worktree to be removed", filepath.Base(wtPath))
+		}
+	}
+
+	// Cleanup
+	repo.RemoveWorktree(wt1)
+}
+
+func TestCleanOrphanedWorktreesNoDir(t *testing.T) {
+	repo := initTestRepo(t)
+
+	// No .worktrees directory — should return nil without error
+	removed := repo.CleanOrphanedWorktrees(map[string]bool{})
+	if len(removed) != 0 {
+		t.Errorf("expected no removed worktrees, got %d", len(removed))
+	}
+}
+
+func TestCleanOrphanedWorktreesSkipsNonTeam(t *testing.T) {
+	repo := initTestRepo(t)
+
+	// Create .worktrees directory with a non-team dir
+	worktreeDir := filepath.Join(repo.Path(), ".worktrees")
+	nonTeamDir := filepath.Join(worktreeDir, "custom-worktree")
+	if err := os.MkdirAll(nonTeamDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	removed := repo.CleanOrphanedWorktrees(map[string]bool{})
+
+	// Non-team directories should not be removed
+	if len(removed) != 0 {
+		t.Errorf("expected no removed worktrees, got %d: %v", len(removed), removed)
+	}
+
+	if _, err := os.Stat(nonTeamDir); os.IsNotExist(err) {
+		t.Error("expected non-team directory to still exist")
+	}
+}
+
 func TestMergeConflict(t *testing.T) {
 	repo := initTestRepo(t)
 

@@ -235,19 +235,100 @@ func TestIgnoredIssueActions(t *testing.T) {
 
 	w := NewEventWatcher(store, "owner", []string{"repo"}, time.Minute, cb)
 
-	// "closed" action should be ignored
+	// "labeled" action should be ignored (not opened/edited/closed)
+	payload := ghEventPayloadIssue{
+		Action: "labeled",
+		Issue:  ghIssue{Number: 1, Title: "Test", Body: "Body"},
+	}
+	payloadBytes, _ := json.Marshal(payload)
+
+	ev := ghEvent{ID: "evt-labeled", Type: "IssuesEvent", Payload: payloadBytes}
+	w.processEvent("repo", ev)
+
+	if callCount != 0 {
+		t.Errorf("expected 0 callbacks for ignored action, got %d", callCount)
+	}
+}
+
+func TestProcessIssuesEvent_Closed(t *testing.T) {
+	dir := t.TempDir()
+	store := issue.NewStore(dir)
+
+	// Pre-create the issue as in_progress
+	store.Update(&issue.Issue{
+		ID:     "owner-repo-001",
+		Title:  "Open Issue",
+		URL:    "https://github.com/owner/repo/issues/1",
+		Status: issue.StatusInProgress,
+	})
+
+	cb := func(et EventType, id string, c *issue.Comment) {}
+	w := NewEventWatcher(store, "owner", []string{"repo"}, time.Minute, cb)
+
 	payload := ghEventPayloadIssue{
 		Action: "closed",
-		Issue:  ghIssue{Number: 1, Title: "Test", Body: "Body"},
+		Issue:  ghIssue{Number: 1, Title: "Open Issue", Body: "Body"},
 	}
 	payloadBytes, _ := json.Marshal(payload)
 
 	ev := ghEvent{ID: "evt-closed", Type: "IssuesEvent", Payload: payloadBytes}
 	w.processEvent("repo", ev)
 
-	if callCount != 0 {
-		t.Errorf("expected 0 callbacks for ignored action, got %d", callCount)
+	iss, err := store.Get("owner-repo-001")
+	if err != nil {
+		t.Fatalf("expected issue in store: %v", err)
 	}
+	if iss.Status != issue.StatusClosed {
+		t.Errorf("expected status=closed, got %s", iss.Status)
+	}
+}
+
+func TestProcessIssuesEvent_Closed_AlreadyClosed(t *testing.T) {
+	dir := t.TempDir()
+	store := issue.NewStore(dir)
+
+	// Pre-create the issue as already closed
+	store.Update(&issue.Issue{
+		ID:     "owner-repo-010",
+		Title:  "Closed Issue",
+		URL:    "https://github.com/owner/repo/issues/10",
+		Status: issue.StatusClosed,
+	})
+
+	cb := func(et EventType, id string, c *issue.Comment) {}
+	w := NewEventWatcher(store, "owner", []string{"repo"}, time.Minute, cb)
+
+	payload := ghEventPayloadIssue{
+		Action: "closed",
+		Issue:  ghIssue{Number: 10, Title: "Closed Issue", Body: "Body"},
+	}
+	payloadBytes, _ := json.Marshal(payload)
+
+	ev := ghEvent{ID: "evt-closed-dup", Type: "IssuesEvent", Payload: payloadBytes}
+	w.processEvent("repo", ev)
+
+	iss, _ := store.Get("owner-repo-010")
+	if iss.Status != issue.StatusClosed {
+		t.Errorf("expected status=closed (unchanged), got %s", iss.Status)
+	}
+}
+
+func TestProcessIssuesEvent_Closed_UnknownIssue(t *testing.T) {
+	dir := t.TempDir()
+	store := issue.NewStore(dir)
+
+	// No issue in store — closed event should be a no-op (no panic)
+	cb := func(et EventType, id string, c *issue.Comment) {}
+	w := NewEventWatcher(store, "owner", []string{"repo"}, time.Minute, cb)
+
+	payload := ghEventPayloadIssue{
+		Action: "closed",
+		Issue:  ghIssue{Number: 999, Title: "Unknown", Body: "Body"},
+	}
+	payloadBytes, _ := json.Marshal(payload)
+
+	ev := ghEvent{ID: "evt-closed-unknown", Type: "IssuesEvent", Payload: payloadBytes}
+	w.processEvent("repo", ev) // should not panic
 }
 
 func TestIgnoredCommentActions(t *testing.T) {

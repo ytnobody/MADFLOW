@@ -70,6 +70,19 @@ func (r *Repo) DeleteBranch(name string) error {
 	return nil
 }
 
+// DeleteRemoteBranch deletes a remote branch on origin.
+// It also removes the local tracking branch if it exists.
+func (r *Repo) DeleteRemoteBranch(name string) error {
+	if _, err := r.run("push", "origin", "--delete", name); err != nil {
+		return fmt.Errorf("delete remote branch %s: %w", name, err)
+	}
+	// Remove the local branch if it exists (ignore errors).
+	if r.BranchExists(name) {
+		r.run("branch", "-d", name) //nolint:errcheck
+	}
+	return nil
+}
+
 // CurrentBranch returns the name of the current branch.
 func (r *Repo) CurrentBranch() (string, error) {
 	out, err := r.run("rev-parse", "--abbrev-ref", "HEAD")
@@ -144,6 +157,40 @@ func (r *Repo) CleanWorktrees(prefix string) (removed []string) {
 		}
 		removed = append(removed, entry.Name())
 	}
+	return removed
+}
+
+// CleanOrphanedWorktrees removes worktree directories under .worktrees/ that
+// start with "team-" but are NOT in the activeTeamDirs set. This catches
+// orphaned worktrees from teams that crashed or were not properly cleaned up.
+// It also runs "git worktree prune" to clean stale internal references.
+func (r *Repo) CleanOrphanedWorktrees(activeTeamDirs map[string]bool) (removed []string) {
+	worktreeDir := filepath.Join(r.path, ".worktrees")
+	entries, err := os.ReadDir(worktreeDir)
+	if err != nil {
+		return nil // directory doesn't exist; nothing to clean
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if !strings.HasPrefix(name, "team-") {
+			continue
+		}
+		if activeTeamDirs[name] {
+			continue
+		}
+		wtPath := filepath.Join(worktreeDir, name)
+		if err := r.RemoveWorktree(wtPath); err != nil {
+			// If git worktree remove fails, try to prune and remove manually.
+			r.run("worktree", "prune")
+			os.RemoveAll(wtPath)
+		}
+		removed = append(removed, name)
+	}
+	// Always prune stale worktree references at the end.
+	r.run("worktree", "prune")
 	return removed
 }
 

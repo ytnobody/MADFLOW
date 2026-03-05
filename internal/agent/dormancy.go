@@ -8,10 +8,14 @@ import (
 )
 
 // DefaultProbeInterval is the initial interval between rate-limit recovery probes.
-const DefaultProbeInterval = 15 * time.Minute
+// Set to 1 minute so that the first probe fires quickly; exponential backoff
+// (1m → 2m → 4m → 5m cap) ensures we don't hammer the API.
+const DefaultProbeInterval = 1 * time.Minute
 
 // MaxProbeInterval is the upper bound for exponential backoff.
-const MaxProbeInterval = 60 * time.Minute
+// Anthropic API rate limits typically clear within a few minutes,
+// so 5 minutes is sufficient as a cap.
+const MaxProbeInterval = 5 * time.Minute
 
 // ProbeFunc tests whether the rate limit has been lifted.
 // It should return nil if the limit is cleared.

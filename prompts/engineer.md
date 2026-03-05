@@ -108,18 +108,30 @@ cat {{ISSUES_DIR}}/<イシューID>.toml
 
 **必ず git worktree を使用して隔離された作業ディレクトリを作成してください。**
 
+#### develop ブランチの最新取得（必須）
+
+**作業開始前に必ずリモートの最新情報を取得してください。** 古い develop ブランチをベースに実装すると、マージコンフリクトや既に修正済みの問題を再実装するリスクがあります。
+
+```bash
+# 【必須】リモートの最新情報を取得
+git -C {{REPO_PATH}} fetch origin
+```
+
+#### ワークツリーの作成または再利用
+
 ```bash
 # 既存のワークツリーを確認
 git -C {{REPO_PATH}} worktree list | grep {{FEATURE_PREFIX}}<イシューID>
 
-# ワークツリーがない場合: 新規作成
-git -C {{REPO_PATH}} fetch origin
+# ワークツリーがない場合: 新規作成（origin/develop の最新から作成される）
 git -C {{REPO_PATH}} worktree add -b {{FEATURE_PREFIX}}<イシューID> \
   {{REPO_PATH}}/.worktrees/team-{{TEAM_NUM}} \
   origin/{{DEVELOP_BRANCH}}
 
-# ワークツリーがある場合: 既存のワークツリーに移動
-# (git worktree list の出力からパスを取得)
+# ワークツリーがある場合: 既存のワークツリーに移動し、develop の最新をマージ
+cd {{REPO_PATH}}/.worktrees/team-{{TEAM_NUM}}
+git merge origin/{{DEVELOP_BRANCH}}
+# コンフリクトが発生した場合は解決してから作業を続行してください
 ```
 
 **以降の全ての git 操作・ファイル編集は、ワークツリーディレクトリ (`{{REPO_PATH}}/.worktrees/team-{{TEAM_NUM}}`) 内で行ってください。**
@@ -229,12 +241,25 @@ gh pr list --head {{FEATURE_PREFIX}}<イシューID> --state open
 **ビルドまたはテストが失敗する場合は、実装完了を報告してはいけません。** 問題を修正してから再度確認してください。
 **push が完了していることを確認するまで、レビュー依頼を出してはいけません。**
 
-#### レビュー依頼の送信
+#### レビュー依頼の送信（作業サマリー付き）
 
-確認が全て通ったら、監督にレビューを依頼します:
+確認が全て通ったら、**作業内容のサマリー**を含めて監督にレビューを依頼します。
+サマリーには以下の情報を必ず含めてください:
+
+- **変更ファイル一覧**: どのファイルを追加・変更・削除したか
+- **実装内容の要約**: 何を実装したか（1〜3行）
+- **テスト結果**: テストが全て通過したこと
+
 ```bash
-echo "[$(date +%Y-%m-%dT%H:%M:%S)] [@superintendent] {{AGENT_ID}}: 実装完了。{{FEATURE_PREFIX}}<イシューID> ブランチのレビューをお願いします。" >> {{CHATLOG_PATH}}
+echo "[$(date +%Y-%m-%dT%H:%M:%S)] [@superintendent] {{AGENT_ID}}: 実装完了。{{FEATURE_PREFIX}}<イシューID> ブランチのレビューをお願いします。
+
+作業サマリー:
+- 変更ファイル: <変更したファイルの一覧>
+- 実装内容: <何を実装したかの要約>
+- テスト: 全て通過" >> {{CHATLOG_PATH}}
 ```
+
+**重要**: レビュー依頼には必ず作業サマリーを含めてください。サマリーなしのレビュー依頼は送信しないでください。
 
 #### 実装完了コメントの投稿（重複チェック必須）
 

@@ -109,6 +109,28 @@ func (c *ChatLog) Poll(recipient string) ([]Message, error) {
 	return messages, nil
 }
 
+// lastTimestampInFile reads the file and returns the timestamp of the last
+// successfully parsed message. Returns zero time if the file is empty or
+// cannot be read.
+func (c *ChatLog) lastTimestampInFile() time.Time {
+	f, err := os.Open(c.path)
+	if err != nil {
+		return time.Time{}
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	var lastTS time.Time
+	for scanner.Scan() {
+		if msg, err := ParseMessage(scanner.Text()); err == nil {
+			if msg.Timestamp.After(lastTS) {
+				lastTS = msg.Timestamp
+			}
+		}
+	}
+	return lastTS
+}
+
 // Watch monitors the chatlog file for new messages to the given recipient.
 // It yields messages on the returned channel until ctx is cancelled.
 func (c *ChatLog) Watch(ctx context.Context, recipient string) <-chan Message {
@@ -117,9 +139,12 @@ func (c *ChatLog) Watch(ctx context.Context, recipient string) <-chan Message {
 	// オフセットをゴルーチン外（呼び出し元スレッド）で取得することで、
 	// Watch() 呼び出し後にゴルーチン起動前に書かれたメッセージを
 	// 見落とすレース条件を防ぐ。
+	// lastTimestamp は truncation 検知時の重複排除に使用する。
 	var offset int64
+	var lastTimestamp time.Time
 	if info, err := os.Stat(c.path); err == nil {
 		offset = info.Size()
+		lastTimestamp = c.lastTimestampInFile()
 	}
 
 	go func() {
@@ -133,12 +158,16 @@ func (c *ChatLog) Watch(ctx context.Context, recipient string) <-chan Message {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				newMessages, newOffset, err := c.readFrom(offset, recipient)
+				newMessages, newOffset, err := c.readFrom(offset, lastTimestamp, recipient)
 				if err != nil {
+					log.Printf("[chatlog] Watch(%s): readFrom error: %v", recipient, err)
 					continue
 				}
 				offset = newOffset
 				for _, msg := range newMessages {
+					if msg.Timestamp.After(lastTimestamp) {
+						lastTimestamp = msg.Timestamp
+					}
 					select {
 					case ch <- msg:
 					case <-ctx.Done():
@@ -157,9 +186,12 @@ func (c *ChatLog) WatchAll(ctx context.Context) <-chan Message {
 	ch := make(chan Message, 16)
 
 	// Watch() と同様に、オフセットをゴルーチン外で取得してレース条件を防ぐ。
+	// lastTimestamp は truncation 検知時の重複排除に使用する。
 	var offset int64
+	var lastTimestamp time.Time
 	if info, err := os.Stat(c.path); err == nil {
 		offset = info.Size()
+		lastTimestamp = c.lastTimestampInFile()
 	}
 
 	go func() {
@@ -173,12 +205,16 @@ func (c *ChatLog) WatchAll(ctx context.Context) <-chan Message {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				newMessages, newOffset, err := c.readFrom(offset, "")
+				newMessages, newOffset, err := c.readFrom(offset, lastTimestamp, "")
 				if err != nil {
+					log.Printf("[chatlog] WatchAll: readFrom error: %v", err)
 					continue
 				}
 				offset = newOffset
 				for _, msg := range newMessages {
+					if msg.Timestamp.After(lastTimestamp) {
+						lastTimestamp = msg.Timestamp
+					}
 					select {
 					case ch <- msg:
 					case <-ctx.Done():
@@ -234,7 +270,14 @@ func (c *ChatLog) Truncate(maxLines int) error {
 	return nil
 }
 
-func (c *ChatLog) readFrom(offset int64, recipient string) ([]Message, int64, error) {
+// readFrom reads messages from the chatlog starting at the given byte offset.
+// lastTimestamp is used to filter out already-processed messages when a file
+// truncation is detected (info.Size() < offset): in that case, offset is reset
+// to 0 to re-read the entire (truncated) file, and only messages with a
+// timestamp strictly after lastTimestamp are returned.  This ensures that
+// messages written just before a truncation (e.g. TEAM_CREATE commands) are
+// not silently dropped.
+func (c *ChatLog) readFrom(offset int64, lastTimestamp time.Time, recipient string) ([]Message, int64, error) {
 	f, err := os.Open(c.path)
 	if err != nil {
 		return nil, offset, err
@@ -246,11 +289,13 @@ func (c *ChatLog) readFrom(offset int64, recipient string) ([]Message, int64, er
 		return nil, offset, err
 	}
 
+	truncated := false
 	if info.Size() < offset {
-		// File was truncated (e.g., by Truncate()); skip to current end to
-		// avoid reprocessing old messages (which could re-create orphaned teams
-		// or fire duplicate commands).
-		return nil, info.Size(), nil
+		// File was truncated (e.g., by Truncate()).  Reset to beginning so that
+		// messages written just before the truncation are not lost.
+		// Duplicate-message prevention is handled by lastTimestamp filtering below.
+		offset = 0
+		truncated = true
 	}
 	if info.Size() == offset {
 		return nil, offset, nil
@@ -269,6 +314,12 @@ func (c *ChatLog) readFrom(offset int64, recipient string) ([]Message, int64, er
 		}
 		msg, err := ParseMessage(line)
 		if err != nil {
+			continue
+		}
+		// When re-reading from the beginning after truncation, skip messages
+		// whose timestamps are not newer than the last processed timestamp to
+		// avoid replaying already-handled commands.
+		if truncated && !lastTimestamp.IsZero() && !msg.Timestamp.After(lastTimestamp) {
 			continue
 		}
 		if recipient == "" || msg.Recipient == recipient {
