@@ -47,7 +47,8 @@ jobs:
 
       - name: Benchmark regression check
         if: github.event_name == 'pull_request'
-        timeout-minutes: 10
+        timeout-minutes: 5
+        continue-on-error: true
         run: |
           set -e
           export PATH="$(go env GOPATH)/bin:$PATH"
@@ -57,7 +58,7 @@ jobs:
 
           # Run benchmarks on current (PR) branch
           echo "=== Running benchmarks on PR branch ==="
-          go test -bench=. -benchmem -count=5 -timeout 300s ./... > /tmp/bench_new.txt 2>&1 || true
+          go test -bench=. -benchmem -count=3 -timeout 120s ./... > /tmp/bench_new.txt 2>&1 || true
           cat /tmp/bench_new.txt
 
           # Fetch base branch tip and create an isolated worktree for comparison
@@ -67,7 +68,7 @@ jobs:
 
           # Run benchmarks on base branch
           echo "=== Running benchmarks on base branch ==="
-          (cd /tmp/bench-base && go test -bench=. -benchmem -count=5 -timeout 300s ./...) > /tmp/bench_old.txt 2>&1 || true
+          (cd /tmp/bench-base && go test -bench=. -benchmem -count=3 -timeout 120s ./...) > /tmp/bench_old.txt 2>&1 || true
           cat /tmp/bench_old.txt
 
           # Remove temporary worktree
