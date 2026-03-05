@@ -47,6 +47,7 @@ jobs:
 
       - name: Benchmark regression check
         if: github.event_name == 'pull_request'
+        timeout-minutes: 10
         run: |
           set -e
           export PATH="$(go env GOPATH)/bin:$PATH"
