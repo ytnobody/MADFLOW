@@ -11,7 +11,9 @@ import (
 const DefaultProbeInterval = 15 * time.Minute
 
 // MaxProbeInterval is the upper bound for exponential backoff.
-const MaxProbeInterval = 60 * time.Minute
+// Anthropic API rate limits typically clear within a few minutes,
+// so 5 minutes is sufficient as a cap.
+const MaxProbeInterval = 5 * time.Minute
 
 // ProbeFunc tests whether the rate limit has been lifted.
 // It should return nil if the limit is cleared.

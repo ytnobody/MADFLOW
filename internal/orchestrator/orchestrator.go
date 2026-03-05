@@ -215,6 +215,17 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 		}()
 	}
 
+	// Start issue patrol goroutine to periodically prompt the superintendent
+	// to check for new issues. Without this, the superintendent only reacts
+	// to chatlog messages and may stop patrolling during long idle periods.
+	if o.cfg.Agent.IssuePatrolIntervalMinutes > 0 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			o.runIssuePatrol(ctx)
+		}()
+	}
+
 	// Watch chatlog for orchestrator commands
 	wg.Add(1)
 	go func() {
@@ -1033,6 +1044,40 @@ func (o *Orchestrator) runDocCheck(ctx context.Context) {
 		case <-ticker.C:
 			log.Println("[doc-check] sending doc consistency check request to superintendent")
 			o.appendOrLog("superintendent", "orchestrator", docCheckPrompt)
+		}
+	}
+}
+
+// issuePatrolPrompt is the message sent to the superintendent for periodic issue patrol.
+const issuePatrolPrompt = `定期イシュー巡回の時間です。
+
+以下の手順で新規イシューを確認してください：
+
+1. イシューディレクトリを確認し、status="open" または status="in_progress" かつ assigned_team=0 のイシューがないか確認する
+2. 該当イシューがあれば、チーム編成を要求する（TEAM_CREATE）
+3. 進行中のチーム（assigned_team > 0）の状況をチャットログから確認する
+4. resolved 状態のイシューがあればクローズ手続きを行う
+
+特に未割り当てのイシューがないか注意してください。`
+
+// runIssuePatrol periodically prompts the superintendent to check for new issues.
+// This prevents the superintendent from becoming idle during long periods without
+// chatlog messages, which was reported as GitHub Issue #155.
+func (o *Orchestrator) runIssuePatrol(ctx context.Context) {
+	interval := time.Duration(o.cfg.Agent.IssuePatrolIntervalMinutes) * time.Minute
+	log.Printf("[issue-patrol] started (interval: %v)", interval)
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			log.Println("[issue-patrol] stopped")
+			return
+		case <-ticker.C:
+			log.Println("[issue-patrol] sending issue patrol request to superintendent")
+			o.appendOrLog("superintendent", "orchestrator", issuePatrolPrompt)
 		}
 	}
 }

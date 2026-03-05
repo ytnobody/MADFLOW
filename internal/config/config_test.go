@@ -664,6 +664,87 @@ bash_timeout_minutes = 10
 	}
 }
 
+func TestIssuePatrolIntervalMinutesDefault(t *testing.T) {
+	content := `
+[project]
+name = "test-app"
+
+[[project.repos]]
+name = "main"
+path = "."
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "madflow.toml")
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if cfg.Agent.IssuePatrolIntervalMinutes != 5 {
+		t.Errorf("expected default issue_patrol_interval_minutes 5, got %d", cfg.Agent.IssuePatrolIntervalMinutes)
+	}
+}
+
+func TestIssuePatrolIntervalMinutesCustom(t *testing.T) {
+	content := `
+[project]
+name = "test-app"
+
+[[project.repos]]
+name = "main"
+path = "."
+
+[agent]
+issue_patrol_interval_minutes = 10
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "madflow.toml")
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if cfg.Agent.IssuePatrolIntervalMinutes != 10 {
+		t.Errorf("expected issue_patrol_interval_minutes 10, got %d", cfg.Agent.IssuePatrolIntervalMinutes)
+	}
+}
+
+func TestIssuePatrolIntervalMinutesDisabled(t *testing.T) {
+	content := `
+[project]
+name = "test-app"
+
+[[project.repos]]
+name = "main"
+path = "."
+
+[agent]
+issue_patrol_interval_minutes = -1
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "madflow.toml")
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if cfg.Agent.IssuePatrolIntervalMinutes != -1 {
+		t.Errorf("expected issue_patrol_interval_minutes -1 (disabled), got %d", cfg.Agent.IssuePatrolIntervalMinutes)
+	}
+}
+
 func TestGitHubBotCommentPatterns(t *testing.T) {
 	content := `
 [project]
