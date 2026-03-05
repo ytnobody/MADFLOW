@@ -50,7 +50,7 @@ type AgentConfig struct {
 	GeminiRPM int `toml:"gemini_rpm"`
 	// DormancyProbeMinutes is the initial interval between rate-limit recovery probes
 	// when all agents enter dormancy due to a rate limit error.
-	// The interval doubles after each failed probe (exponential backoff), up to 60 minutes.
+	// The interval doubles after each failed probe (exponential backoff), up to 5 minutes.
 	// Shorter values help recover faster from transient rate limits (useful for Gemini).
 	// Defaults to 3 minutes.
 	DormancyProbeMinutes int `toml:"dormancy_probe_minutes"`
@@ -58,6 +58,12 @@ type AgentConfig struct {
 	// to run before being killed. This prevents agents from hanging indefinitely
 	// on commands that never finish. Defaults to 5 minutes.
 	BashTimeoutMinutes int `toml:"bash_timeout_minutes"`
+	// IssuePatrolIntervalMinutes specifies how often the superintendent is prompted
+	// to check for new issues and take action. Without this periodic trigger, the
+	// superintendent only reacts to chatlog messages and may stop patrolling for
+	// issues during long idle periods.
+	// 0 triggers the default of 5 minutes. Set to -1 to disable.
+	IssuePatrolIntervalMinutes int `toml:"issue_patrol_interval_minutes"`
 	// WorktreeCleanupIntervalMinutes specifies how often to check for and remove
 	// orphaned git worktrees (those not associated with any active team).
 	// 0 (default) disables periodic worktree cleanup.
@@ -163,6 +169,9 @@ func setDefaults(cfg *Config) {
 	}
 	if cfg.Agent.BashTimeoutMinutes == 0 {
 		cfg.Agent.BashTimeoutMinutes = 5
+	}
+	if cfg.Agent.IssuePatrolIntervalMinutes == 0 {
+		cfg.Agent.IssuePatrolIntervalMinutes = 5
 	}
 	if cfg.Branches.Main == "" {
 		cfg.Branches.Main = "main"
