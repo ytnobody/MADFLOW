@@ -586,6 +586,34 @@ func (o *Orchestrator) handleTeamCreate(ctx context.Context, body string) {
 		return
 	}
 
+	issueTitle := existingIss.Title
+
+	// Before creating a new team, try to reuse an existing idle standby team.
+	// When all maxTeams slots are occupied by standby teams (IssueID == ""),
+	// calling Create() would fail with "maximum teams reached". Instead, we
+	// assign the issue directly to one of the idle teams and notify its engineer.
+	if idleTeam, ok := o.teams.AssignIdle(issueID, issueTitle); ok {
+		log.Printf("[orchestrator] TEAM_CREATE %s: reusing idle team %d", issueID, idleTeam.ID)
+
+		// Update the issue to reflect the new assignment.
+		existingIss.AssignedTeam = idleTeam.ID
+		existingIss.Status = issue.StatusInProgress
+		if updErr := o.store.Update(existingIss); updErr != nil {
+			log.Printf("[orchestrator] TEAM_CREATE: failed to update issue %s assignment: %v", issueID, updErr)
+		}
+
+		// Notify the idle team's engineer about the new assignment via chatlog.
+		engineerID := idleTeam.Engineer.ID.String()
+		o.appendOrLog(engineerID, "superintendent",
+			fmt.Sprintf("イシュー %s の実装をお願いします。あなたにアサインしました。", issueID))
+
+		// Notify superintendent that the assignment was completed.
+		o.appendOrLog("superintendent", "orchestrator",
+			fmt.Sprintf("TEAM_CREATE %s: アイドルチーム %d (%s) にアサインしました", issueID, idleTeam.ID, engineerID))
+		return
+	}
+
+	// No idle team available; create a new one.
 	// Mark issue as in_progress immediately to prevent the superintendent
 	// from sending duplicate TEAM_CREATE commands while the team is being created.
 	existingIss.Status = issue.StatusInProgress
@@ -600,8 +628,6 @@ func (o *Orchestrator) handleTeamCreate(ctx context.Context, body string) {
 	// and retrying or falling back to direct implementation prematurely.
 	o.appendOrLog("superintendent", "orchestrator",
 		fmt.Sprintf("TEAM_CREATE %s: 受信しました。チーム作成を開始します。", issueID))
-
-	issueTitle := existingIss.Title
 
 	// Use a context detached from the parent so that a shutdown signal does not
 	// cancel the in-flight team creation.  The goroutine will still respect its

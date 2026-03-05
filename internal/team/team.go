@@ -236,6 +236,26 @@ func (m *Manager) List() []TeamInfo {
 	return infos
 }
 
+// AssignIdle looks for a standby team (a team with no issue currently assigned)
+// and assigns the given issue to it. Returns the team and true if an idle team
+// was found and assigned; returns nil and false if all teams are busy.
+//
+// This is called by the orchestrator when TEAM_CREATE is received and all team
+// slots are already occupied by standby teams, preventing the "maximum teams
+// reached" error by reusing an existing idle team instead of spawning a new one.
+func (m *Manager) AssignIdle(issueID, issueTitle string) (*Team, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, t := range m.teams {
+		if t.IssueID == "" {
+			t.IssueID = issueID
+			t.IssueTitle = issueTitle
+			return t, true
+		}
+	}
+	return nil, false
+}
+
 // HasIssue returns true if any active or pending team is assigned to the given issue.
 func (m *Manager) HasIssue(issueID string) bool {
 	m.mu.Lock()
