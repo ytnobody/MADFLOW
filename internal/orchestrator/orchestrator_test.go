@@ -900,6 +900,132 @@ func TestHandleGitHubEvent_PullRequest(t *testing.T) {
 	}
 }
 
+// TestHandleTeamCreateUsesIdleTeam verifies that TEAM_CREATE reuses an existing
+// idle standby team instead of creating a new one when maxTeams is already reached.
+// This is the fix for GitHub Issue #156: the orchestrator was failing with
+// "maximum teams reached" even when idle teams were available.
+func TestHandleTeamCreateUsesIdleTeam(t *testing.T) {
+	dir := t.TempDir()
+	cfg := testConfig(dir)
+	cfg.Agent.MaxTeams = 2
+	os.MkdirAll(filepath.Join(dir, "issues"), 0755)
+	chatlogPath := filepath.Join(dir, "chatlog.txt")
+	os.WriteFile(chatlogPath, nil, 0644)
+
+	orc := New(cfg, dir, t.TempDir())
+	orc.teams = team.NewManager(newMockTeamFactory(t), 2)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Create 2 standby teams (no issue assigned) — fills maxTeams slots.
+	_, err := orc.Teams().Create(ctx, "", "")
+	if err != nil {
+		t.Fatalf("create standby team 1: %v", err)
+	}
+	_, err = orc.Teams().Create(ctx, "", "")
+	if err != nil {
+		t.Fatalf("create standby team 2: %v", err)
+	}
+	if orc.Teams().Count() != 2 {
+		t.Fatalf("expected 2 standby teams, got %d", orc.Teams().Count())
+	}
+
+	// Create a new open issue.
+	iss, _ := orc.Store().Create("New Issue for Idle Team", "body")
+
+	// Call TEAM_CREATE — should reuse an idle team instead of failing.
+	orc.handleTeamCreate(ctx, fmt.Sprintf("TEAM_CREATE %s", iss.ID))
+
+	// Team count must not increase (no new team created).
+	if orc.Teams().Count() != 2 {
+		t.Errorf("expected team count to remain 2 (idle reuse), got %d", orc.Teams().Count())
+	}
+
+	// Issue must be assigned to one of the standby teams.
+	// Wait briefly for async issue store update.
+	time.Sleep(50 * time.Millisecond)
+	got, getErr := orc.Store().Get(iss.ID)
+	if getErr != nil {
+		t.Fatalf("get issue: %v", getErr)
+	}
+	if got.AssignedTeam == 0 {
+		t.Error("expected issue to be assigned to an idle team, but AssignedTeam is 0")
+	}
+	if got.Status != issue.StatusInProgress {
+		t.Errorf("expected issue status in_progress, got %s", got.Status)
+	}
+
+	// Chatlog must contain the idle-team assignment notification.
+	cl := chatlog.New(chatlogPath)
+	msgs, _ := cl.Poll("superintendent")
+	found := false
+	for _, m := range msgs {
+		if contains(m.Body, "アイドルチーム") && contains(m.Body, iss.ID) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected chatlog to contain idle-team assignment message")
+	}
+}
+
+// TestHandleTeamCreateCreatesNewTeamWhenNoIdle verifies that TEAM_CREATE still
+// creates a new team when no idle standby teams are available.
+func TestHandleTeamCreateCreatesNewTeamWhenNoIdle(t *testing.T) {
+	dir := t.TempDir()
+	cfg := testConfig(dir)
+	cfg.Agent.MaxTeams = 3
+	os.MkdirAll(filepath.Join(dir, "issues"), 0755)
+	chatlogPath := filepath.Join(dir, "chatlog.txt")
+	os.WriteFile(chatlogPath, nil, 0644)
+
+	orc := New(cfg, dir, t.TempDir())
+	orc.teams = team.NewManager(newMockTeamFactory(t), 3)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Create 2 busy teams (with issues), leaving 1 slot free but no idle teams.
+	_, err := orc.Teams().Create(ctx, "issue-busy-01", "Busy Issue 1")
+	if err != nil {
+		t.Fatalf("create busy team 1: %v", err)
+	}
+	_, err = orc.Teams().Create(ctx, "issue-busy-02", "Busy Issue 2")
+	if err != nil {
+		t.Fatalf("create busy team 2: %v", err)
+	}
+
+	// Create a new open issue.
+	iss, _ := orc.Store().Create("New Issue No Idle", "body")
+
+	// Call TEAM_CREATE — all existing teams are busy, so it must try to create a new one.
+	orc.handleTeamCreate(ctx, fmt.Sprintf("TEAM_CREATE %s", iss.ID))
+
+	// Give the async goroutine a moment to start.
+	time.Sleep(200 * time.Millisecond)
+
+	// Team count should increase to 3 (new team created for the new issue).
+	if orc.Teams().Count() < 3 {
+		t.Errorf("expected 3 teams after creating new team, got %d", orc.Teams().Count())
+	}
+
+	// Chatlog should contain ACK message (not idle-team message).
+	cl := chatlog.New(chatlogPath)
+	msgs, _ := cl.Poll("superintendent")
+	found := false
+	for _, m := range msgs {
+		if contains(m.Body, "受信しました") && contains(m.Body, iss.ID) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected chatlog to contain ACK message for new team creation")
+	}
+}
+
 // TestRunGracefulShutdownDuringStartup verifies that Run returns nil (not an
 // error) when the context is cancelled while startAllTeams is still running.
 // Previously the system returned "wait for agents ready: context canceled"

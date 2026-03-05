@@ -410,3 +410,82 @@ func TestAnnounceStartStandbyNoDirectAssignment(t *testing.T) {
 		t.Errorf("expected 0 direct assignment messages for standby team, got %d: %v", len(msgs), msgs)
 	}
 }
+
+// TestAssignIdle は、スタンバイチームにイシューをアサインできることを確認する。
+func TestAssignIdle(t *testing.T) {
+	factory := newMockFactory(t)
+	m := NewManager(factory, 2)
+
+	// 2つのスタンバイチームを作成（イシューなし）
+	t1 := createAndCancel(t, m, "")
+	t2 := createAndCancel(t, m, "")
+
+	_ = t2 // suppress unused warning
+
+	// スタンバイチームにイシューをアサイン
+	assigned, ok := m.AssignIdle("issue-idle-01", "Idle Test Issue")
+	if !ok {
+		t.Fatal("expected AssignIdle to return true when idle team is available")
+	}
+	if assigned == nil {
+		t.Fatal("expected non-nil team from AssignIdle")
+	}
+	if assigned.IssueID != "issue-idle-01" {
+		t.Errorf("expected IssueID issue-idle-01, got %s", assigned.IssueID)
+	}
+	if assigned.IssueTitle != "Idle Test Issue" {
+		t.Errorf("expected IssueTitle 'Idle Test Issue', got %s", assigned.IssueTitle)
+	}
+
+	// アサイン後はそのイシューが HasIssue で見えること
+	if !m.HasIssue("issue-idle-01") {
+		t.Error("expected HasIssue to return true after AssignIdle")
+	}
+
+	// t1のチームにアサインされた可能性もあるので、アサインされたチームIDがt1またはt2のものであることを確認
+	if assigned.ID != t1.ID && assigned.ID != t2.ID {
+		t.Errorf("expected assigned team ID to be %d or %d, got %d", t1.ID, t2.ID, assigned.ID)
+	}
+
+	// もう一つ別のイシューをアサイン（もう一つのスタンバイチームに入るはず）
+	assigned2, ok2 := m.AssignIdle("issue-idle-02", "Idle Test Issue 2")
+	if !ok2 {
+		t.Fatal("expected second AssignIdle to succeed with remaining idle team")
+	}
+	if assigned2.IssueID != "issue-idle-02" {
+		t.Errorf("expected IssueID issue-idle-02, got %s", assigned2.IssueID)
+	}
+
+	// 3つ目はスタンバイがないので失敗するはず
+	_, ok3 := m.AssignIdle("issue-idle-03", "No Idle")
+	if ok3 {
+		t.Error("expected AssignIdle to return false when no idle teams are available")
+	}
+}
+
+// TestAssignIdleReturnsFalseWhenAllBusy は、全チームがビジー時にAssignIdleがfalseを返すことを確認する。
+func TestAssignIdleReturnsFalseWhenAllBusy(t *testing.T) {
+	factory := newMockFactory(t)
+	m := NewManager(factory, 2)
+
+	// 全チームにイシューをアサイン
+	createAndCancel(t, m, "issue-busy-01")
+	createAndCancel(t, m, "issue-busy-02")
+
+	// スタンバイチームなし → false
+	_, ok := m.AssignIdle("issue-new", "New Issue")
+	if ok {
+		t.Error("expected AssignIdle to return false when all teams are busy")
+	}
+}
+
+// TestAssignIdleReturnsFalseWhenNoTeams は、チームが存在しない時にAssignIdleがfalseを返すことを確認する。
+func TestAssignIdleReturnsFalseWhenNoTeams(t *testing.T) {
+	factory := newMockFactory(t)
+	m := NewManager(factory, 4)
+
+	_, ok := m.AssignIdle("issue-001", "Issue")
+	if ok {
+		t.Error("expected AssignIdle to return false when no teams exist")
+	}
+}

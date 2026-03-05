@@ -26,6 +26,28 @@ func waitForTeams(t *testing.T, orc *orchestrator.Orchestrator, want int, timeou
 	t.Fatalf("timed out waiting for %d teams, got %d", want, orc.Teams().Count())
 }
 
+// waitForAssignment polls until the issue's AssignedTeam is non-zero
+// or the timeout expires. Needed because the issue update happens asynchronously
+// after team creation completes (teams.Count increases before Create returns).
+func waitForAssignment(t *testing.T, store *issue.Store, issueID string, timeout time.Duration) *issue.Issue {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		iss, err := store.Get(issueID)
+		if err == nil && iss.AssignedTeam != 0 {
+			return iss
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	iss, _ := store.Get(issueID)
+	if iss != nil {
+		t.Fatalf("timed out waiting for assignment on issue %s, AssignedTeam=%d", issueID, iss.AssignedTeam)
+	} else {
+		t.Fatalf("timed out waiting for assignment on issue %s (issue not found)", issueID)
+	}
+	return nil
+}
+
 // TestIssueToTeamCreateFlow tests the flow from issue creation
 // to team creation via orchestrator command handling.
 func TestIssueToTeamCreateFlow(t *testing.T) {
@@ -96,12 +118,10 @@ func TestIssueToTeamCreateFlow(t *testing.T) {
 		t.Errorf("expected team for %s, got %s", iss.ID, infos[0].IssueID)
 	}
 
-	// Step 4: Verify issue was updated (wait briefly for async goroutine)
-	time.Sleep(100 * time.Millisecond)
-	updated, err := store.Get(iss.ID)
-	if err != nil {
-		t.Fatalf("get issue: %v", err)
-	}
+	// Step 4: Verify issue was updated (poll until AssignedTeam is set by async goroutine)
+	// Note: teams.Count() increases when pendingCount is incremented (before Create returns),
+	// so we need a separate poll to wait for the issue assignment to be written to disk.
+	updated := waitForAssignment(t, store, iss.ID, 5*time.Second)
 	if updated.Status != issue.StatusInProgress {
 		t.Errorf("expected in_progress status, got %s", updated.Status)
 	}
