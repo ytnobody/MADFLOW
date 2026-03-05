@@ -1027,6 +1027,79 @@ func TestHandleTeamCreateCreatesNewTeamWhenNoIdle(t *testing.T) {
 }
 
 // TestRunGracefulShutdownDuringStartup verifies that Run returns nil (not an
+// TestWatchCommandsPicksUpEarlyTeamCreate is a regression test for local-001.
+//
+// Root cause: watchCommands() was previously started AFTER waitForAgentsReady().
+// chatlog.Watch() records the current file offset when called; any TEAM_CREATE
+// messages written to the chatlog by the superintendent's initial-prompt tool-
+// calls appeared BEFORE that offset and were therefore never delivered.
+//
+// Fix: watchCommands() is now launched right after startAllTeams(), before
+// waitForAgentsReady(). With the chatlog freshly cleared at startup, the
+// Watch() offset is 0, so every subsequent write — including TEAM_CREATE
+// commands from the superintendent's initial prompt — is observed.
+//
+// This test verifies the post-fix behaviour: a TEAM_CREATE written to the
+// chatlog while watchCommands() is running must be picked up and processed.
+func TestWatchCommandsPicksUpEarlyTeamCreate(t *testing.T) {
+	dir := t.TempDir()
+	issuesDir := filepath.Join(dir, "issues")
+	os.MkdirAll(issuesDir, 0755)
+	os.MkdirAll(filepath.Join(dir, "memos"), 0755)
+
+	// Clear chatlog to simulate Run() startup state.
+	chatlogPath := filepath.Join(dir, "chatlog.txt")
+	os.WriteFile(chatlogPath, nil, 0644)
+
+	cfg := testConfig(dir)
+	orc := New(cfg, dir, t.TempDir())
+
+	// Create an open issue that the superintendent would want to assign.
+	store := orc.Store()
+	iss, err := store.Create("テスト機能", "テスト本文")
+	if err != nil {
+		t.Fatalf("create issue: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+
+	// Launch watchCommands() early — this is the post-fix behaviour where it
+	// starts before waitForAgentsReady() with offset=0 on the fresh chatlog.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		orc.watchCommands(ctx)
+	}()
+
+	// Give the Watch() goroutine time to set up its ticker (500 ms interval).
+	time.Sleep(100 * time.Millisecond)
+
+	// Simulate the superintendent writing TEAM_CREATE during initial-prompt
+	// processing (i.e. before it would call markReady()).
+	cl := chatlog.New(chatlogPath)
+	if err := cl.Append("orchestrator", "superintendent", "TEAM_CREATE "+iss.ID); err != nil {
+		t.Fatalf("append TEAM_CREATE: %v", err)
+	}
+
+	// Poll until the issue transitions to in_progress (watchCommands processed
+	// the TEAM_CREATE and handleTeamCreate updated the status).
+	deadline := time.Now().Add(4 * time.Second)
+	for time.Now().Before(deadline) {
+		updated, getErr := store.Get(iss.ID)
+		if getErr == nil && updated.Status == issue.StatusInProgress {
+			cancel() // success — stop watchCommands
+			<-done
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	cancel()
+	<-done
+	t.Error("TEAM_CREATE written before agents are ready was not processed — watchCommands may have started too late")
+}
+
 // error) when the context is cancelled while startAllTeams is still running.
 // Previously the system returned "wait for agents ready: context canceled"
 // which looked like a crash to the user (GitHub Issue #104).
