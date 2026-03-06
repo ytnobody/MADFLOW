@@ -58,7 +58,7 @@ func TestBuildInitialPrompt(t *testing.T) {
 
 	prompt := agent.buildInitialPrompt("")
 
-	if !strings.Contains(prompt, "元の依頼内容") {
+	if !strings.Contains(prompt, "Original Request") {
 		t.Error("expected original task in prompt")
 	}
 	if !strings.Contains(prompt, "Issue #001 の管理") {
@@ -67,7 +67,7 @@ func TestBuildInitialPrompt(t *testing.T) {
 	if !strings.Contains(prompt, "/tmp/test/chatlog.txt") {
 		t.Error("expected chatlog path in prompt")
 	}
-	if strings.Contains(prompt, "作業メモ") {
+	if strings.Contains(prompt, "Work Memo") || strings.Contains(prompt, "作業メモ") {
 		t.Error("should not contain memo section when memo is empty")
 	}
 }
@@ -81,7 +81,7 @@ func TestBuildInitialPromptWithMemo(t *testing.T) {
 
 	prompt := agent.buildInitialPrompt("前回の作業状態")
 
-	if !strings.Contains(prompt, "作業メモ") {
+	if !strings.Contains(prompt, "work memo") && !strings.Contains(prompt, "Work Memo") && !strings.Contains(prompt, "inherited from last context reset") {
 		t.Error("expected memo section in prompt")
 	}
 	if !strings.Contains(prompt, "前回の作業状態") {
@@ -103,11 +103,11 @@ func TestBuildInitialPromptWithOriginalTaskStartsImmediately(t *testing.T) {
 	prompt := ag.buildInitialPrompt("")
 
 	// OriginalTask がある場合は即座に実装開始を指示する
-	if !strings.Contains(prompt, "実装を開始してください") {
-		t.Error("expected prompt to contain '実装を開始してください' when OriginalTask is set")
+	if !strings.Contains(prompt, "start implementation immediately") {
+		t.Error("expected prompt to contain 'start implementation immediately' when OriginalTask is set")
 	}
 	// スタンバイ時の待機指示は含まれないはず
-	if strings.Contains(prompt, "投稿されるのを待ち") {
+	if strings.Contains(prompt, "Wait for mentions") {
 		t.Error("expected prompt NOT to contain wait instruction when OriginalTask is set")
 	}
 }
@@ -124,11 +124,11 @@ func TestBuildInitialPromptWithoutOriginalTaskWaits(t *testing.T) {
 	prompt := ag.buildInitialPrompt("")
 
 	// OriginalTask がない場合はチャットログのメッセージを待つ
-	if !strings.Contains(prompt, "投稿されるのを待ち") {
+	if !strings.Contains(prompt, "Wait for mentions") {
 		t.Error("expected prompt to contain wait instruction when OriginalTask is empty")
 	}
 	// 実装開始の指示は含まれないはず
-	if strings.Contains(prompt, "実装を開始してください") {
+	if strings.Contains(prompt, "start implementation immediately") {
 		t.Error("expected prompt NOT to contain immediate start instruction when OriginalTask is empty")
 	}
 }
@@ -380,7 +380,7 @@ func TestSendContinuation(t *testing.T) {
 	}
 	// Second and third calls should use continuation prompt
 	for i := 1; i < len(proc.lastPrompts); i++ {
-		if proc.lastPrompts[i] != continuationPrompt {
+		if proc.lastPrompts[i] != getMessages("en").Continuation {
 			t.Errorf("call %d: expected continuation prompt, got %q", i+1, proc.lastPrompts[i])
 		}
 	}
