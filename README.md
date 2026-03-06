@@ -4,67 +4,67 @@
 
 # MADFLOW
 
-MADFLOW（Multi-Agent Development Flow）は、複数の AI エージェントがチームとして協調し、ソフトウェア開発を自律的に進める開発フレームワークです。
+MADFLOW (Multi-Agent Development Flow) is a development framework where multiple AI agents collaborate as a team to autonomously advance software development.
 
-## 特徴
+## Features
 
-- **シンプルな2エージェント構成**: 監督とエンジニアのみで構成
-- **監督の一元管理**: 監督がPM・設計・レビュー・マージを統括
-- **自律的なタスク管理**: イシューの作成から実装・レビュー・マージまでを AI エージェントが遂行
-- **コンテキストリセット機能**: AIの性能低下を防ぐ自動リフレッシュ機構
-- **Git/GitHub 統合**: ブランチ戦略・イシュー同期を自動管理
+- **Simple 2-agent structure**: Consists of only a Superintendent and Engineers
+- **Centralized Superintendent management**: The Superintendent oversees PM, design, review, and merging
+- **Autonomous task management**: AI agents handle everything from issue creation to implementation, review, and merging
+- **Context reset functionality**: Automatic refresh mechanism to prevent AI performance degradation
+- **Git/GitHub integration**: Automatically manages branch strategy and issue synchronization
 
-## 必要要件
+## Requirements
 
-- Go 1.25 以上
+- Go 1.25 or higher
 - Git
-- 以下のいずれか（使用するバックエンドによって異なります）:
-  - [Claude Code](https://claude.com/claude-code)（`claude` コマンド）- Claude CLI バックエンド使用時
-  - [gemini-cli](https://github.com/google-gemini/gemini-cli)（`gemini-cli` コマンド）- Gemini モデル使用時
-  - `ANTHROPIC_API_KEY` 環境変数 - Anthropic API キーバックエンド使用時（追加インストール不要）
-- GitHub CLI（`gh`）（GitHub Issue 同期を使用する場合）
+- One of the following (depending on the backend you use):
+  - [Claude Code](https://claude.com/claude-code) (`claude` command) - when using the Claude CLI backend
+  - [gemini-cli](https://github.com/google-gemini/gemini-cli) (`gemini-cli` command) - when using Gemini models
+  - `ANTHROPIC_API_KEY` environment variable - when using the Anthropic API key backend (no additional installation required)
+- GitHub CLI (`gh`) (when using GitHub Issue synchronization)
 
-## インストール
+## Installation
 
-### go install を使用する場合
+### Using go install
 
 ```bash
 go install github.com/ytnobody/madflow/cmd/madflow@latest
 ```
 
-### GitHub Releases からバイナリをダウンロードする場合
+### Downloading a binary from GitHub Releases
 
-[GitHub Releases](https://github.com/ytnobody/madflow/releases/latest) から、お使いのOSとアーキテクチャに対応したバイナリをダウンロードしてください。
+Download the binary for your OS and architecture from [GitHub Releases](https://github.com/ytnobody/madflow/releases/latest).
 
 ```bash
-# Linux (amd64) の例
+# Example for Linux (amd64)
 curl -L https://github.com/ytnobody/madflow/releases/latest/download/madflow-linux-amd64 -o madflow
 chmod +x madflow
 sudo mv madflow /usr/local/bin/
 ```
 
-インストール後は `madflow upgrade` コマンドで最新バージョンへのアップグレードも可能です。
+After installation, you can also upgrade to the latest version with the `madflow upgrade` command.
 
-## クイックスタート
+## Quick Start
 
-### 1. プロジェクトの初期化
+### 1. Initialize the project
 
 ```bash
 cd your-project
 madflow init
 ```
 
-`madflow.toml` が生成されます。必要に応じて設定を編集してください。
+A `madflow.toml` file will be generated. Edit the configuration as needed.
 
-### 2. エージェントの起動
+### 2. Start the agents
 
 ```bash
 madflow start
 ```
 
-## 設定
+## Configuration
 
-プロジェクトルートの `madflow.toml` で設定を管理します。
+Configuration is managed via `madflow.toml` in the project root.
 
 ```toml
 [project]
@@ -80,10 +80,10 @@ context_reset_minutes = 8
 [agent.models]
 superintendent = "claude-opus-4-6"
 engineer = "claude-sonnet-4-6"
-# Gemini モデルも使用可能:
+# Gemini models are also supported:
 # superintendent = "gemini-2.0-flash-exp"
 # engineer = "gemini-2.5-pro"
-# Anthropic API キー方式（ANTHROPIC_API_KEY 環境変数が必要）:
+# Anthropic API key method (requires ANTHROPIC_API_KEY environment variable):
 # superintendent = "anthropic/claude-sonnet-4-6"
 # engineer = "anthropic/claude-haiku-4-5"
 
@@ -93,7 +93,7 @@ develop = "develop"
 feature_prefix = "feature/issue-"
 ```
 
-### GitHub Issue 同期（オプション）
+### GitHub Issue Sync (Optional)
 
 ```toml
 [github]
@@ -102,95 +102,95 @@ repos = ["my-app"]
 sync_interval_minutes = 5
 ```
 
-## コマンド一覧
+## Command Reference
 
-| コマンド | 説明 |
-|---------|------|
-| `madflow init` | プロジェクトを初期化 |
-| `madflow start` | 全エージェントを起動 |
-| `madflow use <preset>` | モデルプリセットを切り替え |
-| `madflow version` | 現在のバージョンを表示 |
-| `madflow upgrade` | madflow を最新バージョンにアップグレード |
+| Command | Description |
+|---------|-------------|
+| `madflow init` | Initialize the project |
+| `madflow start` | Start all agents |
+| `madflow use <preset>` | Switch model preset |
+| `madflow version` | Display the current version |
+| `madflow upgrade` | Upgrade madflow to the latest version |
 
-## モデルプリセット
+## Model Presets
 
-`madflow use <preset>` コマンドで使用するモデルを切り替えられます。
+You can switch the models in use with the `madflow use <preset>` command.
 
-| プリセット | superintendent | engineer | 備考 |
-|-----------|---------------|----------|------|
-| `claude` | claude-sonnet-4-6 | claude-sonnet-4-6 | Claude CLI（Pro/Max必要）|
-| `claude-cheap` | claude-sonnet-4-6 | claude-haiku-4-5 | Claude CLI コスト削減版 |
-| `gemini` | gemini-2.5-pro | gemini-2.5-pro | Gemini CLI（gemini-cli必要）|
-| `gemini-cheap` | gemini-2.5-flash | gemini-2.5-flash | Gemini 高速・低コスト版 |
-| `hybrid` | claude-sonnet-4-6 | gemini-2.5-pro | ハイブリッド構成 |
-| `hybrid-cheap` | claude-sonnet-4-6 | gemini-2.5-flash | ハイブリッド低コスト版 |
-| `claude-api-standard` | anthropic/claude-sonnet-4-6 | anthropic/claude-haiku-4-5 | **Anthropic API キー方式** |
-| `claude-api-cheap` | anthropic/claude-haiku-4-5 | anthropic/claude-haiku-4-5 | **Anthropic API キー方式・最安** |
+| Preset | superintendent | engineer | Notes |
+|--------|---------------|----------|-------|
+| `claude` | claude-sonnet-4-6 | claude-sonnet-4-6 | Claude CLI (requires Pro/Max) |
+| `claude-cheap` | claude-sonnet-4-6 | claude-haiku-4-5 | Claude CLI cost-reduced version |
+| `gemini` | gemini-2.5-pro | gemini-2.5-pro | Gemini CLI (requires gemini-cli) |
+| `gemini-cheap` | gemini-2.5-flash | gemini-2.5-flash | Gemini fast & low-cost version |
+| `hybrid` | claude-sonnet-4-6 | gemini-2.5-pro | Hybrid configuration |
+| `hybrid-cheap` | claude-sonnet-4-6 | gemini-2.5-flash | Hybrid low-cost version |
+| `claude-api-standard` | anthropic/claude-sonnet-4-6 | anthropic/claude-haiku-4-5 | **Anthropic API key method** |
+| `claude-api-cheap` | anthropic/claude-haiku-4-5 | anthropic/claude-haiku-4-5 | **Anthropic API key method - cheapest** |
 
-### Anthropic API キー方式の使い方
+### How to Use the Anthropic API Key Method
 
-`claude-api-*` プリセットは Claude Code CLI の代わりに `ANTHROPIC_API_KEY` を使って Anthropic の API を直接呼び出します。
+The `claude-api-*` presets call Anthropic's API directly using `ANTHROPIC_API_KEY` instead of the Claude Code CLI.
 
-**メリット:**
-- Claude Code Pro/Max サブスクリプション不要
-- 従量課金でコスト予測可能
-- Anthropic のポリシー変更リスクから独立
+**Benefits:**
+- No Claude Code Pro/Max subscription required
+- Predictable costs with pay-as-you-go pricing
+- Independent from Anthropic policy change risks
 
-**セットアップ:**
+**Setup:**
 
 ```bash
-# 1. Anthropic API キーを環境変数に設定
+# 1. Set the Anthropic API key as an environment variable
 export ANTHROPIC_API_KEY="sk-ant-..."
 
-# 2. API キー方式プリセットに切り替え
-madflow use claude-api-standard   # 標準品質
-# または
-madflow use claude-api-cheap      # 最低コスト
+# 2. Switch to an API key preset
+madflow use claude-api-standard   # standard quality
+# or
+madflow use claude-api-cheap      # lowest cost
 
-# 3. 起動
+# 3. Start
 madflow start
 ```
 
-### コスト比較（参考）
+### Cost Comparison (Reference)
 
-| 方式 | 月額概算 | 備考 |
-|------|---------|------|
-| Claude Max (5x) | ¥15,000 | サブスクリプション固定費 |
-| `claude-api-standard` | ¥3,000〜8,000 | 従量課金・利用量による |
-| `claude-api-cheap` | ¥1,000〜3,000 | Haiku モデル使用 |
-| `hybrid-cheap` | gemini-cli 無料枠内 | Gemini Flash は無料枠あり |
+| Method | Estimated monthly cost | Notes |
+|--------|------------------------|-------|
+| Claude Max (5x) | ¥15,000 | Fixed subscription fee |
+| `claude-api-standard` | ¥3,000–8,000 | Pay-as-you-go, varies by usage |
+| `claude-api-cheap` | ¥1,000–3,000 | Uses Haiku model |
+| `hybrid-cheap` | Within gemini-cli free tier | Gemini Flash has a free tier |
 
-> ※ API 料金は 2026 年 2 月時点の概算です。実際の料金は [Anthropic 公式サイト](https://www.anthropic.com/pricing) を参照してください。
+> ※ API pricing is an estimate as of February 2026. For actual pricing, refer to the [Anthropic official website](https://www.anthropic.com/pricing).
 
-## アーキテクチャ
+## Architecture
 
-詳細な要件定義は [SPEC.md](./SPEC.md) を、実装計画は [IMPLEMENTATION_PLAN.md](./IMPLEMENTATION_PLAN.md) を参照してください。
+For detailed specifications, refer to [SPEC.md](./SPEC.md). For the implementation plan, refer to [IMPLEMENTATION_PLAN.md](./IMPLEMENTATION_PLAN.md).
 
-## ライセンス
+## License
 
 MIT License
 
-## 開発ワークフロー
+## Development Workflow
 
-MADFLOWフレームワークにおける開発では、複数のエージェントが同一のリポジトリで並行して作業を行うため、ブランチの競合が頻繁に発生します。これを回避するため、各エンジニアは必ず `git worktree` を使用して、自身の作業ディレクトリを分離してください。
+In the MADFLOW framework, multiple agents work in parallel on the same repository, which frequently causes branch conflicts. To avoid this, each engineer must use `git worktree` to isolate their own working directory.
 
-### `git worktree` のセットアップ
+### Setting Up `git worktree`
 
-新しいイシューに取り組む際は、以下のコマンドで新しいワークツリーを作成します。
+When working on a new issue, create a new worktree with the following command:
 
 ```bash
-# 例: イシュー local-002 の場合
+# Example: for issue local-002
 git worktree add -b feature/issue-local-002 ../madflow-worktree/local-002 develop
 ```
 
-### 開発サイクル
+### Development Cycle
 
-1.  **ワークツリー作成**: 上記のコマンドで、イシューごとのワークツリーを作成します。
-2.  **実装**: 作成したワークツリーのディレクトリに移動して、実装、コミットを行います。
-3.  **Pull Request作成**: GitHub CLI (`gh pr create`) を使ってPull Requestを作成します。
-4.  **ワークツリー削除**: Pull Requestがマージされたら、不要になったワークツリーを削除します。
+1. **Create worktree**: Use the command above to create a worktree for each issue.
+2. **Implementation**: Move to the created worktree directory and implement, then commit.
+3. **Create Pull Request**: Use GitHub CLI (`gh pr create`) to create a Pull Request.
+4. **Remove worktree**: Once the Pull Request is merged, remove the no-longer-needed worktree.
 
 ```bash
-# メインの作業ディレクトリに戻ってから実行
+# Run from the main working directory
 git worktree remove ../madflow-worktree/local-002
 ```

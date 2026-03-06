@@ -1,66 +1,65 @@
-# MADF（Multi-Agent Development Flow）要件定義書
+# MADFLOW (Multi-Agent Development Flow) Specification
 
-## 1. コンセプト
+## 1. Concept
 
-本フレームワークは、AIエージェントの並列処理能力を最大限に引き出しつつ、コンテキストオーバーフローや情報の錯綜を防ぐために設計された、**「動的特務チーム型」**の開発フローである。
+This framework is designed as a **"Dynamic Special-Team"** development flow that maximizes the parallel processing capabilities of AI agents while preventing context overflow and information confusion.
 
-## 2. エージェントの役割と責任 (Role & Responsibility)
+## 2. Agent Roles and Responsibilities
 
-| 階層 | ロール | 役割詳細 | 窓口・権限 |
+| Tier | Role | Role Details | Interface & Authority |
 | --- | --- | --- | --- |
-| **統括** | **監督 (Superintendent)** | プロジェクトの全権。PM・アーキテクト・レビュアー・リリースマネージャーの役割を兼任。新しくopenになったイシューをエンジニアに割り当てる。設計判断、コードレビュー、マージ・リリース判断を実施。チャットログを分析して頻出するボトルネックの解消をイシュー化する。 | **対人間 (Issueコメント)**、対エンジニア |
-| **実行(N)** | **エンジニア** | 監督の指示に基づくコード実装。実装に関する質問や報告。 | 対監督 |
+| **Oversight** | **Superintendent** | Full authority over the project. Combines the roles of PM, architect, reviewer, and release manager. Assigns newly opened issues to engineers. Makes design decisions, conducts code reviews, and determines merges and releases. Analyzes chat logs to file issues for resolving recurring bottlenecks. | **Human-facing (Issue comments)**, Engineer-facing |
+| **Execution (N)** | **Engineer** | Code implementation based on the Superintendent's instructions. Questions and reports regarding implementation. | Superintendent-facing |
 
-## 3. 通信プロトコル
+## 3. Communication Protocol
 
-### 3.1. メンション付き共有チャットログ
+### 3.1. Shared Chat Log with Mentions
 
-* すべてのエージェント間の通信は、ローカルの共有テキストファイル（チャットログ）上で行われる。
-* **フォーマット**: `[@宛先] [発信者]: [本文]`
-* すべてのエージェントはこのログを常時監視し、自分宛のメンションに対してのみ応答・アクションを行う。
+* All communication between agents takes place on a local shared text file (chat log).
+* **Format**: `[@recipient] [sender]: [body]`
+* All agents monitor this log at all times and only respond/act on mentions addressed to them.
 
-### 3.2. シンプルな通信ライン
+### 3.2. Simple Communication Lines
 
-情報の混乱を防ぐため、質問・報告のラインを以下に限定する。
+To prevent information confusion, questions and reports are limited to the following lines:
 
-* **人間 ↔ 監督**: Issueコメントを通じてやり取り。
-* **監督 ↔ エンジニア**: イシュー割り当て、設計指示、実装の質問・報告、レビュー・マージ指示。
+* **Human ↔ Superintendent**: Communication through Issue comments.
+* **Superintendent ↔ Engineer**: Issue assignment, design instructions, implementation questions/reports, review and merge instructions.
 
-全体としては以下のようなシンプルな流れとなる。
+Overall, the flow is as simple as follows:
 
-人間 <-> 監督 <-> エンジニア
+Human <-> Superintendent <-> Engineer
 
-エンジニアは1名で1つのチームとなる。
+One engineer constitutes one team.
 
-## 4. 実行サイクルとブランチ戦略
+## 4. Execution Cycle and Branch Strategy
 
-### 4.1. 動的チームのライフサイクル
+### 4.1. Dynamic Team Lifecycle
 
-1. **生成**: 監督が特定のイシューに対し、エンジニア1名をアサインしチーム(N)を編成。
-2. **設計・実装**: エンジニアが `feature` ブランチを作成し、設計・実装・テストを実施。不明点は監督に質問。
-3. **レビュー・マージ**: エンジニアがPRを作成後、監督がレビューしマージを判断。
-4. **解散**: 監督が `develop` ブランチへマージ完了後、当該チーム(N)は消滅する。
+1. **Formation**: The Superintendent assigns one engineer to a specific issue and forms team (N).
+2. **Design & Implementation**: The engineer creates a `feature` branch and carries out design, implementation, and testing. Unclear points are directed to the Superintendent.
+3. **Review & Merge**: After the engineer creates a PR, the Superintendent reviews it and makes a merge decision.
+4. **Disbandment**: After the Superintendent completes the merge to the `develop` branch, team (N) is dissolved.
 
-### 4.2. 環境管理
+### 4.2. Environment Management
 
-* **main**: 本番環境。監督が操作。
-* **develop**: 開発統合環境。人間による動作確認対象。
-* **feature/issue-ID**: 各チームの作業環境。
+* **main**: Production environment. Operated by the Superintendent.
+* **develop**: Development integration environment. Target for human verification.
+* **feature/issue-ID**: Each team's working environment.
 
-## 5. コンテキスト維持プロトコル (8-Minute Reset)
+## 5. Context Maintenance Protocol (8-Minute Reset)
 
-AIの性能低下を防ぐため、以下の手順を強制する。
+To prevent AI performance degradation, the following steps are enforced:
 
-1. **タイマー監視**: 全エージェントは自身の動作時間を計測し、**8分**経過時に作業を中断。
-2. **作業メモの蒸留**: 以下の4項目を「作業メモ」としてログに出力する。
-* 現在の状態、決定事項、未解決の課題、次の一手。
+1. **Timer monitoring**: All agents measure their own operation time and pause work after **8 minutes**.
+2. **Work memo distillation**: Output the following 4 items as a "work memo" to the log:
+   * Current state, decisions made, unresolved issues, next steps.
 
+3. **Refresh**: Completely discard the context (session) once.
+4. **Reload**: Only load the "original request" and "most recent work memo" and resume work.
 
-3. **リフレッシュ**: コンテキスト（セッション）を一度完全に破棄。
-4. **再ロード**: 「元の依頼内容」と「直近の作業メモ」のみを読み込み、作業を再開する。
+## 6. Human's Role
 
-## 6. 人間の役割
-
-* **Issueの発行**: `develop` ブランチでの動作確認に基づき、新規要件やバグを起票。
-* **最終意思決定**: 監督からIssueコメントで求められた判断（Yes/No、数値等）への回答。
-* **成果物の確認**: `develop` ブランチに統合された機能の最終QA。
+* **Filing Issues**: File new requirements or bugs based on verification of the `develop` branch.
+* **Final Decision-Making**: Responding to judgments (Yes/No, values, etc.) requested by the Superintendent via Issue comments.
+* **Artifact Verification**: Final QA of features integrated into the `develop` branch.
