@@ -216,10 +216,18 @@ type readResultOutput struct {
 }
 
 // scanForResult synchronously scans lines until a result or error event.
+// NOTE: This runs in a separate goroutine from readResult(). We capture
+// c.scanner into a local variable to avoid a nil-pointer panic when
+// killAndReset() concurrently sets c.scanner = nil on timeout/cancel.
 func (c *ClaudeStreamProcess) scanForResult() (string, error) {
+	scanner := c.scanner
+	if scanner == nil {
+		return "", fmt.Errorf("claude stream scanner is nil")
+	}
+
 	eventCount := 0
-	for c.scanner.Scan() {
-		line := c.scanner.Text()
+	for scanner.Scan() {
+		line := scanner.Text()
 		if line == "" {
 			continue
 		}
@@ -248,7 +256,7 @@ func (c *ClaudeStreamProcess) scanForResult() (string, error) {
 
 	}
 
-	if err := c.scanner.Err(); err != nil {
+	if err := scanner.Err(); err != nil {
 		return "", fmt.Errorf("claude stream scanner error: %w", err)
 	}
 	// Scanner finished without result — process exited

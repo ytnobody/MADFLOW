@@ -140,6 +140,22 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 
 	o.startAllTeams(ctx)
 
+	// Start watching chatlog for orchestrator commands IMMEDIATELY after teams
+	// are launched — before waitForAgentsReady() — so that TEAM_CREATE messages
+	// written by the superintendent during its initial prompt processing (via
+	// Bash tool-calls) are not missed.
+	//
+	// Root-cause of the local-001 regression: watchCommands() used to start
+	// after waitForAgentsReady(). chatlog.Watch() records the file offset at
+	// call time; any TEAM_CREATE written before that point was skipped forever.
+	// Moving watchCommands here ensures offset=0 (empty chatlog) and all
+	// subsequent writes are observed correctly.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		o.watchCommands(ctx)
+	}()
+
 	// If context was cancelled during team startup (e.g. Ctrl+C or SIGTERM
 	// while agents were initialising), skip the ready-wait and go straight
 	// to the graceful shutdown path so we don't surface a confusing
@@ -225,13 +241,6 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 			o.runIssuePatrol(ctx)
 		}()
 	}
-
-	// Watch chatlog for orchestrator commands
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		o.watchCommands(ctx)
-	}()
 
 	// Start config hot-reload watcher if a config path is set
 	if o.configPath != "" {
@@ -363,6 +372,7 @@ func (o *Orchestrator) startResidentAgents(ctx context.Context, wg *sync.WaitGro
 			MemosDir:      filepath.Join(o.dataDir, "memos"),
 			ResetInterval: resetInterval,
 			BashTimeout:   bashTimeout,
+			Language:      o.cfg.Agent.Language,
 			Dormancy:      o.dormancy,
 		}
 		if strings.HasPrefix(r.model, "gemini-") {
@@ -967,6 +977,7 @@ func (o *Orchestrator) CreateTeamAgents(teamNum int, issueID string) (engineer *
 			ResetInterval: resetInterval,
 			BashTimeout:   bashTimeout,
 			OriginalTask:  originalTask,
+			Language:      o.cfg.Agent.Language,
 			Dormancy:      o.dormancy,
 		}
 		if strings.HasPrefix(r.model, "gemini-") {
