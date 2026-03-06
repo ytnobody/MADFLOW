@@ -24,6 +24,7 @@ type Agent struct {
 	ResetInterval time.Duration
 	SystemPrompt  string
 	OriginalTask  string
+	Language      string
 	Dormancy      *Dormancy
 	Throttle      *Throttle
 	ready         chan struct{}
@@ -41,6 +42,7 @@ type AgentConfig struct {
 	ResetInterval time.Duration
 	BashTimeout   time.Duration
 	OriginalTask  string
+	Language      string
 	Process       Process
 	Dormancy      *Dormancy
 	Throttle      *Throttle
@@ -68,6 +70,11 @@ func NewAgent(cfg AgentConfig) *Agent {
 		}
 	}
 
+	lang := cfg.Language
+	if lang == "" {
+		lang = "en"
+	}
+
 	return &Agent{
 		ID:            cfg.ID,
 		Process:       proc,
@@ -76,6 +83,7 @@ func NewAgent(cfg AgentConfig) *Agent {
 		ResetInterval: cfg.ResetInterval,
 		SystemPrompt:  cfg.SystemPrompt,
 		OriginalTask:  cfg.OriginalTask,
+		Language:      lang,
 		Dormancy:      cfg.Dormancy,
 		Throttle:      cfg.Throttle,
 		ready:         make(chan struct{}),
@@ -130,7 +138,7 @@ func (a *Agent) Run(ctx context.Context, msgCh <-chan chatlog.Message) error {
 					log.Printf("[%s] reset failed: %v", recipient, err)
 				}
 			}
-			prompt := buildMessagePrompt(messages)
+			prompt := buildMessagePrompt(messages, a.Language)
 			response, err := a.send(ctx, prompt)
 			if err != nil {
 				if ctx.Err() != nil {
@@ -152,17 +160,18 @@ func (a *Agent) Run(ctx context.Context, msgCh <-chan chatlog.Message) error {
 }
 
 // buildMessagePrompt creates a single prompt from one or more messages.
-func buildMessagePrompt(messages []chatlog.Message) string {
-	if len(messages) == 1 {
-		return fmt.Sprintf("チャットログに新しいメッセージがあります:\n\n%s\n\n適切に対応してください。", messages[0].Raw)
+func buildMessagePrompt(msgs []chatlog.Message, lang string) string {
+	m := getMessages(lang)
+	if len(msgs) == 1 {
+		return fmt.Sprintf(m.NewMessageSingle, msgs[0].Raw)
 	}
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("チャットログに新しいメッセージが %d 件あります:\n\n", len(messages)))
-	for _, m := range messages {
-		sb.WriteString(m.Raw)
+	sb.WriteString(fmt.Sprintf(m.NewMessageMultiple, len(msgs)))
+	for _, msg := range msgs {
+		sb.WriteString(msg.Raw)
 		sb.WriteString("\n")
 	}
-	sb.WriteString("\nすべてのメッセージに適切に対応してください。")
+	sb.WriteString(m.RespondAll)
 	return sb.String()
 }
 
@@ -192,13 +201,13 @@ func (a *Agent) performReset(ctx context.Context, timer *reset.Timer) error {
 	recipient := a.ID.String()
 	log.Printf("[%s] context reset triggered", recipient)
 
-	distilled, err := a.send(ctx, reset.DistillPrompt)
+	distilled, err := a.send(ctx, reset.GetDistillPrompt(a.Language))
 	if err != nil {
 		return fmt.Errorf("distill failed: %w", err)
 	}
 
 	memo := parseDistilledMemo(recipient, distilled)
-	memoPath, err := reset.SaveMemo(a.MemosDir, memo)
+	memoPath, err := reset.SaveMemoWithLang(a.MemosDir, memo, a.Language)
 	if err != nil {
 		return fmt.Errorf("save memo: %w", err)
 	}
@@ -220,31 +229,29 @@ func (a *Agent) performReset(ctx context.Context, timer *reset.Timer) error {
 }
 
 func (a *Agent) buildInitialPrompt(memo string) string {
+	m := getMessages(a.Language)
 	var sb strings.Builder
-	sb.WriteString("あなたは以下の役割で動作するエージェントです。\n\n")
+	sb.WriteString(m.RoleIntro)
 	if a.OriginalTask != "" {
-		sb.WriteString("## 元の依頼内容\n")
+		sb.WriteString(m.OriginalTaskHeader)
 		sb.WriteString(a.OriginalTask)
 		sb.WriteString("\n\n")
 	}
 	if memo != "" {
-		sb.WriteString("## 直近の作業メモ（前回のコンテキストリセットから引き継ぎ）\n")
+		sb.WriteString(m.MemoHeader)
 		sb.WriteString(memo)
 		sb.WriteString("\n\n")
 	}
-	sb.WriteString("チャットログのパス: ")
+	sb.WriteString(m.ChatLogPathLabel)
 	sb.WriteString(a.ChatLog.Path())
 	sb.WriteString("\n\n")
-	sb.WriteString("チャットログへの書き込みには以下のコマンドを使用してください:\n")
+	sb.WriteString(m.ChatLogWriteInstr)
 	sb.WriteString(fmt.Sprintf(`echo "[$(date +%%Y-%%m-%%dT%%H:%%M:%%S)] [@宛先] %s: メッセージ内容" >> %s`, a.ID.String(), a.ChatLog.Path()))
 	sb.WriteString("\n\n")
 	if a.OriginalTask != "" {
-		// イシューが割り当て済みの場合は即座に実装開始を指示する。
-		// これにより、チャットログ経由の割り当てメッセージが届かなかった場合でも
-		// エンジニアが作業を開始できる。
-		sb.WriteString("上記の依頼内容に従い、すぐに実装を開始してください。実装完了後は監督に報告してください。その後もチャットログへのメンションを監視し、追加の指示に対応してください。")
+		sb.WriteString(m.StartImplement)
 	} else {
-		sb.WriteString("自分宛のメンションがチャットログに投稿されるのを待ち、適切に対応してください。")
+		sb.WriteString(m.WaitForMention)
 	}
 	return sb.String()
 }
@@ -271,14 +278,14 @@ func parseDistilledMemo(agentID, raw string) reset.WorkMemo {
 }
 
 const (
-	sendMaxRetries     = 3
-	sendRetryBaseWait  = 2 * time.Second
-	maxContinuations   = 3 // max auto-continuations on MaxIterationsError (total: 4 × 25 = 100 tool calls)
-	continuationPrompt = "作業の途中で中断されました。現在のディレクトリの状態を確認し（git status等）、中断した作業を再開してください。"
+	sendMaxRetries    = 3
+	sendRetryBaseWait = 2 * time.Second
+	maxContinuations  = 3 // max auto-continuations on MaxIterationsError (total: 4 × 25 = 100 tool calls)
 )
 
 func (a *Agent) send(ctx context.Context, prompt string) (string, error) {
 	currentPrompt := prompt
+	m := getMessages(a.Language)
 	for continuation := 0; ; continuation++ {
 		resp, err := a.sendOnce(ctx, currentPrompt)
 
@@ -286,7 +293,7 @@ func (a *Agent) send(ctx context.Context, prompt string) (string, error) {
 		var maxIterErr *MaxIterationsError
 		if errors.As(err, &maxIterErr) && continuation < maxContinuations {
 			log.Printf("[%s] max iterations reached, continuing (%d/%d)", a.ID.String(), continuation+1, maxContinuations)
-			currentPrompt = continuationPrompt
+			currentPrompt = m.Continuation
 			continue
 		}
 

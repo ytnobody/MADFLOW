@@ -71,6 +71,10 @@ type AgentConfig struct {
 	// ExtraPrompt is appended to the system prompt of every agent.
 	// Use this to inject project-specific instructions that apply to all agents.
 	ExtraPrompt string `toml:"extra_prompt"`
+	// Language specifies the language for agent messages (e.g. "en", "ja").
+	// Defaults to "en". This controls the language of internal agent
+	// communication messages such as chatlog prompts and initial instructions.
+	Language string `toml:"language"`
 }
 
 type ModelConfig struct {
@@ -172,6 +176,9 @@ func setDefaults(cfg *Config) {
 	}
 	if cfg.Agent.IssuePatrolIntervalMinutes == 0 {
 		cfg.Agent.IssuePatrolIntervalMinutes = 5
+	}
+	if cfg.Agent.Language == "" {
+		cfg.Agent.Language = "en"
 	}
 	if cfg.Branches.Main == "" {
 		cfg.Branches.Main = "main"

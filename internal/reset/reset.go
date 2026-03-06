@@ -19,6 +19,11 @@ type WorkMemo struct {
 
 // SaveMemo writes a work memo to the memos directory.
 func SaveMemo(memosDir string, memo WorkMemo) (string, error) {
+	return SaveMemoWithLang(memosDir, memo, "")
+}
+
+// SaveMemoWithLang writes a work memo to the memos directory with localized headers.
+func SaveMemoWithLang(memosDir string, memo WorkMemo, lang string) (string, error) {
 	if err := os.MkdirAll(memosDir, 0755); err != nil {
 		return "", fmt.Errorf("create memos dir: %w", err)
 	}
@@ -29,7 +34,10 @@ func SaveMemo(memosDir string, memo WorkMemo) (string, error) {
 	)
 	path := filepath.Join(memosDir, filename)
 
-	content := fmt.Sprintf(`# 作業メモ: %s
+	var content string
+	switch lang {
+	case "ja":
+		content = fmt.Sprintf(`# 作業メモ: %s
 日時: %s
 
 ## 現在の状態
@@ -44,13 +52,37 @@ func SaveMemo(memosDir string, memo WorkMemo) (string, error) {
 ## 次の一手
 %s
 `,
-		memo.AgentID,
-		memo.Timestamp.Format("2006-01-02 15:04:05"),
-		memo.CurrentState,
-		memo.Decisions,
-		memo.OpenIssues,
-		memo.NextStep,
-	)
+			memo.AgentID,
+			memo.Timestamp.Format("2006-01-02 15:04:05"),
+			memo.CurrentState,
+			memo.Decisions,
+			memo.OpenIssues,
+			memo.NextStep,
+		)
+	default:
+		content = fmt.Sprintf(`# Work Memo: %s
+Date: %s
+
+## Current State
+%s
+
+## Decisions
+%s
+
+## Open Issues
+%s
+
+## Next Step
+%s
+`,
+			memo.AgentID,
+			memo.Timestamp.Format("2006-01-02 15:04:05"),
+			memo.CurrentState,
+			memo.Decisions,
+			memo.OpenIssues,
+			memo.NextStep,
+		)
+	}
 
 	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
 		return "", fmt.Errorf("write memo: %w", err)
@@ -124,8 +156,23 @@ func (t *Timer) Reset() {
 	t.started = time.Now()
 }
 
-// DistillPrompt returns the prompt to send to Claude to extract a work memo.
-const DistillPrompt = `あなたの現在の作業状態を以下の4項目で簡潔にまとめてください。各項目は1-3文で記述してください。
+// DistillPrompt is the default (Japanese) prompt for backward compatibility.
+const DistillPrompt = distillPromptJA
+
+const distillPromptEN = `Please summarize your current work state in the following 4 items concisely. Each item should be 1-3 sentences.
+
+1. Current state: What you are currently doing
+2. Decisions: What has been decided so far
+3. Open issues: Problems that have not been resolved yet
+4. Next step: What should be done next
+
+Please output in the following format:
+STATE: <current state>
+DECISIONS: <decisions>
+OPEN: <open issues>
+NEXT: <next step>`
+
+const distillPromptJA = `あなたの現在の作業状態を以下の4項目で簡潔にまとめてください。各項目は1-3文で記述してください。
 
 1. 現在の状態: 今何をしているか
 2. 決定事項: これまでに決まったこと
@@ -137,3 +184,13 @@ STATE: <現在の状態>
 DECISIONS: <決定事項>
 OPEN: <未解決の課題>
 NEXT: <次の一手>`
+
+// GetDistillPrompt returns the distill prompt for the given language.
+func GetDistillPrompt(lang string) string {
+	switch lang {
+	case "ja":
+		return distillPromptJA
+	default:
+		return distillPromptEN
+	}
+}

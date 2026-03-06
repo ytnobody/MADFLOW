@@ -372,6 +372,7 @@ func (o *Orchestrator) startResidentAgents(ctx context.Context, wg *sync.WaitGro
 			MemosDir:      filepath.Join(o.dataDir, "memos"),
 			ResetInterval: resetInterval,
 			BashTimeout:   bashTimeout,
+			Language:      o.cfg.Agent.Language,
 			Dormancy:      o.dormancy,
 		}
 		if strings.HasPrefix(r.model, "gemini-") {
@@ -976,6 +977,7 @@ func (o *Orchestrator) CreateTeamAgents(teamNum int, issueID string) (engineer *
 			ResetInterval: resetInterval,
 			BashTimeout:   bashTimeout,
 			OriginalTask:  originalTask,
+			Language:      o.cfg.Agent.Language,
 			Dormancy:      o.dormancy,
 		}
 		if strings.HasPrefix(r.model, "gemini-") {

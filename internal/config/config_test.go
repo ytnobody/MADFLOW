@@ -781,6 +781,59 @@ bot_comment_patterns = ["^\\*\\*\\[", "\\[bot\\]$"]
 	}
 }
 
+func TestLanguageDefault(t *testing.T) {
+	content := `
+[project]
+name = "test-app"
+
+[[project.repos]]
+name = "main"
+path = "."
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "madflow.toml")
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if cfg.Agent.Language != "en" {
+		t.Errorf("expected default language 'en', got %q", cfg.Agent.Language)
+	}
+}
+
+func TestLanguageCustom(t *testing.T) {
+	content := `
+[project]
+name = "test-app"
+
+[[project.repos]]
+name = "main"
+path = "."
+
+[agent]
+language = "ja"
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "madflow.toml")
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if cfg.Agent.Language != "ja" {
+		t.Errorf("expected language 'ja', got %q", cfg.Agent.Language)
+	}
+}
+
 func TestGitHubBotCommentPatterns_Empty(t *testing.T) {
 	// When bot_comment_patterns is not configured, it should default to nil/empty.
 	content := `
