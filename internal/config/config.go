@@ -62,7 +62,9 @@ type AgentConfig struct {
 	// to check for new issues and take action. Without this periodic trigger, the
 	// superintendent only reacts to chatlog messages and may stop patrolling for
 	// issues during long idle periods.
-	// 0 triggers the default of 5 minutes. Set to -1 to disable.
+	// The patrol is suppressed when the chatlog has not changed since the last
+	// reminder, and the timer is reset whenever the superintendent sends a message.
+	// 0 triggers the default of 20 minutes. Set to -1 to disable.
 	IssuePatrolIntervalMinutes int `toml:"issue_patrol_interval_minutes"`
 	// WorktreeCleanupIntervalMinutes specifies how often to check for and remove
 	// orphaned git worktrees (those not associated with any active team).
@@ -175,7 +177,7 @@ func setDefaults(cfg *Config) {
 		cfg.Agent.BashTimeoutMinutes = 5
 	}
 	if cfg.Agent.IssuePatrolIntervalMinutes == 0 {
-		cfg.Agent.IssuePatrolIntervalMinutes = 5
+		cfg.Agent.IssuePatrolIntervalMinutes = 20
 	}
 	if cfg.Agent.Language == "" {
 		cfg.Agent.Language = "en"

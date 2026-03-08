@@ -684,8 +684,8 @@ path = "."
 		t.Fatal(err)
 	}
 
-	if cfg.Agent.IssuePatrolIntervalMinutes != 5 {
-		t.Errorf("expected default issue_patrol_interval_minutes 5, got %d", cfg.Agent.IssuePatrolIntervalMinutes)
+	if cfg.Agent.IssuePatrolIntervalMinutes != 20 {
+		t.Errorf("expected default issue_patrol_interval_minutes 20, got %d", cfg.Agent.IssuePatrolIntervalMinutes)
 	}
 }
 
