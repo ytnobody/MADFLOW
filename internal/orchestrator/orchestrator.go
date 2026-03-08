@@ -1100,21 +1100,69 @@ const issuePatrolPrompt = `定期イシュー巡回の時間です。
 // runIssuePatrol periodically prompts the superintendent to check for new issues.
 // This prevents the superintendent from becoming idle during long periods without
 // chatlog messages, which was reported as GitHub Issue #155.
+//
+// Improvements to reduce chatlog bloat (local issue local-001):
+//   - Proposal 2: Skips the reminder if the chatlog has not grown since the last
+//     patrol was sent, indicating no new activity.
+//   - Proposal 3: Resets the patrol timer whenever the superintendent sends a
+//     message, so reminders are deferred when the superintendent is already active.
 func (o *Orchestrator) runIssuePatrol(ctx context.Context) {
 	interval := time.Duration(o.cfg.Agent.IssuePatrolIntervalMinutes) * time.Minute
 	log.Printf("[issue-patrol] started (interval: %v)", interval)
 
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
+	// Record chatlog size at startup to detect subsequent activity.
+	var lastSize int64
+	if info, err := os.Stat(o.chatLog.Path()); err == nil {
+		lastSize = info.Size()
+	}
+
+	// Watch all chatlog messages so we can detect superintendent activity and
+	// reset the patrol timer (Proposal 3).
+	allMsgCh := o.chatLog.WatchAll(ctx)
+
+	timer := time.NewTimer(interval)
+	defer timer.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
 			log.Println("[issue-patrol] stopped")
 			return
-		case <-ticker.C:
+
+		case msg, ok := <-allMsgCh:
+			if !ok {
+				return
+			}
+			// Whenever the superintendent sends a message it is actively working;
+			// reset the patrol timer so we don't interrupt it with a reminder.
+			if msg.Sender == "superintendent" {
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+				timer.Reset(interval)
+				log.Printf("[issue-patrol] timer reset: superintendent is active")
+			}
+
+		case <-timer.C:
+			// Skip the reminder if the chatlog has not grown since the last patrol
+			// was sent. No new activity means there is nothing new to patrol.
+			info, err := os.Stat(o.chatLog.Path())
+			if err == nil {
+				currentSize := info.Size()
+				if currentSize <= lastSize {
+					log.Println("[issue-patrol] no chatlog activity since last patrol, skipping reminder")
+					timer.Reset(interval)
+					break
+				}
+				lastSize = currentSize
+			}
+
 			log.Println("[issue-patrol] sending issue patrol request to superintendent")
 			o.appendOrLog("superintendent", "orchestrator", issuePatrolPrompt)
+			timer.Reset(interval)
 		}
 	}
 }
