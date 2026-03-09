@@ -58,12 +58,13 @@ type AgentConfig struct {
 	// to run before being killed. This prevents agents from hanging indefinitely
 	// on commands that never finish. Defaults to 5 minutes.
 	BashTimeoutMinutes int `toml:"bash_timeout_minutes"`
-	// IssuePatrolIntervalMinutes specifies how often the superintendent is prompted
-	// to check for new issues and take action. Without this periodic trigger, the
-	// superintendent only reacts to chatlog messages and may stop patrolling for
-	// issues during long idle periods.
-	// The patrol is suppressed when the chatlog has not changed since the last
-	// reminder, and the timer is reset whenever the superintendent sends a message.
+	// IssuePatrolIntervalMinutes specifies how often the orchestrator sends a
+	// periodic issue-patrol reminder to the superintendent. The reminder is
+	// suppressed when the issue state (set of open/in-progress issues) has not
+	// changed since the last reminder, preventing chatlog bloat during idle periods.
+	// Sending "PATROL_COMPLETE" to the orchestrator resets the timer so the next
+	// reminder is issued N minutes after patrol completion rather than after the
+	// last scheduled tick.
 	// 0 triggers the default of 20 minutes. Set to -1 to disable.
 	IssuePatrolIntervalMinutes int `toml:"issue_patrol_interval_minutes"`
 	// WorktreeCleanupIntervalMinutes specifies how often to check for and remove

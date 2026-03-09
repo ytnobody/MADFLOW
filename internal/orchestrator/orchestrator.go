@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -37,6 +38,10 @@ type Orchestrator struct {
 	throttle     *agent.Throttle
 	idleDetector *github.IdleDetector // shared idle state for GitHub polling
 
+	// patrolResetCh receives a signal when the superintendent reports PATROL_COMPLETE,
+	// allowing runIssuePatrol to reset the interval timer immediately.
+	patrolResetCh chan struct{}
+
 	residentAgents []*agent.Agent
 	mu             sync.Mutex
 }
@@ -62,15 +67,16 @@ func New(cfg *config.Config, dataDir, promptDir string) *Orchestrator {
 	probeInterval := time.Duration(cfg.Agent.DormancyProbeMinutes) * time.Minute
 
 	orc := &Orchestrator{
-		cfg:          cfg,
-		dataDir:      dataDir,
-		promptDir:    promptDir,
-		store:        issue.NewStore(issuesDir),
-		chatLog:      chatlog.New(chatLogPath),
-		repos:        repos,
-		dormancy:     agent.NewDormancy(probeInterval),
-		throttle:     agent.NewThrottle(cfg.Agent.GeminiRPM),
-		idleDetector: idleDetector,
+		cfg:           cfg,
+		dataDir:       dataDir,
+		promptDir:     promptDir,
+		store:         issue.NewStore(issuesDir),
+		chatLog:       chatlog.New(chatLogPath),
+		repos:         repos,
+		dormancy:      agent.NewDormancy(probeInterval),
+		throttle:      agent.NewThrottle(cfg.Agent.GeminiRPM),
+		idleDetector:  idleDetector,
+		patrolResetCh: make(chan struct{}, 1),
 	}
 
 	orc.teams = team.NewManager(orc, cfg.Agent.MaxTeams)
@@ -540,8 +546,22 @@ func (o *Orchestrator) handleCommand(ctx context.Context, msg chatlog.Message) {
 		o.handleRelease(body)
 	case strings.HasPrefix(body, "WAKE_GITHUB"):
 		o.handleWakeGitHub()
+	case strings.HasPrefix(body, "PATROL_COMPLETE"):
+		o.handlePatrolComplete()
 	default:
 		log.Printf("[orchestrator] unknown command from %s: %s", msg.Sender, body)
+	}
+}
+
+// handlePatrolComplete handles the PATROL_COMPLETE command from the superintendent.
+// It signals runIssuePatrol to reset the interval timer, so that the next reminder
+// is issued N minutes after patrol completion rather than after the last scheduled tick.
+func (o *Orchestrator) handlePatrolComplete() {
+	log.Println("[orchestrator] PATROL_COMPLETE received: resetting patrol timer")
+	// Non-blocking send: if the channel already has a pending signal, we don't need to add another.
+	select {
+	case o.patrolResetCh <- struct{}{}:
+	default:
 	}
 }
 
@@ -557,6 +577,21 @@ func (o *Orchestrator) handleWakeGitHub() {
 	log.Println("[orchestrator] WAKE_GITHUB: GitHub polling resumed")
 }
 
+// issueIDRe matches the valid portion of an issue ID.
+// Issue IDs consist of ASCII alphanumeric characters and hyphens only
+// (e.g. "gh-121", "local-001"). Any trailing characters outside this set
+// (e.g. Japanese text appended to retry messages like "gh-121（2回目）") are
+// stripped by normalizeIssueID before the ID is used for store lookups.
+var issueIDRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]*`)
+
+// normalizeIssueID extracts the valid issue ID prefix from s.
+// It strips any trailing characters that do not match the issue ID character
+// set (ASCII alphanumeric + hyphen). Returns an empty string when s contains
+// no valid issue ID characters at all.
+func normalizeIssueID(s string) string {
+	return issueIDRe.FindString(s)
+}
+
 // handleTeamCreate creates a new team for an issue.
 // Expected format: TEAM_CREATE issue-id
 //
@@ -569,10 +604,21 @@ func (o *Orchestrator) handleTeamCreate(ctx context.Context, body string) {
 		log.Printf("[orchestrator] TEAM_CREATE missing issue ID")
 		return
 	}
-	issueID := parts[1]
 
-	// Validate that the issue exists in the store to reject malformed IDs
-	// (e.g. "issueID（2回目）extra text" from retried TEAM_CREATE messages).
+	// Normalize the issue ID: strip any non-ID characters that the superintendent
+	// may append when retrying (e.g. "gh-121（2回目の要求）。チームアサインをお願いします。").
+	// Issue IDs consist solely of ASCII alphanumeric characters and hyphens.
+	issueID := normalizeIssueID(parts[1])
+	if issueID == "" {
+		log.Printf("[orchestrator] TEAM_CREATE: could not extract valid issue ID from %q", parts[1])
+		o.appendOrLog("superintendent", "orchestrator",
+			fmt.Sprintf("TEAM_CREATE は拒否されました: 有効なイシューIDを抽出できませんでした (%q)", parts[1]))
+		return
+	}
+	if issueID != parts[1] {
+		log.Printf("[orchestrator] TEAM_CREATE: normalized issue ID %q -> %q (stripped extra text)", parts[1], issueID)
+	}
+
 	existingIss, err := o.store.Get(issueID)
 	if err != nil {
 		log.Printf("[orchestrator] TEAM_CREATE rejected: issue %q not found: %v", issueID, err)
@@ -1097,15 +1143,34 @@ const issuePatrolPrompt = `定期イシュー巡回の時間です。
 
 特に未割り当てのイシューがないか注意してください。`
 
+// issueStateFingerprint computes a stable string representing the current set of
+// open and in-progress issues. This is used by runIssuePatrol to detect whether
+// the issue state has changed since the last patrol reminder.
+func (o *Orchestrator) issueStateFingerprint() string {
+	all, err := o.store.List(issue.StatusFilter{})
+	if err != nil {
+		return ""
+	}
+	var ids []string
+	for _, iss := range all {
+		if iss.Status == issue.StatusOpen || iss.Status == issue.StatusInProgress {
+			ids = append(ids, iss.ID)
+		}
+	}
+	sort.Strings(ids)
+	return strings.Join(ids, ",")
+}
+
 // runIssuePatrol periodically prompts the superintendent to check for new issues.
 // This prevents the superintendent from becoming idle during long periods without
 // chatlog messages, which was reported as GitHub Issue #155.
 //
-// Improvements to reduce chatlog bloat (local issue local-001):
-//   - Proposal 2: Skips the reminder if the chatlog has not grown since the last
-//     patrol was sent, indicating no new activity.
-//   - Proposal 3: Resets the patrol timer whenever the superintendent sends a
-//     message, so reminders are deferred when the superintendent is already active.
+// The reminder is suppressed when the issue state (set of open/in-progress issues)
+// has not changed since the last reminder, preventing chatlog bloat during idle periods.
+// The patrol timer is also reset whenever the superintendent sends a message,
+// so reminders are deferred when the superintendent is already active.
+// When the superintendent sends PATROL_COMPLETE, the interval timer is reset so
+// the next reminder fires N minutes after patrol completion.
 func (o *Orchestrator) runIssuePatrol(ctx context.Context) {
 	interval := time.Duration(o.cfg.Agent.IssuePatrolIntervalMinutes) * time.Minute
 	log.Printf("[issue-patrol] started (interval: %v)", interval)
@@ -1123,11 +1188,27 @@ func (o *Orchestrator) runIssuePatrol(ctx context.Context) {
 	timer := time.NewTimer(interval)
 	defer timer.Stop()
 
+	// Track the issue state at the time of the last sent reminder to detect changes.
+	lastSentFingerprint := ""
+
 	for {
 		select {
 		case <-ctx.Done():
 			log.Println("[issue-patrol] stopped")
 			return
+
+		case <-o.patrolResetCh:
+			// Superintendent reported PATROL_COMPLETE: reset the timer so the next
+			// reminder fires N minutes after patrol completion rather than after the
+			// last scheduled tick.
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			timer.Reset(interval)
+			log.Println("[issue-patrol] timer reset after PATROL_COMPLETE")
 
 		case msg, ok := <-allMsgCh:
 			if !ok {
@@ -1147,13 +1228,14 @@ func (o *Orchestrator) runIssuePatrol(ctx context.Context) {
 			}
 
 		case <-timer.C:
-			// Skip the reminder if the chatlog has not grown since the last patrol
-			// was sent. No new activity means there is nothing new to patrol.
+			// Skip the reminder if the issue state hasn't changed and chatlog
+			// hasn't grown since the last patrol — no new activity to patrol.
+			current := o.issueStateFingerprint()
 			info, err := os.Stat(o.chatLog.Path())
 			if err == nil {
 				currentSize := info.Size()
-				if currentSize <= lastSize {
-					log.Println("[issue-patrol] no chatlog activity since last patrol, skipping reminder")
+				if currentSize <= lastSize && current == lastSentFingerprint {
+					log.Println("[issue-patrol] no activity since last patrol, skipping reminder")
 					timer.Reset(interval)
 					break
 				}
@@ -1162,6 +1244,7 @@ func (o *Orchestrator) runIssuePatrol(ctx context.Context) {
 
 			log.Println("[issue-patrol] sending issue patrol request to superintendent")
 			o.appendOrLog("superintendent", "orchestrator", issuePatrolPrompt)
+			lastSentFingerprint = current
 			timer.Reset(interval)
 		}
 	}
