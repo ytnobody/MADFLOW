@@ -1351,6 +1351,9 @@ func (o *Orchestrator) runConfigWatcher(ctx context.Context) {
 			o.cfgMu.Lock()
 			o.cfg = newCfg
 			o.cfgMu.Unlock()
+			// Propagate max_teams changes to the team manager so that
+			// hot-reload updates take effect without restarting the process.
+			o.teams.SetMaxTeams(newCfg.Agent.MaxTeams)
 			log.Println("[config-watcher] active config updated")
 		}
 	}

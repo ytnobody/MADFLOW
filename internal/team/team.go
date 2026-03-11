@@ -290,7 +290,22 @@ func (m *Manager) Full() bool {
 
 // Cap returns the configured maximum number of concurrent teams.
 func (m *Manager) Cap() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	return m.maxTeams
+}
+
+// SetMaxTeams updates the maximum number of concurrent teams.
+// This is called by the orchestrator's config hot-reload watcher to propagate
+// max_teams changes from madflow.toml without restarting the process.
+// If n <= 0, the value is reset to DefaultMaxTeams.
+func (m *Manager) SetMaxTeams(n int) {
+	if n <= 0 {
+		n = DefaultMaxTeams
+	}
+	m.mu.Lock()
+	m.maxTeams = n
+	m.mu.Unlock()
 }
 
 // TeamInfo is a read-only snapshot of a team's state.

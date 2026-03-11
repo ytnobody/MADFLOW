@@ -1437,3 +1437,86 @@ func TestHandleTeamCreateRejectsWhenAtMaxCapacityAllBusy(t *testing.T) {
 		t.Error("expected chatlog to contain capacity-limit message for superintendent")
 	}
 }
+
+// TestConfigWatcherPropagatesMaxTeams verifies that when madflow.toml is updated
+// with a new max_teams value, runConfigWatcher propagates the change to the
+// team.Manager via SetMaxTeams.
+// This is the hot-reload fix for GitHub Issue #180.
+func TestConfigWatcherPropagatesMaxTeams(t *testing.T) {
+	dir := t.TempDir()
+
+	// Write an initial config TOML with max_teams=2.
+	cfgPath := filepath.Join(dir, "madflow.toml")
+	initialTOML := `[project]
+name = "test"
+
+[[project.repos]]
+name = "main"
+path = "` + dir + `"
+
+[agent]
+max_teams = 2
+
+[branches]
+main = "main"
+develop = "develop"
+feature_prefix = "feature/issue-"
+`
+	if err := os.WriteFile(cfgPath, []byte(initialTOML), 0644); err != nil {
+		t.Fatalf("write initial config: %v", err)
+	}
+
+	cfg := testConfig(dir)
+	cfg.Agent.MaxTeams = 2
+
+	orc := New(cfg, dir, t.TempDir())
+	orc.WithConfigPath(cfgPath)
+	// Replace team manager with a known initial cap of 2.
+	orc.teams = team.NewManager(newMockTeamFactory(t), 2)
+
+	if orc.teams.Cap() != 2 {
+		t.Fatalf("expected initial Cap()=2, got %d", orc.teams.Cap())
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Start the config watcher in the background.
+	go orc.runConfigWatcher(ctx)
+
+	// Update madflow.toml to set max_teams=5.
+	updatedTOML := `[project]
+name = "test"
+
+[[project.repos]]
+name = "main"
+path = "` + dir + `"
+
+[agent]
+max_teams = 5
+
+[branches]
+main = "main"
+develop = "develop"
+feature_prefix = "feature/issue-"
+`
+	// Give the watcher a moment to record the initial mod time before we change the file.
+	time.Sleep(600 * time.Millisecond)
+
+	if err := os.WriteFile(cfgPath, []byte(updatedTOML), 0644); err != nil {
+		t.Fatalf("write updated config: %v", err)
+	}
+
+	// Poll for the change to propagate (watcher polls every 500ms; allow up to 3s).
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if orc.teams.Cap() == 5 {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	if orc.teams.Cap() != 5 {
+		t.Errorf("expected Cap()=5 after config hot-reload, got %d", orc.teams.Cap())
+	}
+}
