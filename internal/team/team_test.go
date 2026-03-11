@@ -489,3 +489,46 @@ func TestAssignIdleReturnsFalseWhenNoTeams(t *testing.T) {
 		t.Error("expected AssignIdle to return false when no teams exist")
 	}
 }
+
+// TestFullAndCap verifies the Full() and Cap() methods.
+func TestFullAndCap(t *testing.T) {
+	factory := newMockFactory(t)
+	m := NewManager(factory, 2)
+
+	if m.Cap() != 2 {
+		t.Errorf("expected Cap()=2, got %d", m.Cap())
+	}
+
+	// Initially not full
+	if m.Full() {
+		t.Error("expected Full()=false on empty manager")
+	}
+
+	// Add first team — still not full
+	createAndCancel(t, m, "issue-001")
+	if m.Full() {
+		t.Error("expected Full()=false with 1 team (max=2)")
+	}
+
+	// Add second team — now full
+	createAndCancel(t, m, "issue-002")
+	if !m.Full() {
+		t.Error("expected Full()=true with 2 teams (max=2)")
+	}
+
+	// Disband one team — no longer full
+	if _, err := m.DisbandByIssue("issue-001"); err != nil {
+		t.Fatalf("DisbandByIssue failed: %v", err)
+	}
+	if m.Full() {
+		t.Error("expected Full()=false after disbanding a team")
+	}
+}
+
+// TestCapDefaultMaxTeams verifies that Cap() returns DefaultMaxTeams when maxTeams=0.
+func TestCapDefaultMaxTeams(t *testing.T) {
+	m := NewManager(newMockFactory(t), 0)
+	if m.Cap() != DefaultMaxTeams {
+		t.Errorf("expected Cap()=%d, got %d", DefaultMaxTeams, m.Cap())
+	}
+}

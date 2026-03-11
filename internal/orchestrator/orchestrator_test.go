@@ -1367,3 +1367,73 @@ func TestHandleTeamCreateMalformedIssueID(t *testing.T) {
 		t.Errorf("TEAM_CREATE with malformed ID should not produce 'イシューが見つかりません'; chatlog:\n%s", string(data))
 	}
 }
+
+// TestHandleTeamCreateRejectsWhenAtMaxCapacityAllBusy verifies that TEAM_CREATE is
+// rejected gracefully (without panicking or creating an unexpected team) when all
+// team slots are occupied by busy teams and no idle team is available.
+// This is the fix for GitHub Issue #180: "Orchestrator does not understand max_teams".
+func TestHandleTeamCreateRejectsWhenAtMaxCapacityAllBusy(t *testing.T) {
+	dir := t.TempDir()
+	cfg := testConfig(dir)
+	cfg.Agent.MaxTeams = 2
+	os.MkdirAll(filepath.Join(dir, "issues"), 0755)
+	chatlogPath := filepath.Join(dir, "chatlog.txt")
+	os.WriteFile(chatlogPath, nil, 0644)
+
+	orc := New(cfg, dir, t.TempDir())
+	orc.teams = team.NewManager(newMockTeamFactory(t), 2)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Fill both slots with busy teams (each assigned to a distinct issue).
+	_, err := orc.Teams().Create(ctx, "issue-busy-01", "Busy Issue 1")
+	if err != nil {
+		t.Fatalf("create busy team 1: %v", err)
+	}
+	_, err = orc.Teams().Create(ctx, "issue-busy-02", "Busy Issue 2")
+	if err != nil {
+		t.Fatalf("create busy team 2: %v", err)
+	}
+	if orc.Teams().Count() != 2 {
+		t.Fatalf("expected 2 busy teams, got %d", orc.Teams().Count())
+	}
+
+	// Create a new open issue to attempt assignment.
+	iss, _ := orc.Store().Create("New Issue Cannot Assign", "body")
+
+	// Call TEAM_CREATE — all slots are full with busy teams; no idle team exists.
+	orc.handleTeamCreate(ctx, fmt.Sprintf("TEAM_CREATE %s", iss.ID))
+
+	// Team count must NOT have increased.
+	if orc.Teams().Count() != 2 {
+		t.Errorf("expected team count to remain 2, got %d", orc.Teams().Count())
+	}
+
+	// Issue status must remain "open" (not in_progress) because we did not ACK.
+	got, getErr := orc.Store().Get(iss.ID)
+	if getErr != nil {
+		t.Fatalf("get issue: %v", getErr)
+	}
+	if got.Status != issue.StatusOpen {
+		t.Errorf("expected issue status to remain open, got %s", got.Status)
+	}
+	if got.AssignedTeam != 0 {
+		t.Errorf("expected AssignedTeam=0, got %d", got.AssignedTeam)
+	}
+
+	// Chatlog must contain a "保留" (pending) or capacity-limit message directed
+	// at the superintendent.
+	cl := chatlog.New(chatlogPath)
+	msgs, _ := cl.Poll("superintendent")
+	found := false
+	for _, m := range msgs {
+		if contains(m.Body, "上限") && contains(m.Body, iss.ID) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected chatlog to contain capacity-limit message for superintendent")
+	}
+}

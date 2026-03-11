@@ -279,6 +279,20 @@ func (m *Manager) Count() int {
 	return len(m.teams) + m.pendingCount
 }
 
+// Full returns true if the manager has reached the maximum number of teams
+// (active + pending >= maxTeams). When Full() is true and AssignIdle() also
+// fails, no new team can be created until an existing team is disbanded.
+func (m *Manager) Full() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.teams)+m.pendingCount >= m.maxTeams
+}
+
+// Cap returns the configured maximum number of concurrent teams.
+func (m *Manager) Cap() int {
+	return m.maxTeams
+}
+
 // TeamInfo is a read-only snapshot of a team's state.
 type TeamInfo struct {
 	ID      int
