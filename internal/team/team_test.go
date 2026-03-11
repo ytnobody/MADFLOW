@@ -489,3 +489,95 @@ func TestAssignIdleReturnsFalseWhenNoTeams(t *testing.T) {
 		t.Error("expected AssignIdle to return false when no teams exist")
 	}
 }
+
+// TestFullAndCap verifies the Full() and Cap() methods.
+func TestFullAndCap(t *testing.T) {
+	factory := newMockFactory(t)
+	m := NewManager(factory, 2)
+
+	if m.Cap() != 2 {
+		t.Errorf("expected Cap()=2, got %d", m.Cap())
+	}
+
+	// Initially not full
+	if m.Full() {
+		t.Error("expected Full()=false on empty manager")
+	}
+
+	// Add first team — still not full
+	createAndCancel(t, m, "issue-001")
+	if m.Full() {
+		t.Error("expected Full()=false with 1 team (max=2)")
+	}
+
+	// Add second team — now full
+	createAndCancel(t, m, "issue-002")
+	if !m.Full() {
+		t.Error("expected Full()=true with 2 teams (max=2)")
+	}
+
+	// Disband one team — no longer full
+	if _, err := m.DisbandByIssue("issue-001"); err != nil {
+		t.Fatalf("DisbandByIssue failed: %v", err)
+	}
+	if m.Full() {
+		t.Error("expected Full()=false after disbanding a team")
+	}
+}
+
+// TestCapDefaultMaxTeams verifies that Cap() returns DefaultMaxTeams when maxTeams=0.
+func TestCapDefaultMaxTeams(t *testing.T) {
+	m := NewManager(newMockFactory(t), 0)
+	if m.Cap() != DefaultMaxTeams {
+		t.Errorf("expected Cap()=%d, got %d", DefaultMaxTeams, m.Cap())
+	}
+}
+
+// TestSetMaxTeams verifies that SetMaxTeams updates the limit dynamically.
+func TestSetMaxTeams(t *testing.T) {
+	factory := newMockFactory(t)
+	m := NewManager(factory, 2)
+
+	if m.Cap() != 2 {
+		t.Errorf("expected initial Cap()=2, got %d", m.Cap())
+	}
+
+	// Increase the limit
+	m.SetMaxTeams(4)
+	if m.Cap() != 4 {
+		t.Errorf("expected Cap()=4 after SetMaxTeams(4), got %d", m.Cap())
+	}
+
+	// Create 4 teams — all should succeed under the new limit
+	for i := 1; i <= 4; i++ {
+		createAndCancel(t, m, fmt.Sprintf("issue-set-%03d", i))
+	}
+	if m.Count() != 4 {
+		t.Errorf("expected 4 teams after SetMaxTeams(4), got %d", m.Count())
+	}
+
+	// 5th creation should fail
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := m.Create(ctx, "issue-set-over", "")
+	if err == nil {
+		t.Fatal("expected error when exceeding new max, got nil")
+	}
+
+	// Reduce the limit — existing teams are not disbanded, but new creates fail
+	m.SetMaxTeams(2)
+	if m.Cap() != 2 {
+		t.Errorf("expected Cap()=2 after SetMaxTeams(2), got %d", m.Cap())
+	}
+	// Count is still 4 (existing teams not evicted), but new creates fail
+	_, err = m.Create(ctx, "issue-set-extra", "")
+	if err == nil {
+		t.Fatal("expected error when exceeding reduced max, got nil")
+	}
+
+	// SetMaxTeams(0) should reset to DefaultMaxTeams
+	m.SetMaxTeams(0)
+	if m.Cap() != DefaultMaxTeams {
+		t.Errorf("expected Cap()=%d after SetMaxTeams(0), got %d", DefaultMaxTeams, m.Cap())
+	}
+}

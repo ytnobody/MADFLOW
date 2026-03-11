@@ -680,7 +680,20 @@ func (o *Orchestrator) handleTeamCreate(ctx context.Context, body string) {
 		return
 	}
 
-	// No idle team available; create a new one.
+	// No idle team available.
+	// Check if we are already at the maximum team capacity.  If so, we cannot
+	// create a new team and must wait until an existing team is disbanded.
+	// Reject early (before marking in_progress) so the issue stays open and
+	// the superintendent can retry after a team slot becomes available.
+	if o.teams.Full() {
+		log.Printf("[orchestrator] TEAM_CREATE %s: rejected — at max_teams capacity (%d)", issueID, o.teams.Cap())
+		o.appendOrLog("superintendent", "orchestrator",
+			fmt.Sprintf("TEAM_CREATE %s は保留されました: チームが上限 (max_teams=%d) に達しています。既存チームが解放されるまで待機してください。",
+				issueID, o.teams.Cap()))
+		return
+	}
+
+	// Capacity is available — create a new team.
 	// Mark issue as in_progress immediately to prevent the superintendent
 	// from sending duplicate TEAM_CREATE commands while the team is being created.
 	existingIss.Status = issue.StatusInProgress
@@ -1138,6 +1151,8 @@ const issuePatrolPrompt = `定期イシュー巡回の時間です。
 
 1. イシューディレクトリを確認し、status="open" または status="in_progress" かつ assigned_team=0 のイシューがないか確認する
 2. 該当イシューがあれば、チーム編成を要求する（TEAM_CREATE）
+   - オーケストレーターが「チームが上限に達しています」と応答した場合は、チームが解放されるまで待機し、次の巡回で再試行してください
+   - TEAM_CREATE が保留された場合はイシューのステータスが open のまま維持されます（in_progress にはなりません）
 3. 進行中のチーム（assigned_team > 0）の状況をチャットログから確認する
 4. resolved 状態のイシューがあればクローズ手続きを行う
 
@@ -1336,6 +1351,9 @@ func (o *Orchestrator) runConfigWatcher(ctx context.Context) {
 			o.cfgMu.Lock()
 			o.cfg = newCfg
 			o.cfgMu.Unlock()
+			// Propagate max_teams changes to the team manager so that
+			// hot-reload updates take effect without restarting the process.
+			o.teams.SetMaxTeams(newCfg.Agent.MaxTeams)
 			log.Println("[config-watcher] active config updated")
 		}
 	}

@@ -1367,3 +1367,156 @@ func TestHandleTeamCreateMalformedIssueID(t *testing.T) {
 		t.Errorf("TEAM_CREATE with malformed ID should not produce 'イシューが見つかりません'; chatlog:\n%s", string(data))
 	}
 }
+
+// TestHandleTeamCreateRejectsWhenAtMaxCapacityAllBusy verifies that TEAM_CREATE is
+// rejected gracefully (without panicking or creating an unexpected team) when all
+// team slots are occupied by busy teams and no idle team is available.
+// This is the fix for GitHub Issue #180: "Orchestrator does not understand max_teams".
+func TestHandleTeamCreateRejectsWhenAtMaxCapacityAllBusy(t *testing.T) {
+	dir := t.TempDir()
+	cfg := testConfig(dir)
+	cfg.Agent.MaxTeams = 2
+	os.MkdirAll(filepath.Join(dir, "issues"), 0755)
+	chatlogPath := filepath.Join(dir, "chatlog.txt")
+	os.WriteFile(chatlogPath, nil, 0644)
+
+	orc := New(cfg, dir, t.TempDir())
+	orc.teams = team.NewManager(newMockTeamFactory(t), 2)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Fill both slots with busy teams (each assigned to a distinct issue).
+	_, err := orc.Teams().Create(ctx, "issue-busy-01", "Busy Issue 1")
+	if err != nil {
+		t.Fatalf("create busy team 1: %v", err)
+	}
+	_, err = orc.Teams().Create(ctx, "issue-busy-02", "Busy Issue 2")
+	if err != nil {
+		t.Fatalf("create busy team 2: %v", err)
+	}
+	if orc.Teams().Count() != 2 {
+		t.Fatalf("expected 2 busy teams, got %d", orc.Teams().Count())
+	}
+
+	// Create a new open issue to attempt assignment.
+	iss, _ := orc.Store().Create("New Issue Cannot Assign", "body")
+
+	// Call TEAM_CREATE — all slots are full with busy teams; no idle team exists.
+	orc.handleTeamCreate(ctx, fmt.Sprintf("TEAM_CREATE %s", iss.ID))
+
+	// Team count must NOT have increased.
+	if orc.Teams().Count() != 2 {
+		t.Errorf("expected team count to remain 2, got %d", orc.Teams().Count())
+	}
+
+	// Issue status must remain "open" (not in_progress) because we did not ACK.
+	got, getErr := orc.Store().Get(iss.ID)
+	if getErr != nil {
+		t.Fatalf("get issue: %v", getErr)
+	}
+	if got.Status != issue.StatusOpen {
+		t.Errorf("expected issue status to remain open, got %s", got.Status)
+	}
+	if got.AssignedTeam != 0 {
+		t.Errorf("expected AssignedTeam=0, got %d", got.AssignedTeam)
+	}
+
+	// Chatlog must contain a "保留" (pending) or capacity-limit message directed
+	// at the superintendent.
+	cl := chatlog.New(chatlogPath)
+	msgs, _ := cl.Poll("superintendent")
+	found := false
+	for _, m := range msgs {
+		if contains(m.Body, "上限") && contains(m.Body, iss.ID) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected chatlog to contain capacity-limit message for superintendent")
+	}
+}
+
+// TestConfigWatcherPropagatesMaxTeams verifies that when madflow.toml is updated
+// with a new max_teams value, runConfigWatcher propagates the change to the
+// team.Manager via SetMaxTeams.
+// This is the hot-reload fix for GitHub Issue #180.
+func TestConfigWatcherPropagatesMaxTeams(t *testing.T) {
+	dir := t.TempDir()
+
+	// Write an initial config TOML with max_teams=2.
+	cfgPath := filepath.Join(dir, "madflow.toml")
+	initialTOML := `[project]
+name = "test"
+
+[[project.repos]]
+name = "main"
+path = "` + dir + `"
+
+[agent]
+max_teams = 2
+
+[branches]
+main = "main"
+develop = "develop"
+feature_prefix = "feature/issue-"
+`
+	if err := os.WriteFile(cfgPath, []byte(initialTOML), 0644); err != nil {
+		t.Fatalf("write initial config: %v", err)
+	}
+
+	cfg := testConfig(dir)
+	cfg.Agent.MaxTeams = 2
+
+	orc := New(cfg, dir, t.TempDir())
+	orc.WithConfigPath(cfgPath)
+	// Replace team manager with a known initial cap of 2.
+	orc.teams = team.NewManager(newMockTeamFactory(t), 2)
+
+	if orc.teams.Cap() != 2 {
+		t.Fatalf("expected initial Cap()=2, got %d", orc.teams.Cap())
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Start the config watcher in the background.
+	go orc.runConfigWatcher(ctx)
+
+	// Update madflow.toml to set max_teams=5.
+	updatedTOML := `[project]
+name = "test"
+
+[[project.repos]]
+name = "main"
+path = "` + dir + `"
+
+[agent]
+max_teams = 5
+
+[branches]
+main = "main"
+develop = "develop"
+feature_prefix = "feature/issue-"
+`
+	// Give the watcher a moment to record the initial mod time before we change the file.
+	time.Sleep(600 * time.Millisecond)
+
+	if err := os.WriteFile(cfgPath, []byte(updatedTOML), 0644); err != nil {
+		t.Fatalf("write updated config: %v", err)
+	}
+
+	// Poll for the change to propagate (watcher polls every 500ms; allow up to 3s).
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if orc.teams.Cap() == 5 {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	if orc.teams.Cap() != 5 {
+		t.Errorf("expected Cap()=5 after config hot-reload, got %d", orc.teams.Cap())
+	}
+}
