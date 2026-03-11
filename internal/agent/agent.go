@@ -54,6 +54,8 @@ func NewAgent(cfg AgentConfig) *Agent {
 		proc = cfg.Process
 	} else {
 		switch {
+		case cfg.Model == "test":
+			proc = &noopProcess{}
 		case strings.HasPrefix(cfg.Model, "gemini-"):
 			proc = NewGeminiAPIProcess(GeminiAPIOptions{
 				SystemPrompt: cfg.SystemPrompt,
