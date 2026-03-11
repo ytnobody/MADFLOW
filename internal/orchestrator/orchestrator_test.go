@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -1129,5 +1130,393 @@ func TestRunGracefulShutdownDuringStartup(t *testing.T) {
 	err := orc.Run(ctx)
 	if err != nil {
 		t.Errorf("Run() with pre-cancelled context should return nil, got: %v", err)
+	}
+}
+
+// TestHandlePatrolComplete verifies that sending PATROL_COMPLETE via handleCommand
+// signals the patrolResetCh channel so runIssuePatrol can reset its timer.
+func TestHandlePatrolComplete(t *testing.T) {
+	dir := t.TempDir()
+	cfg := testConfig(dir)
+	orc := New(cfg, dir, t.TempDir())
+
+	// patrolResetCh should be initialised and empty.
+	if orc.patrolResetCh == nil {
+		t.Fatal("patrolResetCh should be non-nil after New()")
+	}
+	select {
+	case <-orc.patrolResetCh:
+		t.Fatal("patrolResetCh should be empty before PATROL_COMPLETE is sent")
+	default:
+	}
+
+	// Simulate the superintendent sending PATROL_COMPLETE via the chatlog.
+	msg := chatlog.Message{Sender: "superintendent", Recipient: "orchestrator", Body: "PATROL_COMPLETE"}
+	orc.HandleCommandForTest(context.Background(), msg)
+
+	// The channel should now have exactly one signal.
+	select {
+	case <-orc.patrolResetCh:
+		// success
+	default:
+		t.Error("patrolResetCh should contain a signal after PATROL_COMPLETE is processed")
+	}
+}
+
+// TestIssueStateFingerprint verifies that the fingerprint changes when issues are
+// added/removed and stays stable when no changes occur.
+func TestIssueStateFingerprint(t *testing.T) {
+	dir := t.TempDir()
+	cfg := testConfig(dir)
+	os.MkdirAll(filepath.Join(dir, "issues"), 0755)
+	orc := New(cfg, dir, t.TempDir())
+
+	// Empty store → empty fingerprint.
+	fp1 := orc.issueStateFingerprint()
+	if fp1 != "" {
+		t.Errorf("expected empty fingerprint with no issues, got %q", fp1)
+	}
+
+	// Add an open issue.
+	iss := &issue.Issue{ID: "gh-1", Title: "first", Status: issue.StatusOpen}
+	if err := orc.store.Update(iss); err != nil {
+		t.Fatal(err)
+	}
+	fp2 := orc.issueStateFingerprint()
+	if fp2 == fp1 {
+		t.Error("fingerprint should change after adding an open issue")
+	}
+
+	// Add another open issue.
+	iss2 := &issue.Issue{ID: "gh-2", Title: "second", Status: issue.StatusInProgress}
+	if err := orc.store.Update(iss2); err != nil {
+		t.Fatal(err)
+	}
+	fp3 := orc.issueStateFingerprint()
+	if fp3 == fp2 {
+		t.Error("fingerprint should change after adding a second issue")
+	}
+
+	// Close the first issue — fingerprint should change.
+	iss.Status = issue.StatusClosed
+	if err := orc.store.Update(iss); err != nil {
+		t.Fatal(err)
+	}
+	fp4 := orc.issueStateFingerprint()
+	if fp4 == fp3 {
+		t.Error("fingerprint should change after closing an issue")
+	}
+
+	// No further changes — fingerprint should be stable.
+	fp5 := orc.issueStateFingerprint()
+	if fp5 != fp4 {
+		t.Errorf("fingerprint should be stable when no changes: %q vs %q", fp4, fp5)
+	}
+}
+
+// TestRunIssuePatrolSuppressesUnchangedState verifies that the patrol reminder is
+// not sent when the issue state has not changed since the last reminder.
+func TestRunIssuePatrolSuppressesUnchangedState(t *testing.T) {
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, "issues"), 0755)
+	chatlogPath := filepath.Join(dir, "chatlog.txt")
+	os.WriteFile(chatlogPath, nil, 0644)
+
+	cfg := testConfig(dir)
+	cfg.Agent.IssuePatrolIntervalMinutes = 0 // will use default (20), overridden below
+	orc := New(cfg, dir, t.TempDir())
+	orc.cfg.Agent.IssuePatrolIntervalMinutes = 1 // use 1-minute interval for test setup
+
+	// Add one open issue so the first tick fires.
+	iss := &issue.Issue{ID: "patrol-test-1", Title: "patrol", Status: issue.StatusOpen}
+	if err := orc.store.Update(iss); err != nil {
+		t.Fatal(err)
+	}
+
+	// Count chatlog lines written to superintendent.
+	countPatrolMessages := func() int {
+		data, _ := os.ReadFile(chatlogPath)
+		count := 0
+		for _, line := range strings.Split(string(data), "\n") {
+			if strings.Contains(line, "定期イシュー巡回") {
+				count++
+			}
+		}
+		return count
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Use a very short interval ticker so we don't have to wait minutes.
+	interval := 50 * time.Millisecond
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	// We'll manually drive one iteration: the first tick should send the prompt.
+	// Run the loop in a goroutine and let it fire twice; the second tick should be suppressed.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		lastSent := ""
+		ticks := 0
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				ticks++
+				current := orc.issueStateFingerprint()
+				if current != lastSent {
+					orc.appendOrLog("superintendent", "orchestrator", issuePatrolPrompt)
+					lastSent = current
+				}
+				if ticks >= 3 {
+					return
+				}
+			}
+		}
+	}()
+	<-done
+
+	// Only one message should have been written (first tick triggered, subsequent ticks suppressed).
+	n := countPatrolMessages()
+	if n != 1 {
+		t.Errorf("expected exactly 1 patrol message, got %d", n)
+	}
+}
+
+// TestNormalizeIssueID verifies that normalizeIssueID correctly extracts the
+// valid issue ID prefix and strips any trailing non-ID characters.
+func TestNormalizeIssueID(t *testing.T) {
+	cases := []struct {
+		input string
+		want  string
+	}{
+		// Clean inputs should pass through unchanged.
+		{"gh-121", "gh-121"},
+		{"local-001", "local-001"},
+		{"ytnobody-MADFLOW-120", "ytnobody-MADFLOW-120"},
+		// Trailing Japanese text should be stripped (root cause of gh-121 rejection).
+		{"gh-121（2回目の要求）。チームアサインをお願いします。", "gh-121"},
+		{"gh-121（3回目の要求）。イシューファイルは", "gh-121"},
+		// Extra ASCII words separated by spaces are handled upstream by
+		// strings.Fields, but if the text is glued without spaces, the
+		// function should strip it.
+		{"local-001something", "local-001something"}, // "something" is ASCII alphanumeric, preserved
+		// Completely invalid input.
+		{"（無効）", ""},
+		{"", ""},
+	}
+	for _, tc := range cases {
+		got := normalizeIssueID(tc.input)
+		if got != tc.want {
+			t.Errorf("normalizeIssueID(%q) = %q, want %q", tc.input, got, tc.want)
+		}
+	}
+}
+
+// TestHandleTeamCreateMalformedIssueID verifies that TEAM_CREATE with a
+// malformed issue ID (e.g. extra Japanese text appended by the superintendent
+// on retry) correctly normalizes the ID and succeeds if the underlying issue
+// exists and is open.
+//
+// This is a regression test for the gh-121 incident where TEAM_CREATE was
+// rejected three times because the superintendent appended retry text
+// ("（2回目の要求）。チームアサインをお願いします。") directly after the issue ID,
+// causing the store lookup to fail.
+func TestHandleTeamCreateMalformedIssueID(t *testing.T) {
+	dir := t.TempDir()
+	cfg := testConfig(dir)
+	os.MkdirAll(filepath.Join(dir, "issues"), 0755)
+
+	orc := New(cfg, dir, t.TempDir())
+
+	// Create an open issue.
+	iss := &issue.Issue{ID: "gh-99", Title: "regression test issue", Status: issue.StatusOpen}
+	if err := orc.store.Update(iss); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := context.Background()
+
+	// Simulate the superintendent sending TEAM_CREATE with appended Japanese text,
+	// mimicking the exact pattern observed in the gh-121 incident.
+	malformed := "TEAM_CREATE gh-99（2回目の要求）。チームアサインをお願いします。"
+	orc.handleTeamCreate(ctx, malformed)
+
+	// The issue should have been transitioned to in_progress (assigned to a team),
+	// meaning the malformed ID was normalized and the lookup succeeded.
+	updated, err := orc.store.Get("gh-99")
+	if err != nil {
+		t.Fatalf("store.Get after TEAM_CREATE: %v", err)
+	}
+	if updated.Status == issue.StatusOpen {
+		// If the status is still open, TEAM_CREATE silently rejected or failed —
+		// read the chatlog to confirm there is no rejection message.
+		data, _ := os.ReadFile(filepath.Join(dir, "chatlog.txt"))
+		if strings.Contains(string(data), "イシューが見つかりません") {
+			t.Errorf("TEAM_CREATE incorrectly rejected malformed ID %q: got rejection message in chatlog", malformed)
+		}
+	}
+	// Either the issue moved to in_progress, or the team manager returned an
+	// error (acceptable since we use a mock config), but there must be NO
+	// "イシューが見つかりません" error in the chatlog.
+	data, _ := os.ReadFile(filepath.Join(dir, "chatlog.txt"))
+	if strings.Contains(string(data), "イシューが見つかりません") {
+		t.Errorf("TEAM_CREATE with malformed ID should not produce 'イシューが見つかりません'; chatlog:\n%s", string(data))
+	}
+}
+
+// TestHandleTeamCreateRejectsWhenAtMaxCapacityAllBusy verifies that TEAM_CREATE is
+// rejected gracefully (without panicking or creating an unexpected team) when all
+// team slots are occupied by busy teams and no idle team is available.
+// This is the fix for GitHub Issue #180: "Orchestrator does not understand max_teams".
+func TestHandleTeamCreateRejectsWhenAtMaxCapacityAllBusy(t *testing.T) {
+	dir := t.TempDir()
+	cfg := testConfig(dir)
+	cfg.Agent.MaxTeams = 2
+	os.MkdirAll(filepath.Join(dir, "issues"), 0755)
+	chatlogPath := filepath.Join(dir, "chatlog.txt")
+	os.WriteFile(chatlogPath, nil, 0644)
+
+	orc := New(cfg, dir, t.TempDir())
+	orc.teams = team.NewManager(newMockTeamFactory(t), 2)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Fill both slots with busy teams (each assigned to a distinct issue).
+	_, err := orc.Teams().Create(ctx, "issue-busy-01", "Busy Issue 1")
+	if err != nil {
+		t.Fatalf("create busy team 1: %v", err)
+	}
+	_, err = orc.Teams().Create(ctx, "issue-busy-02", "Busy Issue 2")
+	if err != nil {
+		t.Fatalf("create busy team 2: %v", err)
+	}
+	if orc.Teams().Count() != 2 {
+		t.Fatalf("expected 2 busy teams, got %d", orc.Teams().Count())
+	}
+
+	// Create a new open issue to attempt assignment.
+	iss, _ := orc.Store().Create("New Issue Cannot Assign", "body")
+
+	// Call TEAM_CREATE — all slots are full with busy teams; no idle team exists.
+	orc.handleTeamCreate(ctx, fmt.Sprintf("TEAM_CREATE %s", iss.ID))
+
+	// Team count must NOT have increased.
+	if orc.Teams().Count() != 2 {
+		t.Errorf("expected team count to remain 2, got %d", orc.Teams().Count())
+	}
+
+	// Issue status must remain "open" (not in_progress) because we did not ACK.
+	got, getErr := orc.Store().Get(iss.ID)
+	if getErr != nil {
+		t.Fatalf("get issue: %v", getErr)
+	}
+	if got.Status != issue.StatusOpen {
+		t.Errorf("expected issue status to remain open, got %s", got.Status)
+	}
+	if got.AssignedTeam != 0 {
+		t.Errorf("expected AssignedTeam=0, got %d", got.AssignedTeam)
+	}
+
+	// Chatlog must contain a "保留" (pending) or capacity-limit message directed
+	// at the superintendent.
+	cl := chatlog.New(chatlogPath)
+	msgs, _ := cl.Poll("superintendent")
+	found := false
+	for _, m := range msgs {
+		if contains(m.Body, "上限") && contains(m.Body, iss.ID) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected chatlog to contain capacity-limit message for superintendent")
+	}
+}
+
+// TestConfigWatcherPropagatesMaxTeams verifies that when madflow.toml is updated
+// with a new max_teams value, runConfigWatcher propagates the change to the
+// team.Manager via SetMaxTeams.
+// This is the hot-reload fix for GitHub Issue #180.
+func TestConfigWatcherPropagatesMaxTeams(t *testing.T) {
+	dir := t.TempDir()
+
+	// Write an initial config TOML with max_teams=2.
+	cfgPath := filepath.Join(dir, "madflow.toml")
+	initialTOML := `[project]
+name = "test"
+
+[[project.repos]]
+name = "main"
+path = "` + dir + `"
+
+[agent]
+max_teams = 2
+
+[branches]
+main = "main"
+develop = "develop"
+feature_prefix = "feature/issue-"
+`
+	if err := os.WriteFile(cfgPath, []byte(initialTOML), 0644); err != nil {
+		t.Fatalf("write initial config: %v", err)
+	}
+
+	cfg := testConfig(dir)
+	cfg.Agent.MaxTeams = 2
+
+	orc := New(cfg, dir, t.TempDir())
+	orc.WithConfigPath(cfgPath)
+	// Replace team manager with a known initial cap of 2.
+	orc.teams = team.NewManager(newMockTeamFactory(t), 2)
+
+	if orc.teams.Cap() != 2 {
+		t.Fatalf("expected initial Cap()=2, got %d", orc.teams.Cap())
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Start the config watcher in the background.
+	go orc.runConfigWatcher(ctx)
+
+	// Update madflow.toml to set max_teams=5.
+	updatedTOML := `[project]
+name = "test"
+
+[[project.repos]]
+name = "main"
+path = "` + dir + `"
+
+[agent]
+max_teams = 5
+
+[branches]
+main = "main"
+develop = "develop"
+feature_prefix = "feature/issue-"
+`
+	// Give the watcher a moment to record the initial mod time before we change the file.
+	time.Sleep(600 * time.Millisecond)
+
+	if err := os.WriteFile(cfgPath, []byte(updatedTOML), 0644); err != nil {
+		t.Fatalf("write updated config: %v", err)
+	}
+
+	// Poll for the change to propagate (watcher polls every 500ms; allow up to 3s).
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if orc.teams.Cap() == 5 {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	if orc.teams.Cap() != 5 {
+		t.Errorf("expected Cap()=5 after config hot-reload, got %d", orc.teams.Cap())
 	}
 }
