@@ -185,10 +185,15 @@ git worktree add -b feature/issue-local-002 ../madflow-worktree/local-002 develo
 
 ### Development Cycle
 
+MADFLOW follows a **documentation-driven development workflow**:
+
 1. **Create worktree**: Use the command above to create a worktree for each issue.
-2. **Implementation**: Move to the created worktree directory and implement, then commit.
-3. **Create Pull Request**: Use GitHub CLI (`gh pr create`) to create a Pull Request.
-4. **Remove worktree**: Once the Pull Request is merged, remove the no-longer-needed worktree.
+2. **Architecture**: Design the solution and identify affected components.
+3. **Documentation**: Write or update specification documentation in `docs/specs/` to describe the intended behavior.
+4. **Tests**: Write or update test code that conforms to the specification documentation (test-first).
+5. **Implementation**: Write or update implementation code to make the tests pass.
+6. **Create Pull Request**: Use GitHub CLI (`gh pr create`) to create a Pull Request.
+7. **Remove worktree**: Once the Pull Request is merged, remove the no-longer-needed worktree.
 
 ```bash
 # Run from the main working directory

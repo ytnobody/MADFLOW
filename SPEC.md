@@ -37,9 +37,12 @@ One engineer constitutes one team.
 ### 4.1. Dynamic Team Lifecycle
 
 1. **Formation**: The Superintendent assigns one engineer to a specific issue and forms team (N).
-2. **Design & Implementation**: The engineer creates a `feature` branch and carries out design, implementation, and testing. Unclear points are directed to the Superintendent.
-3. **Review & Merge**: After the engineer creates a PR, the Superintendent reviews it and makes a merge decision.
-4. **Disbandment**: After the Superintendent completes the merge to the `develop` branch, team (N) is dissolved.
+2. **Architecture**: The engineer creates a `feature` branch and designs the solution architecture. Unclear points are directed to the Superintendent.
+3. **Documentation**: The engineer writes or updates specification documentation that describes the intended behavior and design decisions.
+4. **Test-First**: The engineer writes or updates test code that conforms to the specification documentation.
+5. **Implementation**: The engineer writes or updates implementation code that makes the tests pass, compliant with the test code.
+6. **Review & Merge**: After the engineer creates a PR, the Superintendent reviews it and makes a merge decision.
+7. **Disbandment**: After the Superintendent completes the merge to the `develop` branch, team (N) is dissolved.
 
 ### 4.2. Environment Management
 
