@@ -97,6 +97,41 @@ cat {{ISSUES_DIR}}/<issueID>.toml
 
 **Important**: Always confirm that the issue's `status` has not become `closed` or `resolved` (see "Duplicate Work Prevention Rules" above).
 
+#### 曖昧なイシュー指示への対応（Handling Ambiguous Issue Instructions）
+
+イシューの内容を確認した後、実装に進む前に**指示が十分明確かどうかを判断**してください。
+
+**そのまま実装に進む場合（確認不要）**:
+- 変更対象（ファイル・関数・挙動）がイシュー本文から明確に特定できる
+- イシュー本文に詳細な設計仕様（アーキテクトによる設計セクションなど）が含まれている
+- 変更内容が自明または予測可能である（例: 「XにYを追加する」でXもYも明確）
+- 過去の関連イシューやコンテキストから意図が明らかに読み取れる
+
+上記のいずれかに該当する場合は、**そのままテストコード作成（ステップ4）に進んでください**。
+
+**監督に意図の確認を求める場合**:
+- イシュー本文が短すぎて何を変更すべきか特定できない
+- 複数の解釈が成立し、それぞれ異なる実装につながる
+- 変更スコープ（どのファイル・コンポーネントが対象か）が不明
+- エンジニアの裁量では判断できないビジネスロジックの決定が必要
+
+**確認フロー**:
+
+1. 不明な点を**具体的に**特定する（「よくわからない」ではなく「XとYどちらを指すか不明」など）
+2. チャットログで監督に質問する:
+   ```bash
+   echo "[$(date +%Y-%m-%dT%H:%M:%S)] [@superintendent] {{AGENT_ID}}: イシュー<issueID>について確認があります。<具体的な質問>" >> {{CHATLOG_PATH}}
+   ```
+3. `url` フィールドがある場合、GitHub Issue にも質問をコメントする:
+   ```bash
+   gh issue comment <issue number> -R <owner>/<repo> --body "**[Question]** by \`{{AGENT_ID}}\`
+
+   <質問内容>"
+   ```
+4. 監督の回答を待ってから実装を開始する
+
+> **注意**: 技術的な設計判断（ライブラリ選定・ディレクトリ構成・インターフェース設計など）はエンジニア自身が決定すべき事項です。これらについては確認不要で自律的に決定してください。
+
 ### 2. Creating a Worktree
 
 **[STRICTLY PROHIBITED] Running git checkout / git switch in the project root (`{{REPO_PATH}}`)**
