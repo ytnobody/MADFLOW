@@ -6,7 +6,7 @@ import (
 )
 
 func TestPresets_AllDefined(t *testing.T) {
-	expectedPresets := []string{"claude", "gemini", "claude-cheap", "gemini-cheap", "hybrid", "hybrid-cheap"}
+	expectedPresets := []string{"claude", "gemini", "claude-cheap", "gemini-cheap", "hybrid", "hybrid-cheap", "claude-api-standard", "claude-api-cheap"}
 	for _, name := range expectedPresets {
 		if _, ok := presets[name]; !ok {
 			t.Errorf("preset %q is not defined", name)
@@ -26,6 +26,8 @@ func TestPresets_Models(t *testing.T) {
 		{"gemini-cheap", "gemini-2.5-flash", "gemini-2.5-flash"},
 		{"hybrid", "claude-sonnet-4-6", "gemini-2.5-pro"},
 		{"hybrid-cheap", "claude-sonnet-4-6", "gemini-2.5-flash"},
+		{"claude-api-standard", "anthropic/claude-sonnet-4-6", "anthropic/claude-haiku-4-5"},
+		{"claude-api-cheap", "anthropic/claude-haiku-4-5", "anthropic/claude-haiku-4-5"},
 	}
 
 	for _, tt := range tests {
@@ -128,7 +130,7 @@ superintendent = "claude-sonnet-4-6"
 
 func TestFormatPresets(t *testing.T) {
 	out := formatPresets()
-	expectedPresets := []string{"claude", "gemini", "claude-cheap", "gemini-cheap", "hybrid", "hybrid-cheap"}
+	expectedPresets := []string{"claude", "gemini", "claude-cheap", "gemini-cheap", "hybrid", "hybrid-cheap", "claude-api-standard", "claude-api-cheap"}
 	for _, name := range expectedPresets {
 		if !strings.Contains(out, name) {
 			t.Errorf("formatPresets output missing preset %q", name)

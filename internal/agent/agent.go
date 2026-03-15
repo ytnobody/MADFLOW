@@ -63,6 +63,13 @@ func NewAgent(cfg AgentConfig) *Agent {
 				WorkDir:      cfg.WorkDir,
 				BashTimeout:  cfg.BashTimeout,
 			})
+		case strings.HasPrefix(cfg.Model, "anthropic/"):
+			proc = NewAnthropicAPIProcess(AnthropicAPIOptions{
+				SystemPrompt: cfg.SystemPrompt,
+				Model:        cfg.Model,
+				WorkDir:      cfg.WorkDir,
+				BashTimeout:  cfg.BashTimeout,
+			})
 		default:
 			proc = NewClaudeStreamProcess(ClaudeOptions{
 				SystemPrompt: cfg.SystemPrompt,
