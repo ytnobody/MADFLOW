@@ -3,6 +3,7 @@ package prompts
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -49,6 +50,52 @@ func TestWriteDefaults(t *testing.T) {
 		if info.Size() == 0 {
 			t.Errorf("expected non-empty %s", name)
 		}
+	}
+}
+
+// TestEngineerPrompt_ContainsAmbiguityHandling verifies that engineer.md includes
+// the required section for handling ambiguous issue instructions.
+func TestEngineerPrompt_ContainsAmbiguityHandling(t *testing.T) {
+	data, err := ReadDefault("engineer.md")
+	if err != nil {
+		t.Fatalf("ReadDefault(engineer.md): %v", err)
+	}
+	content := string(data)
+
+	mustContain := []string{
+		// Section heading
+		"曖昧",
+		// Clarification flow keyword
+		"確認",
+		// Proceed without clarification keyword
+		"自明",
+	}
+
+	for _, phrase := range mustContain {
+		if !strings.Contains(content, phrase) {
+			t.Errorf("engineer.md should contain %q for ambiguous issue handling guidance", phrase)
+		}
+	}
+}
+
+// TestEngineerPrompt_AmbiguityHandlingPosition verifies that the ambiguity
+// handling guidance appears in the Issue Review section (Step 1).
+func TestEngineerPrompt_AmbiguityHandlingPosition(t *testing.T) {
+	data, err := ReadDefault("engineer.md")
+	if err != nil {
+		t.Fatalf("ReadDefault(engineer.md): %v", err)
+	}
+	content := string(data)
+
+	issueReviewIdx := strings.Index(content, "### 1. Issue Review")
+	if issueReviewIdx == -1 {
+		t.Fatal("engineer.md must contain '### 1. Issue Review' section")
+	}
+
+	// The ambiguity section should appear after "### 1. Issue Review"
+	ambiguityIdx := strings.Index(content[issueReviewIdx:], "曖昧")
+	if ambiguityIdx == -1 {
+		t.Error("ambiguity handling guidance should appear within or after the Issue Review section")
 	}
 }
 
