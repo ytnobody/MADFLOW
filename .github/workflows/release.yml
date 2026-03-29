@@ -36,6 +36,13 @@ jobs:
           GOOS=darwin  GOARCH=arm64 go build -ldflags "${LDFLAGS}" -o dist/madflow-darwin-arm64  ./cmd/madflow
           GOOS=windows GOARCH=amd64 go build -ldflags "${LDFLAGS}" -o dist/madflow-windows-amd64.exe ./cmd/madflow
 
+      - name: Generate SHA256 checksums
+        run: |
+          cd dist
+          for f in madflow-linux-amd64 madflow-linux-arm64 madflow-darwin-amd64 madflow-darwin-arm64 madflow-windows-amd64.exe; do
+            sha256sum "$f" | awk '{print $1}' > "${f}.sha256"
+          done
+
       - name: Create or Update GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -50,6 +57,11 @@ jobs:
               dist/madflow-darwin-amd64 \
               dist/madflow-darwin-arm64 \
               dist/madflow-windows-amd64.exe \
+              dist/madflow-linux-amd64.sha256 \
+              dist/madflow-linux-arm64.sha256 \
+              dist/madflow-darwin-amd64.sha256 \
+              dist/madflow-darwin-arm64.sha256 \
+              dist/madflow-windows-amd64.exe.sha256 \
               --clobber
           else
             echo "Creating new release $VERSION..."
@@ -59,5 +71,10 @@ jobs:
               dist/madflow-linux-arm64 \
               dist/madflow-darwin-amd64 \
               dist/madflow-darwin-arm64 \
-              dist/madflow-windows-amd64.exe
+              dist/madflow-windows-amd64.exe \
+              dist/madflow-linux-amd64.sha256 \
+              dist/madflow-linux-arm64.sha256 \
+              dist/madflow-darwin-amd64.sha256 \
+              dist/madflow-darwin-arm64.sha256 \
+              dist/madflow-windows-amd64.exe.sha256
           fi
