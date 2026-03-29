@@ -302,12 +302,15 @@ func TestSyncer_UpdateIdleState_NilDetector(t *testing.T) {
 }
 
 func TestIsAuthorized_EmptyList(t *testing.T) {
-	// Empty authorized users means everyone is authorized.
-	if !isAuthorized("alice", nil) {
-		t.Error("expected alice to be authorized when list is empty")
+	// Empty authorized users means no one is authorized (deny-all for safety).
+	if isAuthorized("alice", nil) {
+		t.Error("expected alice to be unauthorized when list is nil (deny-all)")
 	}
-	if !isAuthorized("", nil) {
-		t.Error("expected empty login to be authorized when list is empty")
+	if isAuthorized("", nil) {
+		t.Error("expected empty login to be unauthorized when list is nil (deny-all)")
+	}
+	if isAuthorized("alice", []string{}) {
+		t.Error("expected alice to be unauthorized when list is empty slice (deny-all)")
 	}
 }
 
