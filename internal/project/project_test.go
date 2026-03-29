@@ -93,3 +93,32 @@ func TestDetectNotFound(t *testing.T) {
 		t.Fatal("expected error for unregistered directory")
 	}
 }
+
+// TestInitCreatesDirectoriesWithRestrictedPermissions verifies that Init creates
+// data directories with 0700 permissions.
+func TestInitCreatesDirectoriesWithRestrictedPermissions(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	projectDir := filepath.Join(tmpHome, "perm-test-app")
+	if err := os.MkdirAll(projectDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Init("perm-test-app", []string{projectDir}); err != nil {
+		t.Fatal(err)
+	}
+
+	dataDir := filepath.Join(tmpHome, madflowDir, "perm-test-app")
+	for _, sub := range []string{"issues", "memos"} {
+		info, err := os.Stat(filepath.Join(dataDir, sub))
+		if err != nil {
+			t.Fatalf("expected %s dir to exist: %v", sub, err)
+		}
+		got := info.Mode().Perm()
+		want := os.FileMode(0700)
+		if got != want {
+			t.Errorf("data dir %s permission: got %04o, want %04o", sub, got, want)
+		}
+	}
+}

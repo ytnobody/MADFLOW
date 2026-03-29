@@ -103,13 +103,13 @@ func (o *Orchestrator) Config() *config.Config {
 func (o *Orchestrator) Run(ctx context.Context) error {
 	// Ensure data directories exist
 	for _, sub := range []string{"issues", "memos"} {
-		os.MkdirAll(filepath.Join(o.dataDir, sub), 0755)
+		os.MkdirAll(filepath.Join(o.dataDir, sub), 0700)
 	}
 
 	// Truncate chatlog to start with a clean slate. Stale messages from
 	// previous runs confuse the superintendent (e.g. referencing engineers
 	// like engineer-4 that no longer exist, causing phantom TEAM_CREATE).
-	os.WriteFile(o.chatLog.Path(), nil, 0644)
+	os.WriteFile(o.chatLog.Path(), nil, 0600)
 
 	log.Println("[orchestrator] starting")
 

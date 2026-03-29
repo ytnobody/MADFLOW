@@ -97,7 +97,7 @@ func (s *Store) Dir() string {
 
 // Create creates a new local issue with auto-incremented ID.
 func (s *Store) Create(title, body string) (*Issue, error) {
-	if err := os.MkdirAll(s.dir, 0755); err != nil {
+	if err := os.MkdirAll(s.dir, 0700); err != nil {
 		return nil, fmt.Errorf("create issues dir: %w", err)
 	}
 
