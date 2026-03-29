@@ -151,10 +151,12 @@ func (s *Syncer) WithSkipComments(skip bool) *Syncer {
 }
 
 // isAuthorized returns true if the given GitHub login is authorized.
-// When authorizedUsers is empty, all users are authorized.
+// When authorizedUsers is empty, no users are authorized (deny-all).
+// This is defense-in-depth: config validation should prevent the empty-list
+// case from reaching production code when GitHub integration is enabled.
 func isAuthorized(login string, authorizedUsers []string) bool {
 	if len(authorizedUsers) == 0 {
-		return true
+		return false
 	}
 	for _, u := range authorizedUsers {
 		if u == login {
