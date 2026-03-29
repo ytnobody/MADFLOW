@@ -411,7 +411,7 @@ func (g *GeminiAPIProcess) runBash(ctx context.Context, command string) (string,
 		if result != "" {
 			result += "\n"
 		}
-		result += "STDERR:\n" + strings.TrimSpace(stderr.String())
+		result += "STDERR:\n" + SanitizeLog(strings.TrimSpace(stderr.String()))
 	}
 	if result == "" && err != nil {
 		result = fmt.Sprintf("command failed: %v", err)
