@@ -106,7 +106,7 @@ func (c *ClaudeStreamProcess) Send(ctx context.Context, prompt string) (string, 
 
 	result, err := c.readResult(ctx)
 	if err != nil && c.stderrBuf != nil {
-		if stderrMsg := strings.TrimSpace(c.stderrBuf.String()); stderrMsg != "" {
+		if stderrMsg := SanitizeLog(strings.TrimSpace(c.stderrBuf.String())); stderrMsg != "" {
 			log.Printf("[claude-stream] stderr: %s", stderrMsg)
 		}
 	}
