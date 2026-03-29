@@ -174,9 +174,12 @@ func TestGeminiAPIProcess_Send_NoAPIKey(t *testing.T) {
 // TestGeminiAPIProcess_Send_EndTurn uses a mock HTTP server to verify a successful response.
 func TestGeminiAPIProcess_Send_EndTurn(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Verify API key is passed as query parameter
-		if r.URL.Query().Get("key") == "" {
-			t.Error("expected key query parameter")
+		// Verify API key is passed as x-goog-api-key header (not query parameter)
+		if r.Header.Get("x-goog-api-key") == "" {
+			t.Error("expected x-goog-api-key header")
+		}
+		if r.URL.Query().Get("key") != "" {
+			t.Error("API key must not appear as query parameter")
 		}
 
 		resp := geminiResponse{

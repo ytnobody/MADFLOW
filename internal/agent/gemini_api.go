@@ -304,18 +304,12 @@ func (g *GeminiAPIProcess) callAPIWithURL(ctx context.Context, apiKey string, co
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
-	// Append API key as query parameter
-	sep := "?"
-	if strings.Contains(url, "?") {
-		sep = "&"
-	}
-	fullURL := url + sep + "key=" + apiKey
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, fullURL, bytes.NewReader(data))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(data))
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-goog-api-key", apiKey)
 
 	httpResp, err := g.client.Do(req)
 	if err != nil {
