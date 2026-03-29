@@ -124,7 +124,7 @@ func TestCheckRateLimit_ExactlyAtThreshold(t *testing.T) {
 	// Reset already passed → should return nil (no wait needed, reset occurred)
 	resp := ghRateLimitResponse{}
 	resp.Resources.Core.Limit = 5000
-	resp.Resources.Core.Remaining = 10 // exactly at threshold
+	resp.Resources.Core.Remaining = 10                              // exactly at threshold
 	resp.Resources.Core.Reset = time.Now().Add(-time.Second).Unix() // reset in past
 
 	err := s.checkRateLimitWithData(resp)
@@ -141,7 +141,7 @@ func TestCheckRateLimit_BelowThreshold_ResetFarFuture(t *testing.T) {
 
 	resp := ghRateLimitResponse{}
 	resp.Resources.Core.Limit = 5000
-	resp.Resources.Core.Remaining = 5 // below threshold
+	resp.Resources.Core.Remaining = 5                                                 // below threshold
 	resp.Resources.Core.Reset = time.Now().Add(rateLimitMaxWait + time.Minute).Unix() // far future
 
 	err := s.checkRateLimitWithData(resp)
