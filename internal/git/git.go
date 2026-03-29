@@ -194,9 +194,32 @@ func (r *Repo) CleanOrphanedWorktrees(activeTeamDirs map[string]bool) (removed [
 	return removed
 }
 
+// ValidateSafeName validates that name is safe to use as a branch name component
+// or issue ID in file path operations. It rejects empty strings, strings
+// containing ".." (path traversal), path separators ("/" or "\"), and null bytes.
+func ValidateSafeName(name string) error {
+	if name == "" {
+		return fmt.Errorf("name must not be empty")
+	}
+	if strings.Contains(name, "..") {
+		return fmt.Errorf("name %q contains prohibited sequence \"..\"", name)
+	}
+	if strings.ContainsAny(name, "/\\") {
+		return fmt.Errorf("name %q contains prohibited path separator", name)
+	}
+	if strings.ContainsRune(name, '\x00') {
+		return fmt.Errorf("name %q contains null byte", name)
+	}
+	return nil
+}
+
 // PrepareWorktree ensures the develop branch exists (creating from main if needed)
 // and creates a worktree with a new feature branch based on develop.
+// It validates featureBranch to prevent path traversal attacks.
 func (r *Repo) PrepareWorktree(path, featureBranch, developBranch, mainBranch string) error {
+	if err := ValidateSafeName(featureBranch); err != nil {
+		return fmt.Errorf("invalid feature branch name: %w", err)
+	}
 	if err := r.EnsureBranch(developBranch, mainBranch); err != nil {
 		return fmt.Errorf("ensure develop branch: %w", err)
 	}
