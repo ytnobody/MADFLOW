@@ -417,3 +417,53 @@ func TestReadFrom_TruncationPreservesNewMessages(t *testing.T) {
 		t.Errorf("expected body 'TEAM_CREATE 6', got: %s", messages[0].Body)
 	}
 }
+
+// TestAppendCreatesFileWithRestrictedPermissions verifies that Append creates
+// the chatlog file with 0600 permissions (owner read/write only).
+func TestAppendCreatesFileWithRestrictedPermissions(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "chatlog.txt")
+
+	cl := New(path)
+	if err := cl.Append("recipient", "sender", "hello"); err != nil {
+		t.Fatalf("Append failed: %v", err)
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat chatlog: %v", err)
+	}
+	got := info.Mode().Perm()
+	want := os.FileMode(0600)
+	if got != want {
+		t.Errorf("chatlog permission: got %04o, want %04o", got, want)
+	}
+}
+
+// TestTruncatePreservesRestrictedPermissions verifies that Truncate writes the
+// temp file with 0600 permissions.
+func TestTruncatePreservesRestrictedPermissions(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "chatlog.txt")
+
+	cl := New(path)
+	for i := 0; i < 5; i++ {
+		if err := cl.Append("recipient", "sender", "line"); err != nil {
+			t.Fatalf("Append failed: %v", err)
+		}
+	}
+
+	if err := cl.Truncate(2); err != nil {
+		t.Fatalf("Truncate failed: %v", err)
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat chatlog after truncate: %v", err)
+	}
+	got := info.Mode().Perm()
+	want := os.FileMode(0600)
+	if got != want {
+		t.Errorf("chatlog permission after truncate: got %04o, want %04o", got, want)
+	}
+}

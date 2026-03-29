@@ -94,6 +94,46 @@ func TestLoadLatestMemoDirNotExist(t *testing.T) {
 	}
 }
 
+// TestSaveMemoCreatesFileWithRestrictedPermissions verifies that SaveMemo
+// creates memo files with 0600 permissions and the memos directory with 0700.
+func TestSaveMemoCreatesFileWithRestrictedPermissions(t *testing.T) {
+	dir := t.TempDir()
+	memosDir := filepath.Join(dir, "memos")
+
+	memo := WorkMemo{
+		AgentID:      "engineer-1",
+		Timestamp:    time.Date(2026, 2, 21, 10, 8, 0, 0, time.UTC),
+		CurrentState: "test",
+	}
+
+	path, err := SaveMemo(memosDir, memo)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Check memo file permissions (0600)
+	fileInfo, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat memo file: %v", err)
+	}
+	gotFile := fileInfo.Mode().Perm()
+	wantFile := os.FileMode(0600)
+	if gotFile != wantFile {
+		t.Errorf("memo file permission: got %04o, want %04o", gotFile, wantFile)
+	}
+
+	// Check memos directory permissions (0700)
+	dirInfo, err := os.Stat(memosDir)
+	if err != nil {
+		t.Fatalf("stat memos dir: %v", err)
+	}
+	gotDir := dirInfo.Mode().Perm()
+	wantDir := os.FileMode(0700)
+	if gotDir != wantDir {
+		t.Errorf("memos dir permission: got %04o, want %04o", gotDir, wantDir)
+	}
+}
+
 func TestTimer(t *testing.T) {
 	timer := NewTimer(100 * time.Millisecond)
 
