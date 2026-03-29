@@ -104,6 +104,8 @@ path = "."
 
 func TestLoadWithGitHub(t *testing.T) {
 	content := `
+authorized_users = ["testuser"]
+
 [project]
 name = "test-app"
 
@@ -140,6 +142,8 @@ sync_interval_minutes = 10
 
 func TestEventPollSecondsDefault(t *testing.T) {
 	content := `
+authorized_users = ["testuser"]
+
 [project]
 name = "test-app"
 
@@ -172,6 +176,8 @@ repos = ["api"]
 
 func TestEventPollSecondsCustom(t *testing.T) {
 	content := `
+authorized_users = ["testuser"]
+
 [project]
 name = "test-app"
 
@@ -398,6 +404,8 @@ extra_prompt = "このプロジェクトはGoで書かれています。コー�
 }
 
 func TestAuthorizedUsersDefault(t *testing.T) {
+	// When GitHub integration is not configured, authorized_users is not required
+	// and defaults to empty.
 	content := `
 [project]
 name = "test-app"
@@ -419,6 +427,33 @@ path = "."
 
 	if len(cfg.AuthorizedUsers) != 0 {
 		t.Errorf("expected empty authorized_users by default, got %v", cfg.AuthorizedUsers)
+	}
+}
+
+func TestLoadGitHubMissingAuthorizedUsers(t *testing.T) {
+	// When GitHub integration is configured but authorized_users is not set,
+	// Load must return an error to prevent the default all-permit behavior.
+	content := `
+[project]
+name = "test-app"
+
+[[project.repos]]
+name = "main"
+path = "."
+
+[github]
+owner = "myorg"
+repos = ["myrepo"]
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "madflow.toml")
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error when github is configured without authorized_users, got nil")
 	}
 }
 
@@ -747,6 +782,8 @@ issue_patrol_interval_minutes = -1
 
 func TestGitHubBotCommentPatterns(t *testing.T) {
 	content := `
+authorized_users = ["testuser"]
+
 [project]
 name = "test-app"
 
@@ -837,6 +874,8 @@ language = "ja"
 func TestGitHubBotCommentPatterns_Empty(t *testing.T) {
 	// When bot_comment_patterns is not configured, it should default to nil/empty.
 	content := `
+authorized_users = ["testuser"]
+
 [project]
 name = "test-app"
 
