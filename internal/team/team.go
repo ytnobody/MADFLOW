@@ -45,7 +45,7 @@ func announceStart(team *Team) {
 
 // appendLine はチャットログファイルに1行追記する。
 func appendLine(path, line string) {
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
 	if err != nil {
 		log.Printf("[team] announce: open %s: %v", path, err)
 		return

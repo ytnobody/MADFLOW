@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -79,9 +80,46 @@ func main() {
 	}
 }
 
+// isTerminal returns true when f is connected to an interactive terminal.
+func isTerminal(f *os.File) bool {
+	info, err := f.Stat()
+	if err != nil {
+		return false
+	}
+	return (info.Mode() & os.ModeCharDevice) != 0
+}
+
+// parseAuthorizedUsers splits a comma-separated string of GitHub usernames,
+// trims whitespace from each entry, and drops empty strings.
+func parseAuthorizedUsers(raw string) []string {
+	parts := strings.Split(raw, ",")
+	var users []string
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			users = append(users, p)
+		}
+	}
+	return users
+}
+
+// buildAuthorizedUsersLine formats the authorized_users TOML line.
+// Returns an empty string when users is nil or empty.
+func buildAuthorizedUsersLine(users []string) string {
+	if len(users) == 0 {
+		return ""
+	}
+	var quoted []string
+	for _, u := range users {
+		quoted = append(quoted, fmt.Sprintf("%q", u))
+	}
+	return fmt.Sprintf("authorized_users = [%s]\n\n", strings.Join(quoted, ", "))
+}
+
 func cmdInit() error {
 	name := ""
 	var repoPaths []string
+	authorizedUsersRaw := ""
 
 	args := os.Args[2:]
 	for i := 0; i < len(args); i++ {
@@ -95,6 +133,11 @@ func cmdInit() error {
 			if i+1 < len(args) {
 				i++
 				repoPaths = append(repoPaths, args[i])
+			}
+		case "--authorized-users":
+			if i+1 < len(args) {
+				i++
+				authorizedUsersRaw = args[i]
 			}
 		}
 	}
@@ -116,6 +159,17 @@ func cmdInit() error {
 		repoPaths = []string{cwd}
 	}
 
+	// If --authorized-users was not given and stdin is a terminal, prompt interactively.
+	if authorizedUsersRaw == "" && isTerminal(os.Stdin) {
+		fmt.Print("Enter authorized GitHub usernames (comma-separated, press Enter to skip): ")
+		scanner := bufio.NewScanner(os.Stdin)
+		if scanner.Scan() {
+			authorizedUsersRaw = scanner.Text()
+		}
+	}
+
+	authorizedUsers := parseAuthorizedUsers(authorizedUsersRaw)
+
 	if err := project.Init(name, repoPaths); err != nil {
 		return err
 	}
@@ -124,7 +178,8 @@ func cmdInit() error {
 	cwd, _ := os.Getwd()
 	configPath := filepath.Join(cwd, "madflow.toml")
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
-		tmpl := fmt.Sprintf(`[project]
+		authorizedUsersLine := buildAuthorizedUsersLine(authorizedUsers)
+		tmpl := fmt.Sprintf(`%s[project]
 name = "%s"
 
 [[project.repos]]
@@ -142,7 +197,7 @@ engineer = "claude-sonnet-4-6"
 main = "main"
 develop = "develop"
 feature_prefix = "feature/issue-"
-`, name, filepath.Base(repoPaths[0]), repoPaths[0])
+`, authorizedUsersLine, name, filepath.Base(repoPaths[0]), repoPaths[0])
 		if err := os.WriteFile(configPath, []byte(tmpl), 0644); err != nil {
 			return fmt.Errorf("create config: %w", err)
 		}

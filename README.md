@@ -102,6 +102,33 @@ repos = ["my-app"]
 sync_interval_minutes = 5
 ```
 
+#### `authorized_users` — Required when GitHub integration is enabled
+
+When the `[github]` section is present, you **must** also set `authorized_users` at the top level of `madflow.toml`. This is a list of GitHub login names whose issues, pull requests, and comments MADFLOW is allowed to process.
+
+```toml
+# List of GitHub logins that MADFLOW will accept events from.
+# Required when [github] is present. Must contain at least one entry.
+authorized_users = ["myusername", "trusted-collaborator"]
+
+[github]
+owner = "myorg"
+repos = ["my-app"]
+sync_interval_minutes = 5
+```
+
+If `authorized_users` is empty (or omitted) while GitHub integration is enabled, **MADFLOW will refuse to start** and print an error:
+
+```
+authorized_users is required when github integration is enabled; set authorized_users to a list of GitHub logins allowed to interact with MADFLOW
+```
+
+**Why is this required?**
+
+Without an explicit allowlist, any GitHub user could open an issue or post a comment on a public repository and have MADFLOW process it. This creates a prompt-injection attack surface: a malicious actor could craft an issue body that causes the LLM to execute arbitrary commands. By requiring `authorized_users`, only explicitly trusted users can drive MADFLOW's agents.
+
+> **Tip:** Add every team member and bot account that will interact with MADFLOW (e.g., opening issues or commenting) to the `authorized_users` list.
+
 ## Command Reference
 
 | Command | Description |

@@ -15,8 +15,11 @@ type Config struct {
 	GitHub     *GitHubConfig `toml:"github,omitempty"`
 	PromptsDir string        `toml:"prompts_dir,omitempty"`
 	// AuthorizedUsers is a list of GitHub user logins that are allowed to create
-	// issues, PRs, and comments that MADFLOW will process. When empty (the default),
-	// all users are trusted. When non-empty, only listed users are trusted.
+	// issues, PRs, and comments that MADFLOW will process.
+	// This field is required when [github] integration is enabled.
+	// Leaving it empty while GitHub integration is active is a security risk:
+	// it would allow any GitHub user to interact with MADFLOW, enabling prompt
+	// injection attacks from arbitrary third parties on public repositories.
 	AuthorizedUsers []string `toml:"authorized_users,omitempty"`
 }
 
@@ -231,6 +234,9 @@ func validate(cfg *Config) error {
 		if r.Path == "" {
 			return fmt.Errorf("project.repos[%d].path is required", i)
 		}
+	}
+	if cfg.GitHub != nil && len(cfg.AuthorizedUsers) == 0 {
+		return fmt.Errorf("authorized_users is required when github integration is enabled; set authorized_users to a list of GitHub logins allowed to interact with MADFLOW")
 	}
 	return nil
 }

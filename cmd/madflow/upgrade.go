@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -46,18 +48,25 @@ func cmdUpgrade(currentVersion string) error {
 
 	// Determine the target binary name based on current platform.
 	binaryName := getBinaryName()
+	checksumName := binaryName + ".sha256"
 	fmt.Printf("Looking for asset: %s\n", binaryName)
 
-	// Find the matching asset.
+	// Find the matching binary asset and checksum asset.
 	downloadURL := ""
+	checksumURL := ""
 	for _, asset := range release.Assets {
-		if asset.Name == binaryName {
+		switch asset.Name {
+		case binaryName:
 			downloadURL = asset.BrowserDownloadURL
-			break
+		case checksumName:
+			checksumURL = asset.BrowserDownloadURL
 		}
 	}
 	if downloadURL == "" {
 		return fmt.Errorf("no matching asset found for %s in release %s", binaryName, latestVersion)
+	}
+	if checksumURL == "" {
+		return fmt.Errorf("no checksum asset found for %s in release %s (expected %s)", binaryName, latestVersion, checksumName)
 	}
 
 	// Get current executable path.
@@ -72,6 +81,18 @@ func cmdUpgrade(currentVersion string) error {
 		return fmt.Errorf("failed to download binary: %w", err)
 	}
 	defer os.Remove(newBinary)
+
+	// Download and verify the SHA256 checksum before installing.
+	fmt.Printf("Verifying SHA256 checksum from %s...\n", checksumURL)
+	expectedChecksum, err := downloadChecksum(checksumURL)
+	if err != nil {
+		return fmt.Errorf("failed to download checksum: %w", err)
+	}
+
+	if err := verifyChecksum(newBinary, expectedChecksum); err != nil {
+		return fmt.Errorf("checksum verification failed: %w", err)
+	}
+	fmt.Println("Checksum verification passed.")
 
 	// Backup current binary.
 	backupPath := exePath + ".bak"
@@ -170,6 +191,62 @@ func downloadBinary(url string) (string, error) {
 	}
 
 	return tmpFile.Name(), nil
+}
+
+// downloadChecksum downloads a SHA256 checksum file from the given URL and
+// returns the expected hex digest string.
+func downloadChecksum(url string) (string, error) {
+	resp, err := http.Get(url) //nolint:gosec // URL is validated from GitHub API
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("checksum download returned status %d", resp.StatusCode)
+	}
+
+	// Read at most 128 bytes — a SHA256 hex digest is 64 characters.
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 128))
+	if err != nil {
+		return "", fmt.Errorf("failed to read checksum response: %w", err)
+	}
+
+	digest := strings.TrimSpace(string(body))
+	if digest == "" {
+		return "", fmt.Errorf("checksum file is empty")
+	}
+	// Validate that the digest looks like a lowercase hex SHA256 hash (64 chars).
+	if len(digest) != 64 {
+		return "", fmt.Errorf("unexpected checksum length %d (want 64 hex characters)", len(digest))
+	}
+	for _, c := range digest {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			return "", fmt.Errorf("checksum contains invalid character %q (expected lowercase hex)", c)
+		}
+	}
+	return digest, nil
+}
+
+// verifyChecksum computes the SHA256 hash of the file at filePath and
+// compares it to expectedHex. Returns an error if they do not match.
+func verifyChecksum(filePath, expectedHex string) error {
+	f, err := os.Open(filePath)
+	if err != nil {
+		return fmt.Errorf("failed to open file for checksum: %w", err)
+	}
+	defer f.Close()
+
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return fmt.Errorf("failed to compute checksum: %w", err)
+	}
+
+	actualHex := hex.EncodeToString(h.Sum(nil))
+	if actualHex != expectedHex {
+		return fmt.Errorf("SHA256 mismatch: got %s, want %s", actualHex, expectedHex)
+	}
+	return nil
 }
 
 // copyFile copies a file from src to dst, overwriting dst if it exists.

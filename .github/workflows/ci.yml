@@ -43,6 +43,17 @@ jobs:
       - name: go vet
         run: go vet ./...
 
+      - name: TODO check
+        run: |
+          TODOS=$(grep -rn "// TODO\|/\* TODO" --include="*.go" . 2>/dev/null || true)
+          if [ -n "$TODOS" ]; then
+            echo "TODO comments found in Go source files:"
+            echo "$TODOS"
+            echo "Please remove or implement all TODO items before merging."
+            exit 1
+          fi
+          echo "No TODO comments found."
+
       - name: go test
         run: go test -race -timeout 120s ./...
 

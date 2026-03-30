@@ -64,7 +64,7 @@ func FormatMessage(recipient, sender, body string) string {
 
 // Append writes a new formatted message to the chatlog file.
 func (c *ChatLog) Append(recipient, sender, body string) error {
-	f, err := os.OpenFile(c.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	f, err := os.OpenFile(c.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
 	if err != nil {
 		return fmt.Errorf("open chatlog for append: %w", err)
 	}
@@ -257,7 +257,7 @@ func (c *ChatLog) Truncate(maxLines int) error {
 	newContent := strings.Join(lines, "\n") + "\n"
 
 	tmpPath := c.path + ".tmp"
-	if err := os.WriteFile(tmpPath, []byte(newContent), 0644); err != nil {
+	if err := os.WriteFile(tmpPath, []byte(newContent), 0600); err != nil {
 		return fmt.Errorf("write temp chatlog: %w", err)
 	}
 

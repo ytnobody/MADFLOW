@@ -155,3 +155,145 @@ func TestRoleColors_DoesNotContainDeprecatedRoles(t *testing.T) {
 		}
 	}
 }
+
+func TestCmdInit_AuthorizedUsersFlag(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	origDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get cwd: %v", err)
+	}
+	defer os.Chdir(origDir) //nolint:errcheck
+
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("failed to chdir: %v", err)
+	}
+
+	origArgs := os.Args
+	os.Args = []string{"madflow", "init", "--name", "testproject", "--repo", tmpDir, "--authorized-users", "alice,bob"}
+	defer func() { os.Args = origArgs }()
+
+	if err := cmdInit(); err != nil {
+		t.Fatalf("cmdInit() error: %v", err)
+	}
+
+	configPath := filepath.Join(tmpDir, "madflow.toml")
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("failed to read generated madflow.toml: %v", err)
+	}
+
+	content := string(data)
+
+	// Verify authorized_users is included with the specified users.
+	if !strings.Contains(content, `authorized_users = ["alice", "bob"]`) {
+		t.Errorf("generated madflow.toml does not contain expected authorized_users; got:\n%s", content)
+	}
+}
+
+func TestCmdInit_AuthorizedUsersFlag_SingleUser(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	origDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get cwd: %v", err)
+	}
+	defer os.Chdir(origDir) //nolint:errcheck
+
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("failed to chdir: %v", err)
+	}
+
+	origArgs := os.Args
+	os.Args = []string{"madflow", "init", "--name", "testproject", "--repo", tmpDir, "--authorized-users", "charlie"}
+	defer func() { os.Args = origArgs }()
+
+	if err := cmdInit(); err != nil {
+		t.Fatalf("cmdInit() error: %v", err)
+	}
+
+	configPath := filepath.Join(tmpDir, "madflow.toml")
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("failed to read generated madflow.toml: %v", err)
+	}
+
+	content := string(data)
+
+	if !strings.Contains(content, `authorized_users = ["charlie"]`) {
+		t.Errorf("generated madflow.toml does not contain expected authorized_users; got:\n%s", content)
+	}
+}
+
+func TestCmdInit_NoAuthorizedUsers_NonInteractive(t *testing.T) {
+	// When no --authorized-users flag is given and stdin is not a terminal,
+	// authorized_users should not appear in the generated config.
+	tmpDir := t.TempDir()
+
+	origDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get cwd: %v", err)
+	}
+	defer os.Chdir(origDir) //nolint:errcheck
+
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("failed to chdir: %v", err)
+	}
+
+	origArgs := os.Args
+	os.Args = []string{"madflow", "init", "--name", "testproject", "--repo", tmpDir}
+	defer func() { os.Args = origArgs }()
+
+	if err := cmdInit(); err != nil {
+		t.Fatalf("cmdInit() error: %v", err)
+	}
+
+	configPath := filepath.Join(tmpDir, "madflow.toml")
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("failed to read generated madflow.toml: %v", err)
+	}
+
+	content := string(data)
+
+	// In non-interactive mode (tests run without a terminal), authorized_users
+	// should be omitted from the generated config.
+	if strings.Contains(content, "authorized_users") {
+		t.Errorf("generated madflow.toml unexpectedly contains authorized_users in non-interactive mode:\n%s", content)
+	}
+}
+
+func TestCmdInit_AuthorizedUsersFlag_WithSpaces(t *testing.T) {
+	// Ensure usernames are trimmed of surrounding spaces.
+	tmpDir := t.TempDir()
+
+	origDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get cwd: %v", err)
+	}
+	defer os.Chdir(origDir) //nolint:errcheck
+
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("failed to chdir: %v", err)
+	}
+
+	origArgs := os.Args
+	os.Args = []string{"madflow", "init", "--name", "testproject", "--repo", tmpDir, "--authorized-users", " alice , bob "}
+	defer func() { os.Args = origArgs }()
+
+	if err := cmdInit(); err != nil {
+		t.Fatalf("cmdInit() error: %v", err)
+	}
+
+	configPath := filepath.Join(tmpDir, "madflow.toml")
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("failed to read generated madflow.toml: %v", err)
+	}
+
+	content := string(data)
+
+	if !strings.Contains(content, `authorized_users = ["alice", "bob"]`) {
+		t.Errorf("generated madflow.toml does not contain trimmed authorized_users; got:\n%s", content)
+	}
+}
