@@ -529,3 +529,66 @@ func TestMergeConflict(t *testing.T) {
 	// and the merge was aborted). Both are acceptable.
 	_ = err
 }
+
+func TestValidateSafeName(t *testing.T) {
+	validCases := []string{
+		"feature-issue-123",
+		"gh-121",
+		"local-001",
+		"ytnobody-MADFLOW-201",
+		"abc",
+		"a",
+		"issue.123",
+	}
+	for _, name := range validCases {
+		t.Run("valid/"+name, func(t *testing.T) {
+			if err := ValidateSafeName(name); err != nil {
+				t.Errorf("expected %q to be valid, got error: %v", name, err)
+			}
+		})
+	}
+
+	invalidCases := []struct {
+		name string
+		desc string
+	}{
+		{"", "empty string"},
+		{"..", "double dot alone"},
+		{"foo/../bar", "path traversal with .."},
+		{"../secret", "leading .."},
+		{"foo/bar", "forward slash"},
+		{"foo\\bar", "backslash"},
+		{"/absolute", "absolute path with slash"},
+		{"foo\x00bar", "null byte"},
+	}
+	for _, tc := range invalidCases {
+		t.Run("invalid/"+tc.desc, func(t *testing.T) {
+			if err := ValidateSafeName(tc.name); err == nil {
+				t.Errorf("expected %q (%s) to be invalid, but got no error", tc.name, tc.desc)
+			}
+		})
+	}
+}
+
+func TestPrepareWorktreeRejectsTraversalBranchName(t *testing.T) {
+	repo := initTestRepo(t)
+
+	baseBranch, err := repo.CurrentBranch()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wtDir := filepath.Join(t.TempDir(), "wt-traversal")
+
+	// A crafted branch name containing ".." should be rejected before any
+	// filesystem or git operation is attempted.
+	err = repo.PrepareWorktree(wtDir, "../../evil", "develop", baseBranch)
+	if err == nil {
+		t.Fatal("expected error for path traversal branch name, got nil")
+	}
+
+	// The worktree directory must not have been created.
+	if _, statErr := os.Stat(wtDir); !os.IsNotExist(statErr) {
+		t.Error("worktree directory must not exist after rejected traversal attempt")
+	}
+}

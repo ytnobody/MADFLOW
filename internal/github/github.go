@@ -101,24 +101,26 @@ type ghLabel struct {
 
 // Syncer synchronizes GitHub Issues to local issue files.
 type Syncer struct {
-	store           *issue.Store
-	owner           string
-	repos           []string
-	interval        time.Duration
-	idleDetector    *IdleDetector    // nil = no adaptive behavior
-	idleInterval    time.Duration    // effective only when idleDetector is set
-	authorizedUsers []string         // empty = all users trusted
-	botPatterns     []*regexp.Regexp // compiled bot comment patterns; nil = no pattern check
-	skipComments    bool             // if true, skip comment sync (for fast startup)
+	store              *issue.Store
+	owner              string
+	repos              []string
+	interval           time.Duration
+	idleDetector       *IdleDetector    // nil = no adaptive behavior
+	idleInterval       time.Duration    // effective only when idleDetector is set
+	authorizedUsers    []string         // empty = all users trusted
+	botPatterns        []*regexp.Regexp // compiled bot comment patterns; nil = no pattern check
+	skipComments       bool             // if true, skip comment sync (for fast startup)
+	rateLimitThreshold int              // minimum remaining API calls before waiting/skipping; 0 disables
 }
 
 // NewSyncer creates a new GitHub issue syncer.
 func NewSyncer(store *issue.Store, owner string, repos []string, interval time.Duration) *Syncer {
 	return &Syncer{
-		store:    store,
-		owner:    owner,
-		repos:    repos,
-		interval: interval,
+		store:              store,
+		owner:              owner,
+		repos:              repos,
+		interval:           interval,
+		rateLimitThreshold: defaultRateLimitThreshold,
 	}
 }
 
@@ -151,10 +153,12 @@ func (s *Syncer) WithSkipComments(skip bool) *Syncer {
 }
 
 // isAuthorized returns true if the given GitHub login is authorized.
-// When authorizedUsers is empty, all users are authorized.
+// When authorizedUsers is empty, no users are authorized (deny-all).
+// This is defense-in-depth: config validation should prevent the empty-list
+// case from reaching production code when GitHub integration is enabled.
 func isAuthorized(login string, authorizedUsers []string) bool {
 	if len(authorizedUsers) == 0 {
-		return true
+		return false
 	}
 	for _, u := range authorizedUsers {
 		if u == login {
@@ -449,6 +453,10 @@ func (s *Syncer) syncComments(repo string, issueNumber int, localID string) {
 
 // fetchComments fetches all comments for a GitHub issue via gh CLI.
 func (s *Syncer) fetchComments(repo string, issueNumber int) ([]ghComment, error) {
+	if err := s.checkRateLimit(); err != nil {
+		return nil, err
+	}
+
 	endpoint := fmt.Sprintf("repos/%s/%s/issues/%d/comments", s.owner, repo, issueNumber)
 	cmd := exec.Command("gh", "api", endpoint, "--paginate")
 
@@ -469,6 +477,10 @@ func (s *Syncer) fetchComments(repo string, issueNumber int) ([]ghComment, error
 }
 
 func (s *Syncer) fetchIssues(repo string) ([]ghIssue, error) {
+	if err := s.checkRateLimit(); err != nil {
+		return nil, err
+	}
+
 	fullRepo := fmt.Sprintf("%s/%s", s.owner, repo)
 	cmd := exec.Command("gh", "issue", "list",
 		"-R", fullRepo,

@@ -51,7 +51,7 @@ func Init(name string, paths []string) error {
 		return err
 	}
 
-	if err := os.MkdirAll(base, 0755); err != nil {
+	if err := os.MkdirAll(base, 0700); err != nil {
 		return fmt.Errorf("create base dir: %w", err)
 	}
 
@@ -81,7 +81,7 @@ func Init(name string, paths []string) error {
 
 	dataDir := filepath.Join(base, name)
 	for _, sub := range []string{"issues", "memos"} {
-		if err := os.MkdirAll(filepath.Join(dataDir, sub), 0755); err != nil {
+		if err := os.MkdirAll(filepath.Join(dataDir, sub), 0700); err != nil {
 			return fmt.Errorf("create data dir: %w", err)
 		}
 	}
