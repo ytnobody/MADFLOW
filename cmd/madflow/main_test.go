@@ -227,7 +227,8 @@ func TestCmdInit_AuthorizedUsersFlag_SingleUser(t *testing.T) {
 
 func TestCmdInit_NoAuthorizedUsers_NonInteractive(t *testing.T) {
 	// When no --authorized-users flag is given and stdin is not a terminal,
-	// authorized_users should not appear in the generated config.
+	// authorized_users should always appear in the generated config (as empty array
+	// when no GitHub owner can be auto-detected in test environments).
 	tmpDir := t.TempDir()
 
 	origDir, err := os.Getwd()
@@ -256,10 +257,9 @@ func TestCmdInit_NoAuthorizedUsers_NonInteractive(t *testing.T) {
 
 	content := string(data)
 
-	// In non-interactive mode (tests run without a terminal), authorized_users
-	// should be omitted from the generated config.
-	if strings.Contains(content, "authorized_users") {
-		t.Errorf("generated madflow.toml unexpectedly contains authorized_users in non-interactive mode:\n%s", content)
+	// authorized_users must always be present in the generated config.
+	if !strings.Contains(content, "authorized_users") {
+		t.Errorf("generated madflow.toml is missing authorized_users:\n%s", content)
 	}
 }
 
@@ -297,3 +297,99 @@ func TestCmdInit_AuthorizedUsersFlag_WithSpaces(t *testing.T) {
 		t.Errorf("generated madflow.toml does not contain trimmed authorized_users; got:\n%s", content)
 	}
 }
+
+func TestCmdInit_AlwaysIncludesAuthorizedUsers(t *testing.T) {
+	// authorized_users must always appear in the generated madflow.toml,
+	// even when no flag is provided and stdin is not a terminal.
+	tmpDir := t.TempDir()
+
+	origDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get cwd: %v", err)
+	}
+	defer os.Chdir(origDir) //nolint:errcheck
+
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("failed to chdir: %v", err)
+	}
+
+	origArgs := os.Args
+	os.Args = []string{"madflow", "init", "--name", "testproject", "--repo", tmpDir}
+	defer func() { os.Args = origArgs }()
+
+	if err := cmdInit(); err != nil {
+		t.Fatalf("cmdInit() error: %v", err)
+	}
+
+	configPath := filepath.Join(tmpDir, "madflow.toml")
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("failed to read generated madflow.toml: %v", err)
+	}
+
+	content := string(data)
+
+	if !strings.Contains(content, "authorized_users") {
+		t.Errorf("generated madflow.toml is missing authorized_users field:\n%s", content)
+	}
+}
+
+func TestExtractOwnerFromGitHubURL(t *testing.T) {
+	tests := []struct {
+		name     string
+		url      string
+		expected string
+	}{
+		{
+			name:     "HTTPS URL",
+			url:      "https://github.com/alice/myrepo.git",
+			expected: "alice",
+		},
+		{
+			name:     "HTTPS URL without .git",
+			url:      "https://github.com/bob/project",
+			expected: "bob",
+		},
+		{
+			name:     "SSH URL",
+			url:      "git@github.com:charlie/repo.git",
+			expected: "charlie",
+		},
+		{
+			name:     "non-GitHub URL",
+			url:      "https://gitlab.com/user/repo.git",
+			expected: "",
+		},
+		{
+			name:     "empty URL",
+			url:      "",
+			expected: "",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := extractOwnerFromGitHubURL(tc.url)
+			if got != tc.expected {
+				t.Errorf("extractOwnerFromGitHubURL(%q) = %q, want %q", tc.url, got, tc.expected)
+			}
+		})
+	}
+}
+
+func TestBuildAuthorizedUsersLine_AlwaysEmitsField(t *testing.T) {
+	// buildAuthorizedUsersLine must always return a non-empty string,
+	// even for an empty slice (it should emit authorized_users = []).
+	got := buildAuthorizedUsersLine(nil)
+	if got == "" {
+		t.Errorf("buildAuthorizedUsersLine(nil) returned empty string; expected authorized_users = [] line")
+	}
+	if !strings.Contains(got, "authorized_users") {
+		t.Errorf("buildAuthorizedUsersLine(nil) = %q; expected to contain 'authorized_users'", got)
+	}
+
+	got = buildAuthorizedUsersLine([]string{})
+	if got == "" {
+		t.Errorf("buildAuthorizedUsersLine([]) returned empty string; expected authorized_users = [] line")
+	}
+}}
