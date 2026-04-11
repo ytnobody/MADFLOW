@@ -392,4 +392,4 @@ func TestBuildAuthorizedUsersLine_AlwaysEmitsField(t *testing.T) {
 	if got == "" {
 		t.Errorf("buildAuthorizedUsersLine([]) returned empty string; expected authorized_users = [] line")
 	}
-}}
+}
