@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -104,16 +105,62 @@ func parseAuthorizedUsers(raw string) []string {
 }
 
 // buildAuthorizedUsersLine formats the authorized_users TOML line.
-// Returns an empty string when users is nil or empty.
+// Always returns a non-empty string: "authorized_users = []\n\n" when users is nil or empty.
 func buildAuthorizedUsersLine(users []string) string {
 	if len(users) == 0 {
-		return ""
+		return "authorized_users = []\n\n"
 	}
 	var quoted []string
 	for _, u := range users {
 		quoted = append(quoted, fmt.Sprintf("%q", u))
 	}
 	return fmt.Sprintf("authorized_users = [%s]\n\n", strings.Join(quoted, ", "))
+}
+
+// detectGitHubOwner attempts to determine the GitHub repository owner for the
+// given repo path. It first tries to parse the git remote URL, then falls back
+// to the authenticated GitHub CLI user. Returns an empty string on failure.
+func detectGitHubOwner(repoPath string) string {
+	// 1. Try to extract owner from git remote URL.
+	cmd := exec.Command("git", "-C", repoPath, "remote", "get-url", "origin")
+	if out, err := cmd.Output(); err == nil {
+		if owner := extractOwnerFromGitHubURL(strings.TrimSpace(string(out))); owner != "" {
+			return owner
+		}
+	}
+
+	// 2. Fallback: use the authenticated GitHub CLI user.
+	cmd = exec.Command("gh", "api", "user", "--jq", ".login")
+	if out, err := cmd.Output(); err == nil {
+		if login := strings.TrimSpace(string(out)); login != "" {
+			return login
+		}
+	}
+
+	return ""
+}
+
+// extractOwnerFromGitHubURL parses a GitHub remote URL and returns the owner login.
+// Supports HTTPS (https://github.com/owner/repo) and SSH (git@github.com:owner/repo) formats.
+// Returns an empty string for non-GitHub URLs or URLs that cannot be parsed.
+func extractOwnerFromGitHubURL(url string) string {
+	// SSH format: git@github.com:owner/repo[.git]
+	if path, ok := strings.CutPrefix(url, "git@github.com:"); ok {
+		parts := strings.SplitN(path, "/", 2)
+		if len(parts) >= 1 && parts[0] != "" {
+			return parts[0]
+		}
+	}
+	// HTTPS format: https://github.com/owner/repo[.git]
+	for _, prefix := range []string{"https://github.com/", "http://github.com/"} {
+		if path, ok := strings.CutPrefix(url, prefix); ok {
+			parts := strings.SplitN(path, "/", 2)
+			if len(parts) >= 1 && parts[0] != "" {
+				return parts[0]
+			}
+		}
+	}
+	return ""
 }
 
 func cmdInit() error {
@@ -159,16 +206,27 @@ func cmdInit() error {
 		repoPaths = []string{cwd}
 	}
 
-	// If --authorized-users was not given and stdin is a terminal, prompt interactively.
-	if authorizedUsersRaw == "" && isTerminal(os.Stdin) {
-		fmt.Print("Enter authorized GitHub usernames (comma-separated, press Enter to skip): ")
-		scanner := bufio.NewScanner(os.Stdin)
-		if scanner.Scan() {
-			authorizedUsersRaw = scanner.Text()
+	// Determine the list of authorized GitHub users.
+	var authorizedUsers []string
+	if authorizedUsersRaw != "" {
+		// Explicit --authorized-users flag takes priority.
+		authorizedUsers = parseAuthorizedUsers(authorizedUsersRaw)
+	} else {
+		// Try to auto-detect the GitHub repository owner.
+		owner := detectGitHubOwner(repoPaths[0])
+		if owner != "" {
+			authorizedUsers = []string{owner}
+		} else if isTerminal(os.Stdin) {
+			// No owner detected; prompt interactively when stdin is a terminal.
+			fmt.Print("Enter authorized GitHub usernames (comma-separated, press Enter to skip): ")
+			scanner := bufio.NewScanner(os.Stdin)
+			if scanner.Scan() {
+				authorizedUsers = parseAuthorizedUsers(scanner.Text())
+			}
 		}
+		// If nothing was detected and not interactive, authorizedUsers stays nil
+		// and buildAuthorizedUsersLine will emit authorized_users = [].
 	}
-
-	authorizedUsers := parseAuthorizedUsers(authorizedUsersRaw)
 
 	if err := project.Init(name, repoPaths); err != nil {
 		return err
