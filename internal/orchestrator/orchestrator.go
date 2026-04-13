@@ -19,6 +19,7 @@ import (
 	"github.com/ytnobody/madflow/internal/git"
 	"github.com/ytnobody/madflow/internal/github"
 	"github.com/ytnobody/madflow/internal/issue"
+	"github.com/ytnobody/madflow/internal/lessons"
 	"github.com/ytnobody/madflow/internal/team"
 )
 
@@ -30,13 +31,14 @@ type Orchestrator struct {
 	dataDir    string
 	promptDir  string
 
-	store        *issue.Store
-	chatLog      *chatlog.ChatLog
-	teams        *team.Manager
-	repos        map[string]*git.Repo // name -> repo
-	dormancy     *agent.Dormancy
-	throttle     *agent.Throttle
-	idleDetector *github.IdleDetector // shared idle state for GitHub polling
+	store          *issue.Store
+	chatLog        *chatlog.ChatLog
+	teams          *team.Manager
+	repos          map[string]*git.Repo // name -> repo
+	dormancy       *agent.Dormancy
+	throttle       *agent.Throttle
+	idleDetector   *github.IdleDetector // shared idle state for GitHub polling
+	lessonsManager *lessons.Manager     // manages failure lessons for superintendent
 
 	// patrolResetCh receives a signal when the superintendent reports PATROL_COMPLETE,
 	// allowing runIssuePatrol to reset the interval timer immediately.
@@ -66,6 +68,11 @@ func New(cfg *config.Config, dataDir, promptDir string) *Orchestrator {
 
 	probeInterval := time.Duration(cfg.Agent.DormancyProbeMinutes) * time.Minute
 
+	featurePrefix := cfg.Branches.FeaturePrefix
+	if featurePrefix == "" {
+		featurePrefix = "feature/issue-"
+	}
+
 	orc := &Orchestrator{
 		cfg:           cfg,
 		dataDir:       dataDir,
@@ -77,6 +84,10 @@ func New(cfg *config.Config, dataDir, promptDir string) *Orchestrator {
 		throttle:      agent.NewThrottle(cfg.Agent.GeminiRPM),
 		idleDetector:  idleDetector,
 		patrolResetCh: make(chan struct{}, 1),
+		lessonsManager: &lessons.Manager{
+			DataDir:       dataDir,
+			FeaturePrefix: featurePrefix,
+		},
 	}
 
 	orc.teams = team.NewManager(orc, cfg.Agent.MaxTeams)
@@ -880,10 +891,18 @@ func (o *Orchestrator) handlePRMerged(issueID string) {
 	}
 
 	// Close the GitHub issue via gh CLI (only for GitHub-synced issues with a URL)
+	// Also score the issue and generate a lesson for the Superintendent.
 	if iss.URL != "" {
 		owner, repo, number, err := github.ParseID(issueID)
 		if err == nil {
 			o.closeGitHubIssue(owner, repo, number)
+			// Score instruction quality and generate a lesson asynchronously so
+			// that the gh CLI calls don't block the merge handler.
+			go func() {
+				if err := o.lessonsManager.ProcessMergedIssue(issueID, owner, repo, number); err != nil {
+					log.Printf("[orchestrator] lessons: ProcessMergedIssue(%s) failed: %v", issueID, err)
+				}
+			}()
 		} else {
 			log.Printf("[orchestrator] PR merged: cannot parse issue ID %s for gh close: %v", issueID, err)
 		}
@@ -1258,7 +1277,10 @@ func (o *Orchestrator) runIssuePatrol(ctx context.Context) {
 			}
 
 			log.Println("[issue-patrol] sending issue patrol request to superintendent")
-			o.appendOrLog("superintendent", "orchestrator", issuePatrolPrompt)
+			// Prepend any accumulated lessons so the Superintendent can reference
+			// past failure patterns when writing new issue instructions.
+			patrolMsg := o.lessonsManager.InjectLessons() + issuePatrolPrompt
+			o.appendOrLog("superintendent", "orchestrator", patrolMsg)
 			lastSentFingerprint = current
 			timer.Reset(interval)
 		}
