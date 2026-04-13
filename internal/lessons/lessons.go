@@ -430,10 +430,10 @@ func fallbackLesson(failures []Failure) Lesson {
 	}
 
 	templates := map[string]string{
-		"派生・修正Issueが発生した":              "Issueの仕様を明確にしてからEngineerに渡し、派生Issueが発生しないようにすること",
+		"派生・修正Issueが発生した":                  "Issueの仕様を明確にしてからEngineerに渡し、派生Issueが発生しないようにすること",
 		"[Clarification Needed] コメントが存在した": "仕様が曖昧なままEngineerに渡さず、先に仕様を人間に確認してから指示すること",
-		"Superintendentが直接実装した":           "EngineerやOrchestratorが応答しない場合の対応手順を見直し、直接実装に頼らないようにすること",
-		"PRが2本以上作成された":                  "重複PRが発生しないようブランチとPR管理を徹底し、作業開始前に既存PRを確認すること",
+		"Superintendentが直接実装した":            "EngineerやOrchestratorが応答しない場合の対応手順を見直し、直接実装に頼らないようにすること",
+		"PRが2本以上作成された":                     "重複PRが発生しないようブランチとPR管理を徹底し、作業開始前に既存PRを確認すること",
 	}
 
 	if text, ok := templates[topFailure.Description]; ok {

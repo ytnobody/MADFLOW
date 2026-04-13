@@ -10,7 +10,7 @@ import (
 
 func TestParseLesson(t *testing.T) {
 	tests := []struct {
-		input   string
+		input    string
 		wantRisk RiskLevel
 		wantText string
 		wantErr  bool
