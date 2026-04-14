@@ -190,8 +190,8 @@ func (r *Repo) CleanOrphanedWorktrees(ghLogin string, activePaths map[string]boo
 				wtPath := filepath.Join(worktreeDir, name)
 				if err := r.RemoveWorktree(wtPath); err != nil {
 					// If git worktree remove fails, try to prune and remove manually.
-					r.run("worktree", "prune")
-					os.RemoveAll(wtPath)
+					r.run("worktree", "prune")           //nolint:errcheck // best-effort cleanup
+					os.RemoveAll(wtPath)                 //nolint:errcheck // best-effort cleanup
 				}
 				removed = append(removed, name)
 			}
@@ -211,8 +211,8 @@ func (r *Repo) CleanOrphanedWorktrees(ghLogin string, activePaths map[string]boo
 				if !activePaths[relPath] {
 					wtPath := filepath.Join(namespaceDir, subName)
 					if err := r.RemoveWorktree(wtPath); err != nil {
-						r.run("worktree", "prune")
-						os.RemoveAll(wtPath)
+						r.run("worktree", "prune")   //nolint:errcheck // best-effort cleanup
+						os.RemoveAll(wtPath)         //nolint:errcheck // best-effort cleanup
 					}
 					removed = append(removed, relPath)
 				}
@@ -224,7 +224,7 @@ func (r *Repo) CleanOrphanedWorktrees(ghLogin string, activePaths map[string]boo
 		}
 	}
 	// Always prune stale worktree references at the end.
-	r.run("worktree", "prune")
+	r.run("worktree", "prune") //nolint:errcheck // best-effort cleanup
 	return removed
 }
 
@@ -239,7 +239,7 @@ func (r *Repo) RemoveNamespacedWorktree(login, subDir string) error {
 	}
 	if err := r.RemoveWorktree(wtPath); err != nil {
 		// Fall back: prune then remove manually.
-		r.run("worktree", "prune")
+		r.run("worktree", "prune") //nolint:errcheck // best-effort cleanup
 		if rmErr := os.RemoveAll(wtPath); rmErr != nil {
 			return fmt.Errorf("remove namespaced worktree %s/%s: %w", login, subDir, rmErr)
 		}
@@ -281,8 +281,7 @@ func ValidateSafeBranchName(name string) error {
 	if strings.ContainsRune(name, '\x00') {
 		return fmt.Errorf("branch name %q contains null byte", name)
 	}
-	parts := strings.Split(name, "/")
-	for _, part := range parts {
+	for part := range strings.SplitSeq(name, "/") {
 		if part == "" {
 			return fmt.Errorf("branch name %q contains empty component (consecutive or leading/trailing slashes)", name)
 		}

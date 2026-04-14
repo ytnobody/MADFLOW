@@ -661,7 +661,9 @@ func TestCleanOrphanedWorktreesNamespaced(t *testing.T) {
 	}
 
 	// Cleanup
-	repo.RemoveWorktree(wtActive)
+	if err := repo.RemoveWorktree(wtActive); err != nil {
+		t.Logf("cleanup: %v", err)
+	}
 }
 
 func TestPrepareWorktreeRejectsTraversalBranchName(t *testing.T) {
