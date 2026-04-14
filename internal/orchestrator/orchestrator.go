@@ -815,6 +815,7 @@ func (o *Orchestrator) initialGitHubSync() {
 	botPatterns := o.compileBotPatterns()
 	syncer := github.NewSyncer(o.store, gh.Owner, gh.Repos, 0).
 		WithAuthorizedUsers(o.cfg.AuthorizedUsers).
+		WithGhLogin(o.ghLogin()).
 		WithBotCommentPatterns(botPatterns).
 		WithSkipComments(true)
 	if err := syncer.SyncOnce(); err != nil {
@@ -994,10 +995,20 @@ func (o *Orchestrator) runGitHubSync(ctx context.Context) {
 	syncer := github.NewSyncer(o.store, gh.Owner, gh.Repos, interval).
 		WithIdleDetector(o.idleDetector, idleInterval).
 		WithAuthorizedUsers(o.cfg.AuthorizedUsers).
+		WithGhLogin(o.ghLogin()).
 		WithBotCommentPatterns(botPatterns)
 	if err := syncer.Run(ctx); err != nil && ctx.Err() == nil {
 		log.Printf("[orchestrator] github sync stopped: %v", err)
 	}
+}
+
+// ghLogin returns the GitHub login to use for assignee-based issue filtering.
+// It returns the first entry in AuthorizedUsers when available.
+func (o *Orchestrator) ghLogin() string {
+	if len(o.cfg.AuthorizedUsers) > 0 {
+		return o.cfg.AuthorizedUsers[0]
+	}
+	return ""
 }
 
 // CreateTeamAgents implements team.TeamFactory.
