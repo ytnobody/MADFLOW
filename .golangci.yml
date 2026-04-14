@@ -31,6 +31,9 @@ issues:
     - ".*\\.pb\\.go$"
     - ".*_generated\\.go$"
 
+  # Only report issues in new/changed code (not pre-existing issues in unchanged files).
+  new: true
+
   # Maximum number of issues to display.
   max-issues-per-linter: 50
   max-same-issues: 10
