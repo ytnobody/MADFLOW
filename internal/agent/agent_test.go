@@ -296,7 +296,9 @@ func TestRunReturnsOnMaxIterationsError(t *testing.T) {
 		// Wait for agent to be ready, then write a message
 		<-ag.Ready()
 		cl := chatlog.New(logPath)
-		cl.Append("engineer-1", "superintendent", "タスクを実行してください")
+		if err := cl.Append("engineer-1", "superintendent", "タスクを実行してください"); err != nil {
+			t.Logf("chatlog append error (non-fatal in goroutine): %v", err)
+		}
 	}()
 
 	err := ag.Run(ctx, msgCh)

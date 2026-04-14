@@ -1,0 +1,36 @@
+version: "2"
+
+linters:
+  enable:
+    - errcheck
+    - govet
+    - staticcheck
+    - unused
+    - ineffassign
+    - modernize
+
+  settings:
+    errcheck:
+      # Exclude functions where intentional error ignoring is acceptable.
+      # fmt.Fprintf and similar I/O functions on stdout/stderr are allowed.
+      exclude-functions:
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - fmt.Fprint
+        - (io.Writer).Write
+        # os.File.Close is commonly used in defer without error check (idiomatic Go)
+        - (*os.File).Close
+        # os.Remove in error-handling cleanup paths is acceptable to ignore
+        - os.Remove
+        # WriteString in tests is commonly used without error check
+        - (*os.File).WriteString
+
+issues:
+  # Exclude generated files from lint.
+  exclude-files:
+    - ".*\\.pb\\.go$"
+    - ".*_generated\\.go$"
+
+  # Maximum number of issues to display.
+  max-issues-per-linter: 50
+  max-same-issues: 10
