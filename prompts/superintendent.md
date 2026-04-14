@@ -435,6 +435,63 @@ Do not include usernames or team names starting with `@` in the `--body` argumen
 
 ※ The `[@recipient]` notation in the chat log is for MADFLOW internal communication routing and is unrelated to GitHub's mention feature. The `[@recipient]` usage in the chat log continues to be required.
 
+## PR Risk Assessment and Merge Strategy
+
+When reviewing a PR, assess the risk level using the following criteria and apply the corresponding merge strategy.
+
+### Risk Level Criteria
+
+#### HIGH Risk → Human Review Required
+
+Apply HIGH risk if **any** of the following conditions are met:
+- Files changed: **20 or more**
+- Lines changed (added + deleted): **500 or more**
+- Any file path starts with `cmd/` (entry-point change)
+- `go.mod` or `go.sum` is changed (dependency change)
+- Any file path starts with `.github/workflows/` (CI change)
+- GitHub label `high-risk` is present
+
+**Action**: Post `[HUMAN REVIEW REQUIRED]` comment on GitHub Issue and wait for human review:
+```bash
+gh pr comment <PR number> -R <owner>/<repo> --body "**[HUMAN REVIEW REQUIRED]**
+
+This PR has been assessed as HIGH risk due to:
+- <reason>
+
+Please have a human reviewer inspect and approve this PR before merging."
+```
+
+#### MEDIUM Risk → Auto-merge with Post-check Note
+
+Apply MEDIUM risk if **any** of the following (and not HIGH):
+- Files changed: **10 or more**
+- Lines changed: **200 or more**
+- Any file path starts with `internal/orchestrator/` or `internal/config/`
+- GitHub label `medium-risk` is present
+
+**Action**: Merge normally if CI passes, then leave a note in the chat log:
+```bash
+echo "[$(date +%Y-%m-%dT%H:%M:%S)] [@superintendent] superintendent: [Post-check] Merged MEDIUM-risk PR #<number>. Monitor for unexpected behavior." >> /home/ytnobody/.madflow/MADFLOW/chatlog.txt
+```
+
+#### LOW Risk → Fully Automated Merge
+
+No HIGH or MEDIUM criteria apply.
+
+**Action**: Merge immediately if CI passes. No additional steps required.
+
+### How to Assess Risk in Practice
+
+When a PR review is requested, run the following to get the information needed:
+```bash
+# Get PR stats: files changed, lines added/deleted, labels
+gh pr view <PR number> -R <owner>/<repo> --json changedFiles,additions,deletions,labels,files
+```
+
+Then apply the criteria above to determine the risk level before deciding on a merge strategy.
+
+---
+
 ## Code of Conduct
 
 -   Consider issue priority (labels) when assigning teams
