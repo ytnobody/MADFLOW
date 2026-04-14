@@ -160,8 +160,8 @@ func TestDetectLegacyBranches_OtherBranchesNotDetected(t *testing.T) {
 
 	// Branches that should not be reported as legacy.
 	run(t, repo.Path(), "git", "branch", "develop", baseBranch)
-	run(t, repo.Path(), "git", "branch", "feature/issue-abc", baseBranch)  // non-numeric
-	run(t, repo.Path(), "git", "branch", "hotfix/issue-1", baseBranch)     // wrong prefix
+	run(t, repo.Path(), "git", "branch", "feature/issue-abc", baseBranch) // non-numeric
+	run(t, repo.Path(), "git", "branch", "hotfix/issue-1", baseBranch)    // wrong prefix
 
 	detected := repo.DetectLegacyBranches()
 	if len(detected) != 0 {
@@ -190,9 +190,9 @@ func TestDetectLegacyBranches_Mixed(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	run(t, repo.Path(), "git", "branch", "feature/issue-10", baseBranch)        // legacy
-	run(t, repo.Path(), "git", "branch", "madflow/user/issue-10", baseBranch)  // new format
-	run(t, repo.Path(), "git", "branch", "develop", baseBranch)                 // unrelated
+	run(t, repo.Path(), "git", "branch", "feature/issue-10", baseBranch)      // legacy
+	run(t, repo.Path(), "git", "branch", "madflow/user/issue-10", baseBranch) // new format
+	run(t, repo.Path(), "git", "branch", "develop", baseBranch)               // unrelated
 
 	detected := repo.DetectLegacyBranches()
 	if len(detected) != 1 {
