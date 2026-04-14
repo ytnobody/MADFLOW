@@ -1,5 +1,8 @@
 # Spec: madflow init - authorized_users Configuration
 
+> **SUPERSEDED**: This spec is superseded by [github-account-auto-detection.md](./github-account-auto-detection.md).
+> `madflow init` no longer generates `authorized_users` in `madflow.toml`. Auto-detection occurs at startup via `config.Load()`.
+
 ## Overview
 
 `madflow init` always includes `authorized_users` in the generated `madflow.toml`. The initial value is
