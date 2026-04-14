@@ -15,6 +15,12 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch base branch for lint diff
+        if: github.event_name == 'pull_request'
+        run: git fetch origin ${{ github.base_ref }}
 
       - name: Set up Go
         uses: actions/setup-go@v5
