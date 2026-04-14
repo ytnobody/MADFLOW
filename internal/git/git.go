@@ -190,8 +190,8 @@ func (r *Repo) CleanOrphanedWorktrees(ghLogin string, activePaths map[string]boo
 				wtPath := filepath.Join(worktreeDir, name)
 				if err := r.RemoveWorktree(wtPath); err != nil {
 					// If git worktree remove fails, try to prune and remove manually.
-					r.run("worktree", "prune")           //nolint:errcheck // best-effort cleanup
-					os.RemoveAll(wtPath)                 //nolint:errcheck // best-effort cleanup
+					r.run("worktree", "prune") //nolint:errcheck // best-effort cleanup
+					os.RemoveAll(wtPath)       //nolint:errcheck // best-effort cleanup
 				}
 				removed = append(removed, name)
 			}
@@ -211,8 +211,8 @@ func (r *Repo) CleanOrphanedWorktrees(ghLogin string, activePaths map[string]boo
 				if !activePaths[relPath] {
 					wtPath := filepath.Join(namespaceDir, subName)
 					if err := r.RemoveWorktree(wtPath); err != nil {
-						r.run("worktree", "prune")   //nolint:errcheck // best-effort cleanup
-						os.RemoveAll(wtPath)         //nolint:errcheck // best-effort cleanup
+						r.run("worktree", "prune") //nolint:errcheck // best-effort cleanup
+						os.RemoveAll(wtPath)       //nolint:errcheck // best-effort cleanup
 					}
 					removed = append(removed, relPath)
 				}
