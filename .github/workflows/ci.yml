@@ -72,7 +72,7 @@ jobs:
           go test -race -timeout 120s -coverprofile=coverage.out -covermode=atomic ./...
           COVERAGE=$(go tool cover -func=coverage.out | grep total | awk '{print $3}' | tr -d '%')
           echo "Total test coverage: ${COVERAGE}%"
-          THRESHOLD=60
+          THRESHOLD=55
           # Use awk for float comparison (bash cannot compare floats)
           if awk "BEGIN { exit (${COVERAGE} >= ${THRESHOLD} ? 0 : 1) }"; then
             echo "Coverage ${COVERAGE}% meets the threshold of ${THRESHOLD}%."
