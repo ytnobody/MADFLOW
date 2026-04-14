@@ -78,21 +78,21 @@ func NewEvaluator() Evaluator {
 // Evaluate determines the risk level for the given PR metadata.
 // Rules (in priority order, highest wins):
 //
-//   HIGH if any of:
-//     - FilesChanged >= 20
-//     - LinesAdded + LinesDeleted >= 500
-//     - any path starts with "cmd/"
-//     - any path is "go.mod" or "go.sum"
-//     - any path starts with ".github/workflows/"
-//     - label "high-risk" present
+//	HIGH if any of:
+//	  - FilesChanged >= 20
+//	  - LinesAdded + LinesDeleted >= 500
+//	  - any path starts with "cmd/"
+//	  - any path is "go.mod" or "go.sum"
+//	  - any path starts with ".github/workflows/"
+//	  - label "high-risk" present
 //
-//   MEDIUM if any of:
-//     - FilesChanged >= 10
-//     - LinesAdded + LinesDeleted >= 200
-//     - any path starts with "internal/orchestrator/" or "internal/config/"
-//     - label "medium-risk" present
+//	MEDIUM if any of:
+//	  - FilesChanged >= 10
+//	  - LinesAdded + LinesDeleted >= 200
+//	  - any path starts with "internal/orchestrator/" or "internal/config/"
+//	  - label "medium-risk" present
 //
-//   LOW otherwise.
+//	LOW otherwise.
 func (e *defaultEvaluator) Evaluate(pr PRInfo) Level {
 	if isHigh(pr) {
 		return HIGH
