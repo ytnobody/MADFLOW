@@ -55,7 +55,7 @@ func (r *Repo) DetectLegacyBranches() []string {
 	}
 
 	var found []string
-	for _, line := range strings.Split(out, "\n") {
+	for line := range strings.SplitSeq(out, "\n") {
 		branch := strings.TrimSpace(line)
 		if branch == "" {
 			continue
