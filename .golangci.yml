@@ -31,10 +31,6 @@ issues:
     - ".*\\.pb\\.go$"
     - ".*_generated\\.go$"
 
-  # Only report issues in code that is new/changed compared to the base branch (origin/develop).
-  # This requires git history to be available (fetch-depth: 0 in CI checkout).
-  new-from-rev: origin/develop
-
   # Maximum number of issues to display.
   max-issues-per-linter: 50
   max-same-issues: 10

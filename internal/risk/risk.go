@@ -122,10 +122,7 @@ func isHigh(pr PRInfo) bool {
 			return true
 		}
 	}
-	if slices.Contains(pr.Labels, "high-risk") {
-		return true
-	}
-	return false
+	return slices.Contains(pr.Labels, "high-risk")
 }
 
 // isMedium returns true if the PR meets any MEDIUM-risk criterion.
@@ -141,8 +138,5 @@ func isMedium(pr PRInfo) bool {
 			return true
 		}
 	}
-	if slices.Contains(pr.Labels, "medium-risk") {
-		return true
-	}
-	return false
+	return slices.Contains(pr.Labels, "medium-risk")
 }
