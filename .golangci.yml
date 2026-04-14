@@ -1,0 +1,27 @@
+version: "2"
+
+linters:
+  enable:
+    - errcheck
+    - govet
+    - staticcheck
+    - gosimple
+    - unused
+    - ineffassign
+    - modernize
+
+linters-settings:
+  errcheck:
+    # Ignore errors from specific functions where intentional ignoring is acceptable.
+    # fmt.Fprintf and similar I/O functions on stdout/stderr are allowed.
+    ignore: "fmt:.*,io:.*"
+
+issues:
+  # Exclude generated files from lint.
+  exclude-files:
+    - ".*\\.pb\\.go$"
+    - ".*_generated\\.go$"
+
+  # Maximum number of issues to display.
+  max-issues-per-linter: 50
+  max-same-issues: 10
