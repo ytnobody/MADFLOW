@@ -87,6 +87,11 @@ type AgentConfig struct {
 	// orphaned git worktrees (those not associated with any active team).
 	// 0 (default) disables periodic worktree cleanup.
 	WorktreeCleanupIntervalMinutes int `toml:"worktree_cleanup_interval_minutes"`
+	// MergedWorktreeCleanupIntervalMinutes specifies how often to scan worktrees
+	// under .worktrees/{ghLogin}/ and remove those whose associated GitHub PRs have
+	// been merged or closed. The removal includes the worktree, local branch, and
+	// remote branch. 0 (default) disables this cleanup.
+	MergedWorktreeCleanupIntervalMinutes int `toml:"merged_worktree_cleanup_interval_minutes"`
 	// ExtraPrompt is appended to the system prompt of every agent.
 	// Use this to inject project-specific instructions that apply to all agents.
 	ExtraPrompt string `toml:"extra_prompt"`

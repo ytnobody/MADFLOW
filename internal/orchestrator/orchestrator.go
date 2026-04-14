@@ -230,6 +230,13 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 		}()
 	}
 
+	// Start merged worktree cleanup goroutine if configured
+	if o.cfg.Agent.MergedWorktreeCleanupIntervalMinutes > 0 {
+		wg.Go(func() {
+			o.runMergedWorktreeCleanup(ctx)
+		})
+	}
+
 	// Start main branch check goroutine
 	if o.cfg.Agent.MainCheckIntervalHours > 0 {
 		wg.Add(1)
@@ -1359,6 +1366,57 @@ func (o *Orchestrator) runWorktreeCleanup(ctx context.Context) {
 				removed := repo.CleanOrphanedWorktrees(ghLogin, activePaths)
 				if len(removed) > 0 {
 					log.Printf("[worktree-cleanup] %s: removed %d orphaned worktree(s): %v", name, len(removed), removed)
+				}
+			}
+		}
+	}
+}
+
+// runMergedWorktreeCleanup periodically removes worktrees whose associated
+// GitHub PRs have been merged or closed. It scans .worktrees/{ghLogin}/ for
+// each configured repo, checks PR state via the gh CLI, and removes the
+// worktree, local branch, and remote branch for merged/closed PRs.
+//
+// Remote branch deletion failures are non-fatal: they are logged and the
+// cleanup will be retried on the next interval.
+//
+// This goroutine does not block the main polling loop.
+func (o *Orchestrator) runMergedWorktreeCleanup(ctx context.Context) {
+	o.cfgMu.RLock()
+	interval := time.Duration(o.cfg.Agent.MergedWorktreeCleanupIntervalMinutes) * time.Minute
+	o.cfgMu.RUnlock()
+
+	log.Printf("[merged-worktree-cleanup] started (interval: %v)", interval)
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			log.Println("[merged-worktree-cleanup] stopped")
+			return
+		case <-ticker.C:
+			o.cfgMu.RLock()
+			gh := o.cfg.GitHub
+			ghLogin := o.cfg.GhLogin
+			o.cfgMu.RUnlock()
+
+			if gh == nil || ghLogin == "" {
+				// GitHub integration not configured or login not resolved.
+				continue
+			}
+
+			for _, repoName := range gh.Repos {
+				for name, repo := range o.repos {
+					removed, err := repo.CleanMergedPRWorktrees(gh.Owner, repoName, ghLogin)
+					if err != nil {
+						log.Printf("[merged-worktree-cleanup] %s: error scanning worktrees: %v", name, err)
+						continue
+					}
+					if len(removed) > 0 {
+						log.Printf("[merged-worktree-cleanup] %s: removed %d merged/closed worktree(s): %v", name, len(removed), removed)
+					}
 				}
 			}
 		}
