@@ -7,6 +7,7 @@ import (
 	"log"
 	"os/exec"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -199,11 +200,9 @@ func shouldProcessIssue(assigneeLogins []string, ghLogin string) (process bool, 
 		// No assignees → auto-assign to ghLogin and process.
 		return true, true
 	}
-	for _, a := range assigneeLogins {
-		if a == ghLogin {
-			// Assigned to ghLogin → process.
-			return true, false
-		}
+	if slices.Contains(assigneeLogins, ghLogin) {
+		// Assigned to ghLogin → process.
+		return true, false
 	}
 	// Assigned to someone else → skip.
 	return false, false

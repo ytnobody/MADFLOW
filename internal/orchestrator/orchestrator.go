@@ -1005,8 +1005,8 @@ func (o *Orchestrator) runGitHubSync(ctx context.Context) {
 // ghLogin returns the GitHub login to use for assignee-based issue filtering.
 // It returns the first entry in AuthorizedUsers when available.
 func (o *Orchestrator) ghLogin() string {
-	if len(o.cfg.AuthorizedUsers) > 0 {
-		return o.cfg.AuthorizedUsers[0]
+	if len(o.cfg.AuthorizedUsers) > 0 { //nolint:staticcheck // AuthorizedUsers is auto-populated; it is the only available source for the gh login
+		return o.cfg.AuthorizedUsers[0] //nolint:staticcheck // AuthorizedUsers is auto-populated; it is the only available source for the gh login
 	}
 	return ""
 }
