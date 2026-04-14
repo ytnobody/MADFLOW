@@ -28,6 +28,12 @@ type Config struct {
 	// Leaving it empty with GitHub integration active and `gh` not authenticated
 	// will cause MADFLOW to deny all incoming GitHub events.
 	AuthorizedUsers []string `toml:"authorized_users,omitempty"`
+	// GhLogin is the GitHub login name of the authenticated user, auto-detected
+	// at startup via `gh api user --jq '.login'`. It is a runtime-only field
+	// (not read from TOML) and is used to namespace branch names and worktree
+	// paths per user (e.g. "madflow/{gh_login}/issue-{id}").
+	// Empty if the GitHub CLI is unavailable or not authenticated.
+	GhLogin string `toml:"-"`
 }
 
 type ProjectConfig struct {
@@ -147,6 +153,7 @@ func Load(path string) (*Config, error) {
 	}
 
 	setDefaults(&cfg)
+	applyGhLogin(&cfg)
 	warnDefaults(&cfg)
 	autoPopulateAuthorizedUsers(&cfg)
 
@@ -200,9 +207,8 @@ func setDefaults(cfg *Config) {
 	if cfg.Branches.Develop == "" {
 		cfg.Branches.Develop = "develop"
 	}
-	if cfg.Branches.FeaturePrefix == "" {
-		cfg.Branches.FeaturePrefix = "feature/issue-"
-	}
+	// FeaturePrefix default is applied after GhLogin is resolved in applyGhLogin.
+	// Leave it empty here so applyGhLogin can detect whether the user set it explicitly.
 	if cfg.GitHub != nil && cfg.GitHub.SyncIntervalMinutes == 0 {
 		cfg.GitHub.SyncIntervalMinutes = 15
 	}
@@ -255,7 +261,22 @@ func resolveGitHubLogin() string {
 	return strings.TrimSpace(string(out))
 }
 
-// autoPopulateAuthorizedUsers detects the GitHub login and populates
+// applyGhLogin resolves the GitHub login and applies it to cfg.GhLogin and,
+// when FeaturePrefix was not explicitly set in the config file, sets the
+// namespaced default: "madflow/{gh_login}/issue-".
+// Falls back to "feature/issue-" when the GitHub CLI is unavailable.
+func applyGhLogin(cfg *Config) {
+	cfg.GhLogin = resolveGitHubLogin()
+	if cfg.Branches.FeaturePrefix == "" {
+		if cfg.GhLogin != "" {
+			cfg.Branches.FeaturePrefix = "madflow/" + cfg.GhLogin + "/issue-"
+		} else {
+			cfg.Branches.FeaturePrefix = "feature/issue-"
+		}
+	}
+}
+
+// autoPopulateAuthorizedUsers uses the already-resolved cfg.GhLogin to populate
 // cfg.AuthorizedUsers when GitHub integration is enabled but no authorized
 // users are configured. A warning is logged when detection fails.
 func autoPopulateAuthorizedUsers(cfg *Config) {
@@ -263,11 +284,10 @@ func autoPopulateAuthorizedUsers(cfg *Config) {
 		// GitHub integration disabled, or already explicitly configured.
 		return
 	}
-	login := resolveGitHubLogin()
-	if login == "" {
+	if cfg.GhLogin == "" {
 		log.Printf("[config] WARNING: github integration is enabled but authorized_users is not set and `gh api user` returned no login; all GitHub events will be denied. Set authorized_users in madflow.toml or ensure `gh` is authenticated.")
 		return
 	}
-	log.Printf("[config] auto-detected GitHub login %q; using as authorized_users", login)
-	cfg.AuthorizedUsers = []string{login}
+	log.Printf("[config] auto-detected GitHub login %q; using as authorized_users", cfg.GhLogin)
+	cfg.AuthorizedUsers = []string{cfg.GhLogin}
 }

@@ -210,16 +210,16 @@ git -C {{REPO_PATH}} worktree list | grep {{FEATURE_PREFIX}}<issueID>
 
 # If no worktree: create a new one (created from the latest origin/develop)
 git -C {{REPO_PATH}} worktree add -b {{FEATURE_PREFIX}}<issueID> \
-  {{REPO_PATH}}/.worktrees/team-{{TEAM_NUM}} \
+  {{REPO_PATH}}/.worktrees/{{GH_LOGIN}}/issue-<issueID> \
   origin/{{DEVELOP_BRANCH}}
 
 # If worktree exists: move to the existing worktree and merge the latest develop
-cd {{REPO_PATH}}/.worktrees/team-{{TEAM_NUM}}
+cd {{REPO_PATH}}/.worktrees/{{GH_LOGIN}}/issue-<issueID>
 git merge origin/{{DEVELOP_BRANCH}}
 # If conflicts occur, resolve them before continuing work
 ```
 
-**All subsequent git operations and file edits must be performed within the worktree directory (`{{REPO_PATH}}/.worktrees/team-{{TEAM_NUM}}`).**
+**All subsequent git operations and file edits must be performed within the worktree directory (`{{REPO_PATH}}/.worktrees/{{GH_LOGIN}}/issue-<issueID>`).**
 **Running `git checkout` / `git switch` in the project root (`{{REPO_PATH}}`) is strictly prohibited.**
 
 #### Checking for Existing PRs
@@ -297,7 +297,7 @@ git commit -m "feat: <description of changes>"
 Before creating/pushing a PR, **always** check the diff against the base branch ({{DEVELOP_BRANCH}}) and resolve any conflicts.
 
 ```bash
-cd {{REPO_PATH}}/.worktrees/team-{{TEAM_NUM}}
+cd {{REPO_PATH}}/.worktrees/{{GH_LOGIN}}/issue-<issueID>
 
 # Fetch the latest base branch
 git fetch origin {{DEVELOP_BRANCH}}
@@ -317,7 +317,7 @@ When implementation is complete, **always** push the feature branch to the remot
 The PR is the foundation of the review process; you must not request a review without a PR in place.
 
 ```bash
-cd {{REPO_PATH}}/.worktrees/team-{{TEAM_NUM}}
+cd {{REPO_PATH}}/.worktrees/{{GH_LOGIN}}/issue-<issueID>
 git push -u origin {{FEATURE_PREFIX}}<issueID>
 gh pr create --base {{DEVELOP_BRANCH}} --title "<issueID>: <summary of changes>" --body "Issue: <issueID>"
 ```
