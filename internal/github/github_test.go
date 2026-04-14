@@ -880,3 +880,241 @@ func TestSyncer_CommentIsBot_Pattern(t *testing.T) {
 		t.Errorf("bot comment (pattern match) should have IsBot=true")
 	}
 }
+
+// --- Assignee filtering tests ---
+
+func TestSyncer_WithGhLogin(t *testing.T) {
+	s := NewSyncer(nil, "owner", []string{"repo"}, time.Minute).
+		WithGhLogin("alice")
+	if s.ghLogin != "alice" {
+		t.Errorf("expected ghLogin=alice, got %q", s.ghLogin)
+	}
+}
+
+func TestSyncer_WithGhLogin_Default(t *testing.T) {
+	s := NewSyncer(nil, "owner", []string{"repo"}, time.Minute)
+	if s.ghLogin != "" {
+		t.Errorf("expected ghLogin empty by default, got %q", s.ghLogin)
+	}
+}
+
+func TestGhIssue_AssigneeLogins_Empty(t *testing.T) {
+	g := &ghIssue{}
+	logins := g.assigneeLogins()
+	if len(logins) != 0 {
+		t.Errorf("expected empty assignees, got %v", logins)
+	}
+}
+
+func TestGhIssue_AssigneeLogins_Single(t *testing.T) {
+	g := &ghIssue{
+		Assignees: []ghUser{{Login: "alice"}},
+	}
+	logins := g.assigneeLogins()
+	if len(logins) != 1 || logins[0] != "alice" {
+		t.Errorf("expected [alice], got %v", logins)
+	}
+}
+
+func TestGhIssue_AssigneeLogins_Multiple(t *testing.T) {
+	g := &ghIssue{
+		Assignees: []ghUser{
+			{Login: "alice"},
+			{Login: "bob"},
+		},
+	}
+	logins := g.assigneeLogins()
+	if len(logins) != 2 {
+		t.Fatalf("expected 2 assignees, got %d", len(logins))
+	}
+	if logins[0] != "alice" || logins[1] != "bob" {
+		t.Errorf("unexpected logins: %v", logins)
+	}
+}
+
+func TestShouldProcessIssue_NoAssignees(t *testing.T) {
+	// No assignees → should process (and auto-assign)
+	g := &ghIssue{}
+	process, autoAssign := shouldProcessIssue(g.assigneeLogins(), "alice")
+	if !process {
+		t.Error("expected process=true when no assignees")
+	}
+	if !autoAssign {
+		t.Error("expected autoAssign=true when no assignees")
+	}
+}
+
+func TestShouldProcessIssue_AssignedToMe(t *testing.T) {
+	// Assigned to ghLogin → should process, no auto-assign
+	g := &ghIssue{
+		Assignees: []ghUser{{Login: "alice"}},
+	}
+	process, autoAssign := shouldProcessIssue(g.assigneeLogins(), "alice")
+	if !process {
+		t.Error("expected process=true when assigned to me")
+	}
+	if autoAssign {
+		t.Error("expected autoAssign=false when already assigned to me")
+	}
+}
+
+func TestShouldProcessIssue_AssignedToOther(t *testing.T) {
+	// Assigned to another user → skip
+	g := &ghIssue{
+		Assignees: []ghUser{{Login: "bob"}},
+	}
+	process, autoAssign := shouldProcessIssue(g.assigneeLogins(), "alice")
+	if process {
+		t.Error("expected process=false when assigned to another user")
+	}
+	if autoAssign {
+		t.Error("expected autoAssign=false when assigned to another user")
+	}
+}
+
+func TestShouldProcessIssue_MultipleAssignees_IncludesMe(t *testing.T) {
+	// Multiple assignees including ghLogin → should process
+	g := &ghIssue{
+		Assignees: []ghUser{{Login: "alice"}, {Login: "bob"}},
+	}
+	process, autoAssign := shouldProcessIssue(g.assigneeLogins(), "alice")
+	if !process {
+		t.Error("expected process=true when I am among assignees")
+	}
+	if autoAssign {
+		t.Error("expected autoAssign=false when already assigned")
+	}
+}
+
+func TestShouldProcessIssue_EmptyGhLogin_Passthrough(t *testing.T) {
+	// When ghLogin is empty, filtering is disabled; always process
+	g := &ghIssue{
+		Assignees: []ghUser{{Login: "bob"}},
+	}
+	process, autoAssign := shouldProcessIssue(g.assigneeLogins(), "")
+	if !process {
+		t.Error("expected process=true when ghLogin is empty (filtering disabled)")
+	}
+	if autoAssign {
+		t.Error("expected autoAssign=false when ghLogin is empty")
+	}
+}
+
+func TestSyncer_FilterIssueByAssignee_SyncRepo_SkipsOtherAssignee(t *testing.T) {
+	// Verify that syncRepoIssues filters out issues assigned to another user.
+	dir := t.TempDir()
+	store := issue.NewStore(dir)
+
+	s := NewSyncer(store, "owner", []string{"repo"}, time.Minute).
+		WithAuthorizedUsers([]string{"alice"}).
+		WithGhLogin("alice").
+		WithSkipComments(true)
+
+	issues := []ghIssue{
+		{
+			Number:    1,
+			Title:     "My Issue",
+			URL:       "https://github.com/owner/repo/issues/1",
+			Assignees: []ghUser{{Login: "alice"}},
+		},
+		{
+			Number:    2,
+			Title:     "Other's Issue",
+			URL:       "https://github.com/owner/repo/issues/2",
+			Assignees: []ghUser{{Login: "bob"}},
+		},
+	}
+
+	openIDs := make(map[string]struct{})
+	for _, gh := range issues {
+		openIDs[formatID(s.owner, "repo", gh.Number)] = struct{}{}
+	}
+
+	s.syncIssues("repo", issues, openIDs)
+
+	// Issue 1 (assigned to alice) should be imported.
+	iss1, err := store.Get("owner-repo-001")
+	if err != nil {
+		t.Fatalf("expected owner-repo-001 to be imported: %v", err)
+	}
+	if iss1.Title != "My Issue" {
+		t.Errorf("unexpected title: %q", iss1.Title)
+	}
+
+	// Issue 2 (assigned to bob) should be skipped.
+	_, err = store.Get("owner-repo-002")
+	if err == nil {
+		t.Error("expected owner-repo-002 to be skipped (not imported)")
+	}
+}
+
+func TestSyncer_FilterIssueByAssignee_SyncRepo_ImportUnassigned(t *testing.T) {
+	// Verify that unassigned issues are processed (auto-assign happens externally).
+	dir := t.TempDir()
+	store := issue.NewStore(dir)
+
+	s := NewSyncer(store, "owner", []string{"repo"}, time.Minute).
+		WithAuthorizedUsers([]string{"alice"}).
+		WithGhLogin("alice").
+		WithSkipComments(true)
+
+	issues := []ghIssue{
+		{
+			Number: 3,
+			Title:  "Unassigned Issue",
+			URL:    "https://github.com/owner/repo/issues/3",
+		},
+	}
+
+	openIDs := map[string]struct{}{
+		"owner-repo-003": {},
+	}
+
+	// Override addAssignee to avoid running gh CLI during tests.
+	s.addAssigneeFn = func(repo string, number int, login string) error {
+		return nil // noop
+	}
+
+	s.syncIssues("repo", issues, openIDs)
+
+	// Unassigned issue should be imported.
+	iss, err := store.Get("owner-repo-003")
+	if err != nil {
+		t.Fatalf("expected owner-repo-003 to be imported: %v", err)
+	}
+	if iss.Title != "Unassigned Issue" {
+		t.Errorf("unexpected title: %q", iss.Title)
+	}
+}
+
+func TestSyncer_FilterIssueByAssignee_Disabled_WhenNoGhLogin(t *testing.T) {
+	// When ghLogin is empty, all issues are imported regardless of assignee.
+	dir := t.TempDir()
+	store := issue.NewStore(dir)
+
+	s := NewSyncer(store, "owner", []string{"repo"}, time.Minute).
+		WithAuthorizedUsers([]string{"alice"}).
+		WithSkipComments(true)
+	// No WithGhLogin call → ghLogin is ""
+
+	issues := []ghIssue{
+		{
+			Number:    4,
+			Title:     "Bob's Issue",
+			URL:       "https://github.com/owner/repo/issues/4",
+			Assignees: []ghUser{{Login: "bob"}},
+		},
+	}
+
+	openIDs := map[string]struct{}{
+		"owner-repo-004": {},
+	}
+
+	s.syncIssues("repo", issues, openIDs)
+
+	// Should be imported even though assigned to bob (filtering disabled).
+	_, err := store.Get("owner-repo-004")
+	if err != nil {
+		t.Fatalf("expected owner-repo-004 to be imported when ghLogin is empty: %v", err)
+	}
+}

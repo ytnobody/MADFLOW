@@ -7,6 +7,7 @@ import (
 	"log"
 	"os/exec"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -69,6 +70,11 @@ func isBot(login, userType, body string, patterns []*regexp.Regexp) bool {
 	return isBotUser(login, userType) || matchesBotPattern(body, patterns)
 }
 
+// ghUser represents a GitHub user with just a login field.
+type ghUser struct {
+	Login string `json:"login"`
+}
+
 // ghIssue represents a GitHub issue from `gh issue list --json` or Events API.
 type ghIssue struct {
 	Number int       `json:"number"`
@@ -84,6 +90,8 @@ type ghIssue struct {
 	Author struct {
 		Login string `json:"login"`
 	} `json:"author"`
+	// Assignees is populated from `gh issue list --json assignees`.
+	Assignees []ghUser `json:"assignees"`
 }
 
 // authorLogin returns the GitHub login of the issue author.
@@ -93,6 +101,15 @@ func (g *ghIssue) authorLogin() string {
 		return g.User.Login
 	}
 	return g.Author.Login
+}
+
+// assigneeLogins returns a slice of login names for all assignees.
+func (g *ghIssue) assigneeLogins() []string {
+	logins := make([]string, len(g.Assignees))
+	for i, a := range g.Assignees {
+		logins[i] = a.Login
+	}
+	return logins
 }
 
 type ghLabel struct {
@@ -111,6 +128,10 @@ type Syncer struct {
 	botPatterns        []*regexp.Regexp // compiled bot comment patterns; nil = no pattern check
 	skipComments       bool             // if true, skip comment sync (for fast startup)
 	rateLimitThreshold int              // minimum remaining API calls before waiting/skipping; 0 disables
+	ghLogin            string           // authenticated GitHub login for assignee-based filtering; empty = disabled
+	// addAssigneeFn is used to inject a test double for gh CLI calls.
+	// When nil, the real gh CLI is invoked.
+	addAssigneeFn func(repo string, number int, login string) error
 }
 
 // NewSyncer creates a new GitHub issue syncer.
@@ -150,6 +171,41 @@ func (s *Syncer) WithBotCommentPatterns(patterns []*regexp.Regexp) *Syncer {
 func (s *Syncer) WithSkipComments(skip bool) *Syncer {
 	s.skipComments = skip
 	return s
+}
+
+// WithGhLogin sets the GitHub login for assignee-based issue filtering (§3.5).
+// When set, only issues assigned to login (or unassigned issues) are processed.
+// Unassigned issues are automatically assigned to login before processing.
+// Issues assigned to other users are skipped.
+// When login is empty, assignee filtering is disabled (all issues are processed).
+func (s *Syncer) WithGhLogin(login string) *Syncer {
+	s.ghLogin = login
+	return s
+}
+
+// shouldProcessIssue determines whether an issue should be processed based on
+// its assignees and the given ghLogin.
+//
+// Returns (process, autoAssign) where:
+//   - process=true means the issue should be processed
+//   - autoAssign=true means the issue has no assignees and should be auto-assigned to ghLogin
+//
+// When ghLogin is empty, filtering is disabled and (true, false) is always returned.
+func shouldProcessIssue(assigneeLogins []string, ghLogin string) (process bool, autoAssign bool) {
+	if ghLogin == "" {
+		// Filtering disabled — process all issues.
+		return true, false
+	}
+	if len(assigneeLogins) == 0 {
+		// No assignees → auto-assign to ghLogin and process.
+		return true, true
+	}
+	if slices.Contains(assigneeLogins, ghLogin) {
+		// Assigned to ghLogin → process.
+		return true, false
+	}
+	// Assigned to someone else → skip.
+	return false, false
 }
 
 // isAuthorized returns true if the given GitHub login is authorized.
@@ -273,10 +329,38 @@ func (s *Syncer) syncRepo(repo string) error {
 
 	// Build a set of open issue IDs from GitHub for stale-close detection.
 	openIDs := make(map[string]struct{}, len(issues))
-
 	for _, gh := range issues {
 		localID := formatID(s.owner, repo, gh.Number)
 		openIDs[localID] = struct{}{}
+	}
+
+	s.syncIssues(repo, issues, openIDs)
+
+	// Close local issues that are no longer open on GitHub.
+	s.closeStaleIssues(repo, openIDs)
+
+	return nil
+}
+
+// syncIssues processes a slice of GitHub issues for the given repo.
+func (s *Syncer) syncIssues(repo string, issues []ghIssue, _ map[string]struct{}) {
+	for _, gh := range issues {
+		localID := formatID(s.owner, repo, gh.Number)
+
+		// Assignee-based filtering (§3.5): only process issues assigned to ghLogin.
+		process, autoAssign := shouldProcessIssue(gh.assigneeLogins(), s.ghLogin)
+		if !process {
+			log.Printf("[github-sync] skipping issue %s: assigned to other users", localID)
+			continue
+		}
+		if autoAssign {
+			// Auto-assign to ghLogin before processing.
+			log.Printf("[github-sync] auto-assigning %s to %s", localID, s.ghLogin)
+			if err := s.doAddAssignee(repo, gh.Number, s.ghLogin); err != nil {
+				log.Printf("[github-sync] failed to auto-assign %s to %s: %v", s.ghLogin, localID, err)
+				// Continue processing even if auto-assign fails.
+			}
+		}
 
 		// Determine authorization - unauthorized issues are stored with PendingApproval=true
 		// instead of being skipped, so that an authorized user can later approve them.
@@ -340,10 +424,31 @@ func (s *Syncer) syncRepo(repo string) error {
 			s.syncComments(repo, gh.Number, localID)
 		}
 	}
+}
 
-	// Close local issues that are no longer open on GitHub.
-	s.closeStaleIssues(repo, openIDs)
+// doAddAssignee adds the given login as an assignee on the GitHub issue.
+// It uses addAssigneeFn if set (for testing), otherwise calls the real gh CLI.
+func (s *Syncer) doAddAssignee(repo string, number int, login string) error {
+	if s.addAssigneeFn != nil {
+		return s.addAssigneeFn(repo, number, login)
+	}
+	return s.addAssignee(repo, number, login)
+}
 
+// addAssignee calls `gh issue edit {number} -R {owner}/{repo} --add-assignee {login}`
+// to assign the given login to the issue.
+func (s *Syncer) addAssignee(repo string, number int, login string) error {
+	fullRepo := fmt.Sprintf("%s/%s", s.owner, repo)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "gh", "issue", "edit",
+		fmt.Sprintf("%d", number),
+		"-R", fullRepo,
+		"--add-assignee", login,
+	)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("gh issue edit --add-assignee: %w (output: %s)", err, strings.TrimSpace(string(out)))
+	}
 	return nil
 }
 
@@ -485,7 +590,7 @@ func (s *Syncer) fetchIssues(repo string) ([]ghIssue, error) {
 	cmd := exec.Command("gh", "issue", "list",
 		"-R", fullRepo,
 		"--state", "open",
-		"--json", "number,title,url,body,labels,author",
+		"--json", "number,title,url,body,labels,author,assignees",
 	)
 
 	out, err := cmd.Output()
