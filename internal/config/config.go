@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
+	"strings"
 
 	"github.com/BurntSushi/toml"
 )
@@ -16,10 +18,15 @@ type Config struct {
 	PromptsDir string        `toml:"prompts_dir,omitempty"`
 	// AuthorizedUsers is a list of GitHub user logins that are allowed to create
 	// issues, PRs, and comments that MADFLOW will process.
-	// This field is required when [github] integration is enabled.
-	// Leaving it empty while GitHub integration is active is a security risk:
-	// it would allow any GitHub user to interact with MADFLOW, enabling prompt
-	// injection attacks from arbitrary third parties on public repositories.
+	//
+	// Deprecated: This field no longer needs to be set manually. When [github]
+	// integration is enabled and this field is empty, MADFLOW automatically
+	// detects the authenticated GitHub CLI user via `gh api user --jq '.login'`
+	// at startup and uses that login as the sole authorized user.
+	//
+	// If explicitly set, the specified values take priority over auto-detection.
+	// Leaving it empty with GitHub integration active and `gh` not authenticated
+	// will cause MADFLOW to deny all incoming GitHub events.
 	AuthorizedUsers []string `toml:"authorized_users,omitempty"`
 }
 
@@ -141,6 +148,7 @@ func Load(path string) (*Config, error) {
 
 	setDefaults(&cfg)
 	warnDefaults(&cfg)
+	autoPopulateAuthorizedUsers(&cfg)
 
 	if err := validate(&cfg); err != nil {
 		return nil, fmt.Errorf("validate config: %w", err)
@@ -232,8 +240,34 @@ func validate(cfg *Config) error {
 			return fmt.Errorf("project.repos[%d].path is required", i)
 		}
 	}
-	if cfg.GitHub != nil && len(cfg.AuthorizedUsers) == 0 {
-		return fmt.Errorf("authorized_users is required when github integration is enabled; set authorized_users to a list of GitHub logins allowed to interact with MADFLOW")
-	}
 	return nil
+}
+
+// resolveGitHubLogin calls the GitHub CLI to get the currently authenticated
+// user's login name. Returns an empty string if the CLI is unavailable or the
+// user is not authenticated.
+func resolveGitHubLogin() string {
+	cmd := exec.Command("gh", "api", "user", "--jq", ".login")
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// autoPopulateAuthorizedUsers detects the GitHub login and populates
+// cfg.AuthorizedUsers when GitHub integration is enabled but no authorized
+// users are configured. A warning is logged when detection fails.
+func autoPopulateAuthorizedUsers(cfg *Config) {
+	if cfg.GitHub == nil || len(cfg.AuthorizedUsers) > 0 {
+		// GitHub integration disabled, or already explicitly configured.
+		return
+	}
+	login := resolveGitHubLogin()
+	if login == "" {
+		log.Printf("[config] WARNING: github integration is enabled but authorized_users is not set and `gh api user` returned no login; all GitHub events will be denied. Set authorized_users in madflow.toml or ensure `gh` is authenticated.")
+		return
+	}
+	log.Printf("[config] auto-detected GitHub login %q; using as authorized_users", login)
+	cfg.AuthorizedUsers = []string{login}
 }
