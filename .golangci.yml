@@ -10,11 +10,15 @@ linters:
     - ineffassign
     - modernize
 
-linters-settings:
-  errcheck:
-    # Ignore errors from specific functions where intentional ignoring is acceptable.
-    # fmt.Fprintf and similar I/O functions on stdout/stderr are allowed.
-    ignore: "fmt:.*,io:.*"
+  settings:
+    errcheck:
+      # Exclude functions where intentional error ignoring is acceptable.
+      # fmt.Fprintf and similar I/O functions on stdout/stderr are allowed.
+      exclude-functions:
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - fmt.Fprint
+        - (io.Writer).Write
 
 issues:
   # Exclude generated files from lint.
