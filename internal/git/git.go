@@ -161,10 +161,18 @@ func (r *Repo) CleanWorktrees(prefix string) (removed []string) {
 }
 
 // CleanOrphanedWorktrees removes worktree directories under .worktrees/ that
-// start with "team-" but are NOT in the activeTeamDirs set. This catches
-// orphaned worktrees from teams that crashed or were not properly cleaned up.
+// are NOT in the activePaths set. It handles both legacy "team-N" style flat
+// worktrees and new namespace-style "{ghLogin}/issue-{id}" worktrees.
+//
+// When ghLogin is non-empty, the function also scans the "{ghLogin}/" namespace
+// directory for orphaned worktrees (paths not in activePaths as "{ghLogin}/sub").
+// When ghLogin is empty, only legacy "team-*" directories are processed.
+//
+// activePaths keys should be the relative path under .worktrees/ (e.g. "team-1"
+// or "alice/issue-myorg-REPO-42").
+//
 // It also runs "git worktree prune" to clean stale internal references.
-func (r *Repo) CleanOrphanedWorktrees(activeTeamDirs map[string]bool) (removed []string) {
+func (r *Repo) CleanOrphanedWorktrees(ghLogin string, activePaths map[string]bool) (removed []string) {
 	worktreeDir := filepath.Join(r.path, ".worktrees")
 	entries, err := os.ReadDir(worktreeDir)
 	if err != nil {
@@ -175,23 +183,72 @@ func (r *Repo) CleanOrphanedWorktrees(activeTeamDirs map[string]bool) (removed [
 			continue
 		}
 		name := entry.Name()
-		if !strings.HasPrefix(name, "team-") {
-			continue
+
+		if strings.HasPrefix(name, "team-") {
+			// Legacy flat worktree: team-N
+			if !activePaths[name] {
+				wtPath := filepath.Join(worktreeDir, name)
+				if err := r.RemoveWorktree(wtPath); err != nil {
+					// If git worktree remove fails, try to prune and remove manually.
+					r.run("worktree", "prune") //nolint:errcheck // best-effort cleanup
+					os.RemoveAll(wtPath)       //nolint:errcheck // best-effort cleanup
+				}
+				removed = append(removed, name)
+			}
+		} else if ghLogin != "" && name == ghLogin {
+			// Namespace directory for the current user: scan sub-entries
+			namespaceDir := filepath.Join(worktreeDir, name)
+			subEntries, subErr := os.ReadDir(namespaceDir)
+			if subErr != nil {
+				continue
+			}
+			for _, subEntry := range subEntries {
+				if !subEntry.IsDir() {
+					continue
+				}
+				subName := subEntry.Name()
+				relPath := name + "/" + subName
+				if !activePaths[relPath] {
+					wtPath := filepath.Join(namespaceDir, subName)
+					if err := r.RemoveWorktree(wtPath); err != nil {
+						r.run("worktree", "prune") //nolint:errcheck // best-effort cleanup
+						os.RemoveAll(wtPath)       //nolint:errcheck // best-effort cleanup
+					}
+					removed = append(removed, relPath)
+				}
+			}
+			// Remove empty namespace directory
+			if remaining, _ := os.ReadDir(namespaceDir); len(remaining) == 0 {
+				os.Remove(namespaceDir) //nolint:errcheck
+			}
 		}
-		if activeTeamDirs[name] {
-			continue
-		}
-		wtPath := filepath.Join(worktreeDir, name)
-		if err := r.RemoveWorktree(wtPath); err != nil {
-			// If git worktree remove fails, try to prune and remove manually.
-			r.run("worktree", "prune")
-			os.RemoveAll(wtPath)
-		}
-		removed = append(removed, name)
 	}
 	// Always prune stale worktree references at the end.
-	r.run("worktree", "prune")
+	r.run("worktree", "prune") //nolint:errcheck // best-effort cleanup
 	return removed
+}
+
+// RemoveNamespacedWorktree removes a namespaced worktree at .worktrees/{login}/{subDir}.
+// Returns nil if the directory does not exist (no-op).
+// After removal, the namespace directory is also removed if it becomes empty.
+func (r *Repo) RemoveNamespacedWorktree(login, subDir string) error {
+	namespaceDir := filepath.Join(r.path, ".worktrees", login)
+	wtPath := filepath.Join(namespaceDir, subDir)
+	if _, err := os.Stat(wtPath); os.IsNotExist(err) {
+		return nil // already gone
+	}
+	if err := r.RemoveWorktree(wtPath); err != nil {
+		// Fall back: prune then remove manually.
+		r.run("worktree", "prune") //nolint:errcheck // best-effort cleanup
+		if rmErr := os.RemoveAll(wtPath); rmErr != nil {
+			return fmt.Errorf("remove namespaced worktree %s/%s: %w", login, subDir, rmErr)
+		}
+	}
+	// Clean up empty namespace directory.
+	if entries, err := os.ReadDir(namespaceDir); err == nil && len(entries) == 0 {
+		os.Remove(namespaceDir) //nolint:errcheck
+	}
+	return nil
 }
 
 // ValidateSafeName validates that name is safe to use as a branch name component
@@ -213,11 +270,37 @@ func ValidateSafeName(name string) error {
 	return nil
 }
 
+// ValidateSafeBranchName validates that name is safe to use as a git branch name.
+// Unlike ValidateSafeName, it allows "/" as a namespace separator (e.g.
+// "madflow/alice/issue-123"). Each component separated by "/" is validated
+// individually to prevent path traversal attacks.
+func ValidateSafeBranchName(name string) error {
+	if name == "" {
+		return fmt.Errorf("branch name must not be empty")
+	}
+	if strings.ContainsRune(name, '\x00') {
+		return fmt.Errorf("branch name %q contains null byte", name)
+	}
+	for part := range strings.SplitSeq(name, "/") {
+		if part == "" {
+			return fmt.Errorf("branch name %q contains empty component (consecutive or leading/trailing slashes)", name)
+		}
+		if strings.Contains(part, "..") {
+			return fmt.Errorf("branch name %q contains prohibited sequence \"..\" in component %q", name, part)
+		}
+		if strings.ContainsAny(part, "\\") {
+			return fmt.Errorf("branch name %q contains backslash in component %q", name, part)
+		}
+	}
+	return nil
+}
+
 // PrepareWorktree ensures the develop branch exists (creating from main if needed)
 // and creates a worktree with a new feature branch based on develop.
-// It validates featureBranch to prevent path traversal attacks.
+// It validates featureBranch using ValidateSafeBranchName to prevent path traversal
+// attacks while allowing namespace-style branch names (e.g. "madflow/user/issue-123").
 func (r *Repo) PrepareWorktree(path, featureBranch, developBranch, mainBranch string) error {
-	if err := ValidateSafeName(featureBranch); err != nil {
+	if err := ValidateSafeBranchName(featureBranch); err != nil {
 		return fmt.Errorf("invalid feature branch name: %w", err)
 	}
 	if err := r.EnsureBranch(developBranch, mainBranch); err != nil {

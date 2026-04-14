@@ -369,6 +369,7 @@ func (o *Orchestrator) startResidentAgents(ctx context.Context, wg *sync.WaitGro
 			DevelopBranch: o.cfg.Branches.Develop,
 			MainBranch:    o.cfg.Branches.Main,
 			FeaturePrefix: o.cfg.Branches.FeaturePrefix,
+			GhLogin:       o.cfg.GhLogin,
 		}
 
 		systemPrompt, err := agent.LoadPrompt(o.promptDir, r.role, vars)
@@ -1034,6 +1035,7 @@ func (o *Orchestrator) CreateTeamAgents(teamNum int, issueID string) (engineer *
 			FeaturePrefix: o.cfg.Branches.FeaturePrefix,
 			TeamNum:       teamNumStr,
 			RepoPath:      o.firstRepoPath(),
+			GhLogin:       o.cfg.GhLogin,
 		}
 
 		systemPrompt, err := agent.LoadPrompt(o.promptDir, r.role, vars)
@@ -1335,14 +1337,19 @@ func (o *Orchestrator) runWorktreeCleanup(ctx context.Context) {
 			log.Println("[worktree-cleanup] stopped")
 			return
 		case <-ticker.C:
-			// Build set of active team worktree directory names.
-			activeTeamDirs := make(map[string]bool)
+			// Build set of active worktree relative paths.
+			// Legacy style: "team-N"; namespaced style: "{ghLogin}/issue-{id}".
+			activePaths := make(map[string]bool)
 			for _, info := range o.teams.List() {
-				activeTeamDirs[fmt.Sprintf("team-%d", info.ID)] = true
+				activePaths[fmt.Sprintf("team-%d", info.ID)] = true
 			}
 
+			o.cfgMu.RLock()
+			ghLogin := o.cfg.GhLogin
+			o.cfgMu.RUnlock()
+
 			for name, repo := range o.repos {
-				removed := repo.CleanOrphanedWorktrees(activeTeamDirs)
+				removed := repo.CleanOrphanedWorktrees(ghLogin, activePaths)
 				if len(removed) > 0 {
 					log.Printf("[worktree-cleanup] %s: removed %d orphaned worktree(s): %v", name, len(removed), removed)
 				}
