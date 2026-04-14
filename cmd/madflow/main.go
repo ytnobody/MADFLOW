@@ -12,6 +12,7 @@ import (
 
 	"github.com/ytnobody/madflow/internal/chatlog"
 	"github.com/ytnobody/madflow/internal/config"
+	"github.com/ytnobody/madflow/internal/git"
 	"github.com/ytnobody/madflow/internal/orchestrator"
 	"github.com/ytnobody/madflow/internal/project"
 	"github.com/ytnobody/madflow/prompts"
@@ -161,11 +162,37 @@ feature_prefix = "feature/issue-"
 	return nil
 }
 
+// warnLegacyResources checks each configured repository for old-format branches
+// and worktrees and prints a [WARN] message for each one found.
+// Startup continues regardless (warnings are non-fatal).
+func warnLegacyResources(repos []config.RepoConfig) {
+	for _, r := range repos {
+		repo := git.NewRepo(r.Path)
+
+		// Check for legacy worktrees: .madflow/worktrees/issue-{number}/
+		madflowDir := filepath.Join(r.Path, ".madflow")
+		for _, wt := range repo.DetectLegacyWorktrees(madflowDir) {
+			fmt.Fprintf(os.Stderr, "[WARN] Legacy worktree detected: %s\n", wt)
+			fmt.Fprintf(os.Stderr, "       Please migrate manually or remove before continuing.\n")
+		}
+
+		// Check for legacy branches: feature/issue-{number}
+		for _, branch := range repo.DetectLegacyBranches() {
+			fmt.Fprintf(os.Stderr, "[WARN] Legacy branch detected: %s\n", branch)
+			fmt.Fprintf(os.Stderr, "       Please migrate manually or remove before continuing.\n")
+		}
+	}
+}
+
 func cmdStart() error {
 	configPath, cfg, proj, err := loadProjectConfig()
 	if err != nil {
 		return err
 	}
+
+	// Warn about legacy-format resources (old branch/worktree naming convention).
+	// This is a non-fatal check; startup continues after warnings are displayed.
+	warnLegacyResources(cfg.Project.Repos)
 
 	// Determine prompts directory
 	promptDir := findPromptsDir(cfg.PromptsDir)
