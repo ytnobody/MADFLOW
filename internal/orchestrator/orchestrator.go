@@ -232,11 +232,9 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 
 	// Start merged worktree cleanup goroutine if configured
 	if o.cfg.Agent.MergedWorktreeCleanupIntervalMinutes > 0 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			o.runMergedWorktreeCleanup(ctx)
-		}()
+		})
 	}
 
 	// Start main branch check goroutine
