@@ -63,7 +63,7 @@ On failure to delete:
 - Deletion and any log messages appear **before** the orchestrator starts.
 - If no legacy resources are present, no output is produced.
 - Each resource produces its own log line.
-- Legacy branches are force-deleted (`git branch -D`) to ensure removal regardless of merge status.
+- Legacy branches are deleted with `git branch -d` (safe delete, merged-only) to avoid removing unmerged work.
 
 ## Implementation
 
@@ -73,7 +73,7 @@ New exported method on `*Repo`:
 
 - `DeleteLegacyBranches() (deleted []string, err error)`
   - Calls `DetectLegacyBranches()` to get the list of legacy branches
-  - Force-deletes each branch with `git branch -D`
+  - Deletes each branch with `git branch -d` (safe delete, merged-only)
   - Returns the names of successfully deleted branches and the first error encountered
   - Continues attempting to delete remaining branches even if one fails
 
