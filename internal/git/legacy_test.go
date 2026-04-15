@@ -202,3 +202,113 @@ func TestDetectLegacyBranches_Mixed(t *testing.T) {
 		t.Errorf("expected 'feature/issue-10', got %q", detected[0])
 	}
 }
+
+// TestDeleteLegacyBranches_DeletesAll verifies that all detected legacy branches
+// are force-deleted and their names are returned.
+func TestDeleteLegacyBranches_DeletesAll(t *testing.T) {
+	repo := initTestRepo(t)
+
+	baseBranch, err := repo.CurrentBranch()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Create legacy branches.
+	legacyBranches := []string{
+		"feature/issue-1",
+		"feature/issue-42",
+		"feature/issue-999",
+	}
+	for _, b := range legacyBranches {
+		run(t, repo.Path(), "git", "branch", b, baseBranch)
+	}
+
+	deleted, err := repo.DeleteLegacyBranches()
+	if err != nil {
+		t.Fatalf("DeleteLegacyBranches returned error: %v", err)
+	}
+	if len(deleted) != 3 {
+		t.Errorf("expected 3 deleted branches, got %d: %v", len(deleted), deleted)
+	}
+
+	// All legacy branches must no longer exist.
+	for _, b := range legacyBranches {
+		if repo.BranchExists(b) {
+			t.Errorf("expected branch %q to be deleted, but it still exists", b)
+		}
+	}
+}
+
+// TestDeleteLegacyBranches_NonLegacyUntouched verifies that non-legacy branches
+// are not deleted.
+func TestDeleteLegacyBranches_NonLegacyUntouched(t *testing.T) {
+	repo := initTestRepo(t)
+
+	baseBranch, err := repo.CurrentBranch()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	run(t, repo.Path(), "git", "branch", "madflow/user/issue-1", baseBranch) // new format
+	run(t, repo.Path(), "git", "branch", "develop", baseBranch)              // unrelated
+
+	deleted, err := repo.DeleteLegacyBranches()
+	if err != nil {
+		t.Fatalf("DeleteLegacyBranches returned error: %v", err)
+	}
+	if len(deleted) != 0 {
+		t.Errorf("expected 0 deleted branches, got %d: %v", len(deleted), deleted)
+	}
+
+	// Non-legacy branches must still exist.
+	for _, b := range []string{"madflow/user/issue-1", "develop"} {
+		if !repo.BranchExists(b) {
+			t.Errorf("expected branch %q to still exist", b)
+		}
+	}
+}
+
+// TestDeleteLegacyBranches_NoLegacy verifies that calling DeleteLegacyBranches
+// when no legacy branches exist returns an empty slice without error.
+func TestDeleteLegacyBranches_NoLegacy(t *testing.T) {
+	repo := initTestRepo(t)
+
+	deleted, err := repo.DeleteLegacyBranches()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(deleted) != 0 {
+		t.Errorf("expected 0 deleted branches in fresh repo, got %d: %v", len(deleted), deleted)
+	}
+}
+
+// TestDeleteLegacyBranches_Mixed verifies that only legacy branches are deleted
+// when both legacy and non-legacy branches coexist.
+func TestDeleteLegacyBranches_Mixed(t *testing.T) {
+	repo := initTestRepo(t)
+
+	baseBranch, err := repo.CurrentBranch()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	run(t, repo.Path(), "git", "branch", "feature/issue-10", baseBranch)      // legacy
+	run(t, repo.Path(), "git", "branch", "madflow/user/issue-10", baseBranch) // new format
+	run(t, repo.Path(), "git", "branch", "develop", baseBranch)               // unrelated
+
+	deleted, err := repo.DeleteLegacyBranches()
+	if err != nil {
+		t.Fatalf("DeleteLegacyBranches returned error: %v", err)
+	}
+	if len(deleted) != 1 || deleted[0] != "feature/issue-10" {
+		t.Errorf("expected [feature/issue-10] deleted, got %v", deleted)
+	}
+
+	// Non-legacy branches must still exist.
+	if !repo.BranchExists("madflow/user/issue-10") {
+		t.Error("expected madflow/user/issue-10 to still exist")
+	}
+	if !repo.BranchExists("develop") {
+		t.Error("expected develop to still exist")
+	}
+}
