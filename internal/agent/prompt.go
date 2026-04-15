@@ -19,6 +19,10 @@ type PromptVars struct {
 	FeaturePrefix string
 	TeamNum       string
 	RepoPath      string
+	// GhLogin is the GitHub login of the authenticated user (e.g. "alice").
+	// Substituted as {{GH_LOGIN}} in templates. Used to construct the namespaced
+	// worktree path: {RepoPath}/.worktrees/{GhLogin}/issue-<issueID>.
+	GhLogin string
 }
 
 // promptFileNames maps roles to their prompt template filenames.
@@ -65,6 +69,7 @@ func substituteVars(content string, vars PromptVars) string {
 		"{{FEATURE_PREFIX}}": vars.FeaturePrefix,
 		"{{TEAM_NUM}}":       vars.TeamNum,
 		"{{REPO_PATH}}":      vars.RepoPath,
+		"{{GH_LOGIN}}":       vars.GhLogin,
 	}
 
 	for placeholder, value := range replacements {

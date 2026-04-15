@@ -1,5 +1,8 @@
 # Spec: authorized_users Required Configuration
 
+> **SUPERSEDED**: This spec is superseded by [github-account-auto-detection.md](./github-account-auto-detection.md).
+> `authorized_users` is no longer required; MADFLOW auto-detects the GitHub login at startup.
+
 ## Overview
 
 The `authorized_users` configuration field is **mandatory** when GitHub integration (`[github]` section) is enabled. When not set (or set to an empty list), MADFLOW must refuse to start and print a clear error message.

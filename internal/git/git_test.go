@@ -428,7 +428,7 @@ func TestCleanOrphanedWorktrees(t *testing.T) {
 		"team-1": true,
 	}
 
-	removed := repo.CleanOrphanedWorktrees(activeTeams)
+	removed := repo.CleanOrphanedWorktrees("", activeTeams)
 
 	// team-2 and team-3 should be removed, team-1 should remain
 	if len(removed) != 2 {
@@ -455,7 +455,7 @@ func TestCleanOrphanedWorktreesNoDir(t *testing.T) {
 	repo := initTestRepo(t)
 
 	// No .worktrees directory — should return nil without error
-	removed := repo.CleanOrphanedWorktrees(map[string]bool{})
+	removed := repo.CleanOrphanedWorktrees("", map[string]bool{})
 	if len(removed) != 0 {
 		t.Errorf("expected no removed worktrees, got %d", len(removed))
 	}
@@ -471,7 +471,7 @@ func TestCleanOrphanedWorktreesSkipsNonTeam(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	removed := repo.CleanOrphanedWorktrees(map[string]bool{})
+	removed := repo.CleanOrphanedWorktrees("", map[string]bool{})
 
 	// Non-team directories should not be removed
 	if len(removed) != 0 {
@@ -567,6 +567,102 @@ func TestValidateSafeName(t *testing.T) {
 				t.Errorf("expected %q (%s) to be invalid, but got no error", tc.name, tc.desc)
 			}
 		})
+	}
+}
+
+func TestValidateSafeBranchName(t *testing.T) {
+	validCases := []string{
+		"feature-issue-123",
+		"madflow/alice/issue-123",
+		"madflow/alice/issue-myorg-REPO-42",
+		"feature/issue-5",
+		"abc",
+		"a/b/c",
+	}
+	for _, name := range validCases {
+		t.Run("valid/"+name, func(t *testing.T) {
+			if err := ValidateSafeBranchName(name); err != nil {
+				t.Errorf("expected %q to be valid, got error: %v", name, err)
+			}
+		})
+	}
+
+	invalidCases := []struct {
+		name string
+		desc string
+	}{
+		{"", "empty string"},
+		{"foo/../bar", "path traversal with .."},
+		{"../secret", "leading .."},
+		{"foo//bar", "consecutive slashes"},
+		{"/absolute", "leading slash"},
+		{"foo\\bar", "backslash"},
+		{"foo\x00bar", "null byte"},
+		{"foo/", "trailing slash"},
+	}
+	for _, tc := range invalidCases {
+		t.Run("invalid/"+tc.desc, func(t *testing.T) {
+			if err := ValidateSafeBranchName(tc.name); err == nil {
+				t.Errorf("expected %q (%s) to be invalid, but got no error", tc.name, tc.desc)
+			}
+		})
+	}
+}
+
+func TestCleanOrphanedWorktreesNamespaced(t *testing.T) {
+	repo := initTestRepo(t)
+
+	baseBranch, err := repo.CurrentBranch()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	worktreeDir := filepath.Join(repo.Path(), ".worktrees")
+	if err := os.MkdirAll(worktreeDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create namespace directory for "alice"
+	namespaceDir := filepath.Join(worktreeDir, "alice")
+	if err := os.MkdirAll(namespaceDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create namespaced worktrees: issue-active (kept) and issue-orphaned (removed)
+	wtActive := filepath.Join(namespaceDir, "issue-active")
+	wtOrphaned := filepath.Join(namespaceDir, "issue-orphaned")
+
+	if err := repo.AddWorktree(wtActive, "alice-active-branch", baseBranch); err != nil {
+		t.Fatalf("AddWorktree active failed: %v", err)
+	}
+	if err := repo.AddWorktree(wtOrphaned, "alice-orphaned-branch", baseBranch); err != nil {
+		t.Fatalf("AddWorktree orphaned failed: %v", err)
+	}
+
+	// Only "alice/issue-active" is in the active set
+	activePaths := map[string]bool{
+		"alice/issue-active": true,
+	}
+
+	removed := repo.CleanOrphanedWorktrees("alice", activePaths)
+
+	// issue-orphaned should be removed
+	if len(removed) != 1 || removed[0] != "alice/issue-orphaned" {
+		t.Errorf("expected [alice/issue-orphaned] removed, got %v", removed)
+	}
+
+	// active worktree should still exist
+	if _, err := os.Stat(wtActive); os.IsNotExist(err) {
+		t.Error("expected alice/issue-active worktree to still exist")
+	}
+	// orphaned worktree should be gone
+	if _, err := os.Stat(wtOrphaned); !os.IsNotExist(err) {
+		t.Error("expected alice/issue-orphaned worktree to be removed")
+	}
+
+	// Cleanup
+	if err := repo.RemoveWorktree(wtActive); err != nil {
+		t.Logf("cleanup: %v", err)
 	}
 }
 

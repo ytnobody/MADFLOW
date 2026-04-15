@@ -1,12 +1,10 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -14,6 +12,7 @@ import (
 
 	"github.com/ytnobody/madflow/internal/chatlog"
 	"github.com/ytnobody/madflow/internal/config"
+	"github.com/ytnobody/madflow/internal/git"
 	"github.com/ytnobody/madflow/internal/orchestrator"
 	"github.com/ytnobody/madflow/internal/project"
 	"github.com/ytnobody/madflow/prompts"
@@ -81,92 +80,9 @@ func main() {
 	}
 }
 
-// isTerminal returns true when f is connected to an interactive terminal.
-func isTerminal(f *os.File) bool {
-	info, err := f.Stat()
-	if err != nil {
-		return false
-	}
-	return (info.Mode() & os.ModeCharDevice) != 0
-}
-
-// parseAuthorizedUsers splits a comma-separated string of GitHub usernames,
-// trims whitespace from each entry, and drops empty strings.
-func parseAuthorizedUsers(raw string) []string {
-	parts := strings.Split(raw, ",")
-	var users []string
-	for _, p := range parts {
-		p = strings.TrimSpace(p)
-		if p != "" {
-			users = append(users, p)
-		}
-	}
-	return users
-}
-
-// buildAuthorizedUsersLine formats the authorized_users TOML line.
-// Always returns a non-empty string: "authorized_users = []\n\n" when users is nil or empty.
-func buildAuthorizedUsersLine(users []string) string {
-	if len(users) == 0 {
-		return "authorized_users = []\n\n"
-	}
-	var quoted []string
-	for _, u := range users {
-		quoted = append(quoted, fmt.Sprintf("%q", u))
-	}
-	return fmt.Sprintf("authorized_users = [%s]\n\n", strings.Join(quoted, ", "))
-}
-
-// detectGitHubOwner attempts to determine the GitHub repository owner for the
-// given repo path. It first tries to parse the git remote URL, then falls back
-// to the authenticated GitHub CLI user. Returns an empty string on failure.
-func detectGitHubOwner(repoPath string) string {
-	// 1. Try to extract owner from git remote URL.
-	cmd := exec.Command("git", "-C", repoPath, "remote", "get-url", "origin")
-	if out, err := cmd.Output(); err == nil {
-		if owner := extractOwnerFromGitHubURL(strings.TrimSpace(string(out))); owner != "" {
-			return owner
-		}
-	}
-
-	// 2. Fallback: use the authenticated GitHub CLI user.
-	cmd = exec.Command("gh", "api", "user", "--jq", ".login")
-	if out, err := cmd.Output(); err == nil {
-		if login := strings.TrimSpace(string(out)); login != "" {
-			return login
-		}
-	}
-
-	return ""
-}
-
-// extractOwnerFromGitHubURL parses a GitHub remote URL and returns the owner login.
-// Supports HTTPS (https://github.com/owner/repo) and SSH (git@github.com:owner/repo) formats.
-// Returns an empty string for non-GitHub URLs or URLs that cannot be parsed.
-func extractOwnerFromGitHubURL(url string) string {
-	// SSH format: git@github.com:owner/repo[.git]
-	if path, ok := strings.CutPrefix(url, "git@github.com:"); ok {
-		parts := strings.SplitN(path, "/", 2)
-		if len(parts) >= 1 && parts[0] != "" {
-			return parts[0]
-		}
-	}
-	// HTTPS format: https://github.com/owner/repo[.git]
-	for _, prefix := range []string{"https://github.com/", "http://github.com/"} {
-		if path, ok := strings.CutPrefix(url, prefix); ok {
-			parts := strings.SplitN(path, "/", 2)
-			if len(parts) >= 1 && parts[0] != "" {
-				return parts[0]
-			}
-		}
-	}
-	return ""
-}
-
 func cmdInit() error {
 	name := ""
 	var repoPaths []string
-	authorizedUsersRaw := ""
 
 	args := os.Args[2:]
 	for i := 0; i < len(args); i++ {
@@ -180,11 +96,6 @@ func cmdInit() error {
 			if i+1 < len(args) {
 				i++
 				repoPaths = append(repoPaths, args[i])
-			}
-		case "--authorized-users":
-			if i+1 < len(args) {
-				i++
-				authorizedUsersRaw = args[i]
 			}
 		}
 	}
@@ -206,28 +117,6 @@ func cmdInit() error {
 		repoPaths = []string{cwd}
 	}
 
-	// Determine the list of authorized GitHub users.
-	var authorizedUsers []string
-	if authorizedUsersRaw != "" {
-		// Explicit --authorized-users flag takes priority.
-		authorizedUsers = parseAuthorizedUsers(authorizedUsersRaw)
-	} else {
-		// Try to auto-detect the GitHub repository owner.
-		owner := detectGitHubOwner(repoPaths[0])
-		if owner != "" {
-			authorizedUsers = []string{owner}
-		} else if isTerminal(os.Stdin) {
-			// No owner detected; prompt interactively when stdin is a terminal.
-			fmt.Print("Enter authorized GitHub usernames (comma-separated, press Enter to skip): ")
-			scanner := bufio.NewScanner(os.Stdin)
-			if scanner.Scan() {
-				authorizedUsers = parseAuthorizedUsers(scanner.Text())
-			}
-		}
-		// If nothing was detected and not interactive, authorizedUsers stays nil
-		// and buildAuthorizedUsersLine will emit authorized_users = [].
-	}
-
 	if err := project.Init(name, repoPaths); err != nil {
 		return err
 	}
@@ -236,8 +125,7 @@ func cmdInit() error {
 	cwd, _ := os.Getwd()
 	configPath := filepath.Join(cwd, "madflow.toml")
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
-		authorizedUsersLine := buildAuthorizedUsersLine(authorizedUsers)
-		tmpl := fmt.Sprintf(`%s[project]
+		tmpl := fmt.Sprintf(`[project]
 name = "%s"
 
 [[project.repos]]
@@ -255,7 +143,7 @@ engineer = "claude-sonnet-4-6"
 main = "main"
 develop = "develop"
 feature_prefix = "feature/issue-"
-`, authorizedUsersLine, name, filepath.Base(repoPaths[0]), repoPaths[0])
+`, name, filepath.Base(repoPaths[0]), repoPaths[0])
 		if err := os.WriteFile(configPath, []byte(tmpl), 0644); err != nil {
 			return fmt.Errorf("create config: %w", err)
 		}
@@ -274,11 +162,42 @@ feature_prefix = "feature/issue-"
 	return nil
 }
 
+// cleanupLegacyResources handles old-format branches and worktrees found in each
+// configured repository. Legacy branches (feature/issue-{number}) are automatically
+// force-deleted; legacy worktrees still emit a [WARN] message asking for manual removal.
+// Startup continues regardless of the outcome (non-fatal).
+func cleanupLegacyResources(repos []config.RepoConfig) {
+	for _, r := range repos {
+		repo := git.NewRepo(r.Path)
+
+		// Check for legacy worktrees: .madflow/worktrees/issue-{number}/
+		madflowDir := filepath.Join(r.Path, ".madflow")
+		for _, wt := range repo.DetectLegacyWorktrees(madflowDir) {
+			fmt.Fprintf(os.Stderr, "[WARN] Legacy worktree detected: %s\n", wt)
+			fmt.Fprintf(os.Stderr, "       Please migrate manually or remove before continuing.\n")
+		}
+
+		// Delete legacy branches: feature/issue-{number}
+		deleted, err := repo.DeleteLegacyBranches()
+		for _, branch := range deleted {
+			fmt.Fprintf(os.Stderr, "[INFO] Legacy branch deleted: %s\n", branch)
+		}
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[WARN] Failed to delete legacy branch: %v\n", err)
+		}
+	}
+}
+
 func cmdStart() error {
 	configPath, cfg, proj, err := loadProjectConfig()
 	if err != nil {
 		return err
 	}
+
+	// Clean up legacy-format resources (old branch/worktree naming convention).
+	// Legacy branches are auto-deleted; legacy worktrees emit a warning.
+	// Startup continues regardless (non-fatal).
+	cleanupLegacyResources(cfg.Project.Repos)
 
 	// Determine prompts directory
 	promptDir := findPromptsDir(cfg.PromptsDir)

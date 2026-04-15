@@ -19,6 +19,7 @@ import (
 	"github.com/ytnobody/madflow/internal/git"
 	"github.com/ytnobody/madflow/internal/github"
 	"github.com/ytnobody/madflow/internal/issue"
+	"github.com/ytnobody/madflow/internal/lessons"
 	"github.com/ytnobody/madflow/internal/team"
 )
 
@@ -30,13 +31,14 @@ type Orchestrator struct {
 	dataDir    string
 	promptDir  string
 
-	store        *issue.Store
-	chatLog      *chatlog.ChatLog
-	teams        *team.Manager
-	repos        map[string]*git.Repo // name -> repo
-	dormancy     *agent.Dormancy
-	throttle     *agent.Throttle
-	idleDetector *github.IdleDetector // shared idle state for GitHub polling
+	store          *issue.Store
+	chatLog        *chatlog.ChatLog
+	teams          *team.Manager
+	repos          map[string]*git.Repo // name -> repo
+	dormancy       *agent.Dormancy
+	throttle       *agent.Throttle
+	idleDetector   *github.IdleDetector // shared idle state for GitHub polling
+	lessonsManager *lessons.Manager     // manages failure lessons for superintendent
 
 	// patrolResetCh receives a signal when the superintendent reports PATROL_COMPLETE,
 	// allowing runIssuePatrol to reset the interval timer immediately.
@@ -66,6 +68,11 @@ func New(cfg *config.Config, dataDir, promptDir string) *Orchestrator {
 
 	probeInterval := time.Duration(cfg.Agent.DormancyProbeMinutes) * time.Minute
 
+	featurePrefix := cfg.Branches.FeaturePrefix
+	if featurePrefix == "" {
+		featurePrefix = "feature/issue-"
+	}
+
 	orc := &Orchestrator{
 		cfg:           cfg,
 		dataDir:       dataDir,
@@ -77,6 +84,10 @@ func New(cfg *config.Config, dataDir, promptDir string) *Orchestrator {
 		throttle:      agent.NewThrottle(cfg.Agent.GeminiRPM),
 		idleDetector:  idleDetector,
 		patrolResetCh: make(chan struct{}, 1),
+		lessonsManager: &lessons.Manager{
+			DataDir:       dataDir,
+			FeaturePrefix: featurePrefix,
+		},
 	}
 
 	orc.teams = team.NewManager(orc, cfg.Agent.MaxTeams)
@@ -219,6 +230,13 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 		}()
 	}
 
+	// Start merged worktree cleanup goroutine if configured
+	if o.cfg.Agent.MergedWorktreeCleanupIntervalMinutes > 0 {
+		wg.Go(func() {
+			o.runMergedWorktreeCleanup(ctx)
+		})
+	}
+
 	// Start main branch check goroutine
 	if o.cfg.Agent.MainCheckIntervalHours > 0 {
 		wg.Add(1)
@@ -358,6 +376,7 @@ func (o *Orchestrator) startResidentAgents(ctx context.Context, wg *sync.WaitGro
 			DevelopBranch: o.cfg.Branches.Develop,
 			MainBranch:    o.cfg.Branches.Main,
 			FeaturePrefix: o.cfg.Branches.FeaturePrefix,
+			GhLogin:       o.cfg.GhLogin,
 		}
 
 		systemPrompt, err := agent.LoadPrompt(o.promptDir, r.role, vars)
@@ -804,6 +823,7 @@ func (o *Orchestrator) initialGitHubSync() {
 	botPatterns := o.compileBotPatterns()
 	syncer := github.NewSyncer(o.store, gh.Owner, gh.Repos, 0).
 		WithAuthorizedUsers(o.cfg.AuthorizedUsers).
+		WithGhLogin(o.ghLogin()).
 		WithBotCommentPatterns(botPatterns).
 		WithSkipComments(true)
 	if err := syncer.SyncOnce(); err != nil {
@@ -880,10 +900,18 @@ func (o *Orchestrator) handlePRMerged(issueID string) {
 	}
 
 	// Close the GitHub issue via gh CLI (only for GitHub-synced issues with a URL)
+	// Also score the issue and generate a lesson for the Superintendent.
 	if iss.URL != "" {
 		owner, repo, number, err := github.ParseID(issueID)
 		if err == nil {
 			o.closeGitHubIssue(owner, repo, number)
+			// Score instruction quality and generate a lesson asynchronously so
+			// that the gh CLI calls don't block the merge handler.
+			go func() {
+				if err := o.lessonsManager.ProcessMergedIssue(issueID, owner, repo, number); err != nil {
+					log.Printf("[orchestrator] lessons: ProcessMergedIssue(%s) failed: %v", issueID, err)
+				}
+			}()
 		} else {
 			log.Printf("[orchestrator] PR merged: cannot parse issue ID %s for gh close: %v", issueID, err)
 		}
@@ -975,10 +1003,16 @@ func (o *Orchestrator) runGitHubSync(ctx context.Context) {
 	syncer := github.NewSyncer(o.store, gh.Owner, gh.Repos, interval).
 		WithIdleDetector(o.idleDetector, idleInterval).
 		WithAuthorizedUsers(o.cfg.AuthorizedUsers).
+		WithGhLogin(o.ghLogin()).
 		WithBotCommentPatterns(botPatterns)
 	if err := syncer.Run(ctx); err != nil && ctx.Err() == nil {
 		log.Printf("[orchestrator] github sync stopped: %v", err)
 	}
+}
+
+// ghLogin returns the GitHub login to use for assignee-based issue filtering.
+func (o *Orchestrator) ghLogin() string {
+	return o.cfg.GhLogin
 }
 
 // CreateTeamAgents implements team.TeamFactory.
@@ -1015,6 +1049,7 @@ func (o *Orchestrator) CreateTeamAgents(teamNum int, issueID string) (engineer *
 			FeaturePrefix: o.cfg.Branches.FeaturePrefix,
 			TeamNum:       teamNumStr,
 			RepoPath:      o.firstRepoPath(),
+			GhLogin:       o.cfg.GhLogin,
 		}
 
 		systemPrompt, err := agent.LoadPrompt(o.promptDir, r.role, vars)
@@ -1258,7 +1293,10 @@ func (o *Orchestrator) runIssuePatrol(ctx context.Context) {
 			}
 
 			log.Println("[issue-patrol] sending issue patrol request to superintendent")
-			o.appendOrLog("superintendent", "orchestrator", issuePatrolPrompt)
+			// Prepend any accumulated lessons so the Superintendent can reference
+			// past failure patterns when writing new issue instructions.
+			patrolMsg := o.lessonsManager.InjectLessons() + issuePatrolPrompt
+			o.appendOrLog("superintendent", "orchestrator", patrolMsg)
 			lastSentFingerprint = current
 			timer.Reset(interval)
 		}
@@ -1313,16 +1351,72 @@ func (o *Orchestrator) runWorktreeCleanup(ctx context.Context) {
 			log.Println("[worktree-cleanup] stopped")
 			return
 		case <-ticker.C:
-			// Build set of active team worktree directory names.
-			activeTeamDirs := make(map[string]bool)
+			// Build set of active worktree relative paths.
+			// Legacy style: "team-N"; namespaced style: "{ghLogin}/issue-{id}".
+			activePaths := make(map[string]bool)
 			for _, info := range o.teams.List() {
-				activeTeamDirs[fmt.Sprintf("team-%d", info.ID)] = true
+				activePaths[fmt.Sprintf("team-%d", info.ID)] = true
 			}
 
+			o.cfgMu.RLock()
+			ghLogin := o.cfg.GhLogin
+			o.cfgMu.RUnlock()
+
 			for name, repo := range o.repos {
-				removed := repo.CleanOrphanedWorktrees(activeTeamDirs)
+				removed := repo.CleanOrphanedWorktrees(ghLogin, activePaths)
 				if len(removed) > 0 {
 					log.Printf("[worktree-cleanup] %s: removed %d orphaned worktree(s): %v", name, len(removed), removed)
+				}
+			}
+		}
+	}
+}
+
+// runMergedWorktreeCleanup periodically removes worktrees whose associated
+// GitHub PRs have been merged or closed. It scans .worktrees/{ghLogin}/ for
+// each configured repo, checks PR state via the gh CLI, and removes the
+// worktree, local branch, and remote branch for merged/closed PRs.
+//
+// Remote branch deletion failures are non-fatal: they are logged and the
+// cleanup will be retried on the next interval.
+//
+// This goroutine does not block the main polling loop.
+func (o *Orchestrator) runMergedWorktreeCleanup(ctx context.Context) {
+	o.cfgMu.RLock()
+	interval := time.Duration(o.cfg.Agent.MergedWorktreeCleanupIntervalMinutes) * time.Minute
+	o.cfgMu.RUnlock()
+
+	log.Printf("[merged-worktree-cleanup] started (interval: %v)", interval)
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			log.Println("[merged-worktree-cleanup] stopped")
+			return
+		case <-ticker.C:
+			o.cfgMu.RLock()
+			gh := o.cfg.GitHub
+			ghLogin := o.cfg.GhLogin
+			o.cfgMu.RUnlock()
+
+			if gh == nil || ghLogin == "" {
+				// GitHub integration not configured or login not resolved.
+				continue
+			}
+
+			for _, repoName := range gh.Repos {
+				for name, repo := range o.repos {
+					removed, err := repo.CleanMergedPRWorktrees(gh.Owner, repoName, ghLogin)
+					if err != nil {
+						log.Printf("[merged-worktree-cleanup] %s: error scanning worktrees: %v", name, err)
+						continue
+					}
+					if len(removed) > 0 {
+						log.Printf("[merged-worktree-cleanup] %s: removed %d merged/closed worktree(s): %v", name, len(removed), removed)
+					}
 				}
 			}
 		}

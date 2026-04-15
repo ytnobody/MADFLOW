@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
+	"strings"
 
 	"github.com/BurntSushi/toml"
 )
@@ -16,11 +18,22 @@ type Config struct {
 	PromptsDir string        `toml:"prompts_dir,omitempty"`
 	// AuthorizedUsers is a list of GitHub user logins that are allowed to create
 	// issues, PRs, and comments that MADFLOW will process.
-	// This field is required when [github] integration is enabled.
-	// Leaving it empty while GitHub integration is active is a security risk:
-	// it would allow any GitHub user to interact with MADFLOW, enabling prompt
-	// injection attacks from arbitrary third parties on public repositories.
+	//
+	// Deprecated: This field no longer needs to be set manually. When [github]
+	// integration is enabled and this field is empty, MADFLOW automatically
+	// detects the authenticated GitHub CLI user via `gh api user --jq '.login'`
+	// at startup and uses that login as the sole authorized user.
+	//
+	// If explicitly set, the specified values take priority over auto-detection.
+	// Leaving it empty with GitHub integration active and `gh` not authenticated
+	// will cause MADFLOW to deny all incoming GitHub events.
 	AuthorizedUsers []string `toml:"authorized_users,omitempty"`
+	// GhLogin is the GitHub login name of the authenticated user, auto-detected
+	// at startup via `gh api user --jq '.login'`. It is a runtime-only field
+	// (not read from TOML) and is used to namespace branch names and worktree
+	// paths per user (e.g. "madflow/{gh_login}/issue-{id}").
+	// Empty if the GitHub CLI is unavailable or not authenticated.
+	GhLogin string `toml:"-"`
 }
 
 type ProjectConfig struct {
@@ -74,6 +87,11 @@ type AgentConfig struct {
 	// orphaned git worktrees (those not associated with any active team).
 	// 0 (default) disables periodic worktree cleanup.
 	WorktreeCleanupIntervalMinutes int `toml:"worktree_cleanup_interval_minutes"`
+	// MergedWorktreeCleanupIntervalMinutes specifies how often to scan worktrees
+	// under .worktrees/{ghLogin}/ and remove those whose associated GitHub PRs have
+	// been merged or closed. The removal includes the worktree, local branch, and
+	// remote branch. 0 (default) disables this cleanup.
+	MergedWorktreeCleanupIntervalMinutes int `toml:"merged_worktree_cleanup_interval_minutes"`
 	// ExtraPrompt is appended to the system prompt of every agent.
 	// Use this to inject project-specific instructions that apply to all agents.
 	ExtraPrompt string `toml:"extra_prompt"`
@@ -140,7 +158,9 @@ func Load(path string) (*Config, error) {
 	}
 
 	setDefaults(&cfg)
+	applyGhLogin(&cfg)
 	warnDefaults(&cfg)
+	autoPopulateAuthorizedUsers(&cfg)
 
 	if err := validate(&cfg); err != nil {
 		return nil, fmt.Errorf("validate config: %w", err)
@@ -186,18 +206,14 @@ func setDefaults(cfg *Config) {
 	if cfg.Agent.Language == "" {
 		cfg.Agent.Language = "en"
 	}
-	if cfg.Agent.Language == "" {
-		cfg.Agent.Language = "en"
-	}
 	if cfg.Branches.Main == "" {
 		cfg.Branches.Main = "main"
 	}
 	if cfg.Branches.Develop == "" {
 		cfg.Branches.Develop = "develop"
 	}
-	if cfg.Branches.FeaturePrefix == "" {
-		cfg.Branches.FeaturePrefix = "feature/issue-"
-	}
+	// FeaturePrefix default is applied after GhLogin is resolved in applyGhLogin.
+	// Leave it empty here so applyGhLogin can detect whether the user set it explicitly.
 	if cfg.GitHub != nil && cfg.GitHub.SyncIntervalMinutes == 0 {
 		cfg.GitHub.SyncIntervalMinutes = 15
 	}
@@ -235,8 +251,48 @@ func validate(cfg *Config) error {
 			return fmt.Errorf("project.repos[%d].path is required", i)
 		}
 	}
-	if cfg.GitHub != nil && len(cfg.AuthorizedUsers) == 0 {
-		return fmt.Errorf("authorized_users is required when github integration is enabled; set authorized_users to a list of GitHub logins allowed to interact with MADFLOW")
-	}
 	return nil
+}
+
+// resolveGitHubLogin calls the GitHub CLI to get the currently authenticated
+// user's login name. Returns an empty string if the CLI is unavailable or the
+// user is not authenticated.
+func resolveGitHubLogin() string {
+	cmd := exec.Command("gh", "api", "user", "--jq", ".login")
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// applyGhLogin resolves the GitHub login and applies it to cfg.GhLogin and,
+// when FeaturePrefix was not explicitly set in the config file, sets the
+// namespaced default: "madflow/{gh_login}/issue-".
+// Falls back to "feature/issue-" when the GitHub CLI is unavailable.
+func applyGhLogin(cfg *Config) {
+	cfg.GhLogin = resolveGitHubLogin()
+	if cfg.Branches.FeaturePrefix == "" {
+		if cfg.GhLogin != "" {
+			cfg.Branches.FeaturePrefix = "madflow/" + cfg.GhLogin + "/issue-"
+		} else {
+			cfg.Branches.FeaturePrefix = "feature/issue-"
+		}
+	}
+}
+
+// autoPopulateAuthorizedUsers uses the already-resolved cfg.GhLogin to populate
+// cfg.AuthorizedUsers when GitHub integration is enabled but no authorized
+// users are configured. A warning is logged when detection fails.
+func autoPopulateAuthorizedUsers(cfg *Config) {
+	if cfg.GitHub == nil || len(cfg.AuthorizedUsers) > 0 {
+		// GitHub integration disabled, or already explicitly configured.
+		return
+	}
+	if cfg.GhLogin == "" {
+		log.Printf("[config] WARNING: github integration is enabled but authorized_users is not set and `gh api user` returned no login; all GitHub events will be denied. Set authorized_users in madflow.toml or ensure `gh` is authenticated.")
+		return
+	}
+	log.Printf("[config] auto-detected GitHub login %q; using as authorized_users", cfg.GhLogin)
+	cfg.AuthorizedUsers = []string{cfg.GhLogin}
 }

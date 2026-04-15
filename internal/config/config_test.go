@@ -45,8 +45,11 @@ develop = "develop"
 	if cfg.Agent.ContextResetMinutes != 10 {
 		t.Errorf("expected context_reset_minutes 10, got %d", cfg.Agent.ContextResetMinutes)
 	}
-	if cfg.Branches.FeaturePrefix != "feature/issue-" {
-		t.Errorf("expected default feature prefix, got %s", cfg.Branches.FeaturePrefix)
+	// When gh CLI is authenticated, FeaturePrefix becomes "madflow/{login}/issue-".
+	// When gh CLI is unavailable, it falls back to "feature/issue-".
+	// Accept either form here; the key invariant is that it is non-empty.
+	if cfg.Branches.FeaturePrefix == "" {
+		t.Errorf("expected non-empty feature prefix, got empty string")
 	}
 }
 
@@ -432,7 +435,8 @@ path = "."
 
 func TestLoadGitHubMissingAuthorizedUsers(t *testing.T) {
 	// When GitHub integration is configured but authorized_users is not set,
-	// Load must return an error to prevent the default all-permit behavior.
+	// Load must now succeed (no longer an error). Auto-detection of the GitHub
+	// login is attempted at load time via `gh api user`.
 	content := `
 [project]
 name = "test-app"
@@ -451,9 +455,11 @@ repos = ["myrepo"]
 		t.Fatal(err)
 	}
 
+	// Load must succeed even without authorized_users in config.
+	// (gh auto-detection may or may not populate AuthorizedUsers depending on environment.)
 	_, err := Load(path)
-	if err == nil {
-		t.Fatal("expected error when github is configured without authorized_users, got nil")
+	if err != nil {
+		t.Fatalf("expected no error when github is configured without authorized_users, got: %v", err)
 	}
 }
 

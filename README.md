@@ -13,6 +13,13 @@ MADFLOW (Multi-Agent Development Flow) is a development framework where multiple
 - **Autonomous task management**: AI agents handle everything from issue creation to implementation, review, and merging
 - **Context reset functionality**: Automatic refresh mechanism to prevent AI performance degradation
 - **Git/GitHub integration**: Automatically manages branch strategy and issue synchronization
+- **Auto GitHub account identification**: Automatically identifies the GitHub account at startup — no `authorized_users` configuration needed
+- **User-namespaced branches and worktrees**: Feature branches and worktrees are scoped per GitHub user to prevent conflicts in multi-engineer environments
+- **Assignee-based issue filtering**: Each engineer agent only processes issues assigned to their GitHub account
+- **Automatic worktree cleanup**: Merged worktrees are automatically removed after PR merge
+- **Legacy resource management**: Detects and cleans up old-format branches and worktrees with backward-compatible warnings then auto-deletion
+- **Lesson injection**: Accumulated lessons are automatically injected into the Superintendent's context to improve decision-making over time
+- **Enhanced CI and review quality**: Automated lint, security scanning, coverage thresholds, and risk-level-based merge strategy
 
 ## Requirements
 
@@ -90,7 +97,9 @@ engineer = "claude-sonnet-4-6"
 [branches]
 main = "main"
 develop = "develop"
-feature_prefix = "feature/issue-"
+# feature_prefix is auto-set to "madflow/<gh_login>/issue-" when GitHub CLI is authenticated.
+# Override only if you need a custom prefix:
+# feature_prefix = "custom/prefix-"
 ```
 
 ### GitHub Issue Sync (Optional)
@@ -102,32 +111,7 @@ repos = ["my-app"]
 sync_interval_minutes = 5
 ```
 
-#### `authorized_users` — Required when GitHub integration is enabled
-
-When the `[github]` section is present, you **must** also set `authorized_users` at the top level of `madflow.toml`. This is a list of GitHub login names whose issues, pull requests, and comments MADFLOW is allowed to process.
-
-```toml
-# List of GitHub logins that MADFLOW will accept events from.
-# Required when [github] is present. Must contain at least one entry.
-authorized_users = ["myusername", "trusted-collaborator"]
-
-[github]
-owner = "myorg"
-repos = ["my-app"]
-sync_interval_minutes = 5
-```
-
-If `authorized_users` is empty (or omitted) while GitHub integration is enabled, **MADFLOW will refuse to start** and print an error:
-
-```
-authorized_users is required when github integration is enabled; set authorized_users to a list of GitHub logins allowed to interact with MADFLOW
-```
-
-**Why is this required?**
-
-Without an explicit allowlist, any GitHub user could open an issue or post a comment on a public repository and have MADFLOW process it. This creates a prompt-injection attack surface: a malicious actor could craft an issue body that causes the LLM to execute arbitrary commands. By requiring `authorized_users`, only explicitly trusted users can drive MADFLOW's agents.
-
-> **Tip:** Add every team member and bot account that will interact with MADFLOW (e.g., opening issues or commenting) to the `authorized_users` list.
+When GitHub integration is enabled, MADFLOW automatically identifies the authenticated GitHub account at startup using `gh auth status`. No additional `authorized_users` configuration is required — MADFLOW uses the account returned by `gh auth status` as the authorized user.
 
 ## Command Reference
 
@@ -206,9 +190,14 @@ In the MADFLOW framework, multiple agents work in parallel on the same repositor
 When working on a new issue, create a new worktree with the following command:
 
 ```bash
-# Example: for issue local-002
-git worktree add -b feature/issue-local-002 ../madflow-worktree/local-002 develop
+# Example: for issue myorg-REPO-42 (with GitHub login "alice")
+git worktree add -b madflow/alice/issue-myorg-REPO-42 \
+  .worktrees/alice/issue-myorg-REPO-42 develop
 ```
+
+Branch names are automatically namespaced as `madflow/<gh_login>/issue-<issueID>` to prevent
+collisions when multiple engineers work on the same repository. The worktree is placed under
+`.worktrees/<gh_login>/issue-<issueID>/` for the same reason.
 
 ### Development Cycle
 
@@ -220,9 +209,9 @@ MADFLOW follows a **documentation-driven development workflow**:
 4. **Tests**: Write or update test code that conforms to the specification documentation (test-first).
 5. **Implementation**: Write or update implementation code to make the tests pass.
 6. **Create Pull Request**: Use GitHub CLI (`gh pr create`) to create a Pull Request.
-7. **Remove worktree**: Once the Pull Request is merged, remove the no-longer-needed worktree.
+7. **Remove worktree**: Once the Pull Request is merged, the worktree is removed automatically. You can also remove it manually:
 
 ```bash
 # Run from the main working directory
-git worktree remove ../madflow-worktree/local-002
+git worktree remove .worktrees/alice/issue-myorg-REPO-42
 ```
