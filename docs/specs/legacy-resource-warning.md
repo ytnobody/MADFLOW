@@ -1,9 +1,13 @@
-# Legacy Resource Warning Specification
+# Legacy Resource Cleanup Specification
 
 ## Overview
 
 When `madflow start` is executed, the system detects old-format branches and worktrees
-and displays a warning message. No automatic migration is performed.
+and handles them automatically:
+
+- **Legacy branches** (`feature/issue-{number}`) are **automatically deleted** with a log message.
+- **Legacy worktrees** (`.madflow/worktrees/issue-{number}/`) still emit a warning message
+  asking for manual removal.
 
 ## Background
 
@@ -32,45 +36,50 @@ Local git branches whose name matches the pattern `feature/issue-{number}`
 
 Pattern: `feature/issue-\d+`
 
-## Warning Format
+## Log Format
 
-### Legacy Worktree Warning
+### Legacy Worktree Warning (unchanged)
 
 ```
 [WARN] Legacy worktree detected: .madflow/worktrees/issue-42/
        Please migrate manually or remove before continuing.
 ```
 
-### Legacy Branch Warning
+### Legacy Branch Deletion Log
 
+On successful deletion:
 ```
-[WARN] Legacy branch detected: feature/issue-42
-       Please migrate manually or remove before continuing.
+[INFO] Legacy branch deleted: feature/issue-42
+```
+
+On failure to delete:
+```
+[WARN] Failed to delete legacy branch feature/issue-42: <error>
 ```
 
 ## Behavior
 
-- Warnings are printed to stderr during the startup process (`cmdStart`).
-- The startup process **continues** after warnings are displayed (non-fatal).
-- Warnings appear **before** the orchestrator starts.
-- If no legacy resources are present, no warning is displayed.
-- Each detected resource produces its own warning line.
+- Startup continues regardless of branch deletion results (non-fatal).
+- Deletion and any log messages appear **before** the orchestrator starts.
+- If no legacy resources are present, no output is produced.
+- Each resource produces its own log line.
+- Legacy branches are force-deleted (`git branch -D`) to ensure removal regardless of merge status.
 
 ## Implementation
 
-### `internal/git/git.go`
+### `internal/git/legacy.go`
 
-Two new exported functions on `*Repo`:
+New exported method on `*Repo`:
 
-- `DetectLegacyWorktrees(madflowDir string) []string`
-  - Scans `<madflowDir>/worktrees/` for directories matching `issue-\d+`
-  - Returns a slice of relative paths like `.madflow/worktrees/issue-42/`
-
-- `DetectLegacyBranches() []string`
-  - Lists local branches matching `feature/issue-\d+`
-  - Returns a slice of branch names
+- `DeleteLegacyBranches() (deleted []string, err error)`
+  - Calls `DetectLegacyBranches()` to get the list of legacy branches
+  - Force-deletes each branch with `git branch -D`
+  - Returns the names of successfully deleted branches and the first error encountered
+  - Continues attempting to delete remaining branches even if one fails
 
 ### `cmd/madflow/main.go`
 
-- `warnLegacyResources(repos []*git.Repo, madflowDirs []string)` — detects and prints warnings
+- `cleanupLegacyResources(repos []config.RepoConfig)` replaces `warnLegacyResources`
+  - For each repo, calls `repo.DeleteLegacyBranches()` and prints `[INFO]` / `[WARN]` lines
+  - For each repo, still calls `repo.DetectLegacyWorktrees()` and prints `[WARN]` lines
 - Called from `cmdStart()` before calling `orc.Run(ctx)`
