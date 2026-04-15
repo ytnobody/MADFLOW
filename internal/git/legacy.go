@@ -1,6 +1,7 @@
 package git
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -65,4 +66,28 @@ func (r *Repo) DetectLegacyBranches() []string {
 		}
 	}
 	return found
+}
+
+// DeleteLegacyBranches force-deletes all local branches whose names match the
+// old-format "feature/issue-{number}" pattern.
+// It returns the names of successfully deleted branches and the first error
+// encountered. Deletion continues even if a single branch fails to be removed.
+func (r *Repo) DeleteLegacyBranches() ([]string, error) {
+	branches := r.DetectLegacyBranches()
+	if len(branches) == 0 {
+		return nil, nil
+	}
+
+	var deleted []string
+	var firstErr error
+	for _, branch := range branches {
+		if _, err := r.run("branch", "-D", branch); err != nil {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("delete legacy branch %s: %w", branch, err)
+			}
+			continue
+		}
+		deleted = append(deleted, branch)
+	}
+	return deleted, firstErr
 }

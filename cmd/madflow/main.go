@@ -162,10 +162,11 @@ feature_prefix = "feature/issue-"
 	return nil
 }
 
-// warnLegacyResources checks each configured repository for old-format branches
-// and worktrees and prints a [WARN] message for each one found.
-// Startup continues regardless (warnings are non-fatal).
-func warnLegacyResources(repos []config.RepoConfig) {
+// cleanupLegacyResources handles old-format branches and worktrees found in each
+// configured repository. Legacy branches (feature/issue-{number}) are automatically
+// force-deleted; legacy worktrees still emit a [WARN] message asking for manual removal.
+// Startup continues regardless of the outcome (non-fatal).
+func cleanupLegacyResources(repos []config.RepoConfig) {
 	for _, r := range repos {
 		repo := git.NewRepo(r.Path)
 
@@ -176,10 +177,13 @@ func warnLegacyResources(repos []config.RepoConfig) {
 			fmt.Fprintf(os.Stderr, "       Please migrate manually or remove before continuing.\n")
 		}
 
-		// Check for legacy branches: feature/issue-{number}
-		for _, branch := range repo.DetectLegacyBranches() {
-			fmt.Fprintf(os.Stderr, "[WARN] Legacy branch detected: %s\n", branch)
-			fmt.Fprintf(os.Stderr, "       Please migrate manually or remove before continuing.\n")
+		// Delete legacy branches: feature/issue-{number}
+		deleted, err := repo.DeleteLegacyBranches()
+		for _, branch := range deleted {
+			fmt.Fprintf(os.Stderr, "[INFO] Legacy branch deleted: %s\n", branch)
+		}
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[WARN] Failed to delete legacy branch: %v\n", err)
 		}
 	}
 }
@@ -190,9 +194,10 @@ func cmdStart() error {
 		return err
 	}
 
-	// Warn about legacy-format resources (old branch/worktree naming convention).
-	// This is a non-fatal check; startup continues after warnings are displayed.
-	warnLegacyResources(cfg.Project.Repos)
+	// Clean up legacy-format resources (old branch/worktree naming convention).
+	// Legacy branches are auto-deleted; legacy worktrees emit a warning.
+	// Startup continues regardless (non-fatal).
+	cleanupLegacyResources(cfg.Project.Repos)
 
 	// Determine prompts directory
 	promptDir := findPromptsDir(cfg.PromptsDir)
