@@ -97,7 +97,9 @@ engineer = "claude-sonnet-4-6"
 [branches]
 main = "main"
 develop = "develop"
-feature_prefix = "feature/issue-"
+# feature_prefix is auto-set to "madflow/<gh_login>/issue-" when GitHub CLI is authenticated.
+# Override only if you need a custom prefix:
+# feature_prefix = "custom/prefix-"
 ```
 
 ### GitHub Issue Sync (Optional)
@@ -188,9 +190,14 @@ In the MADFLOW framework, multiple agents work in parallel on the same repositor
 When working on a new issue, create a new worktree with the following command:
 
 ```bash
-# Example: for issue local-002
-git worktree add -b feature/issue-local-002 ../madflow-worktree/local-002 develop
+# Example: for issue myorg-REPO-42 (with GitHub login "alice")
+git worktree add -b madflow/alice/issue-myorg-REPO-42 \
+  .worktrees/alice/issue-myorg-REPO-42 develop
 ```
+
+Branch names are automatically namespaced as `madflow/<gh_login>/issue-<issueID>` to prevent
+collisions when multiple engineers work on the same repository. The worktree is placed under
+`.worktrees/<gh_login>/issue-<issueID>/` for the same reason.
 
 ### Development Cycle
 
@@ -202,9 +209,9 @@ MADFLOW follows a **documentation-driven development workflow**:
 4. **Tests**: Write or update test code that conforms to the specification documentation (test-first).
 5. **Implementation**: Write or update implementation code to make the tests pass.
 6. **Create Pull Request**: Use GitHub CLI (`gh pr create`) to create a Pull Request.
-7. **Remove worktree**: Once the Pull Request is merged, remove the no-longer-needed worktree.
+7. **Remove worktree**: Once the Pull Request is merged, the worktree is removed automatically. You can also remove it manually:
 
 ```bash
 # Run from the main working directory
-git worktree remove ../madflow-worktree/local-002
+git worktree remove .worktrees/alice/issue-myorg-REPO-42
 ```
