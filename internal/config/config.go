@@ -206,9 +206,6 @@ func setDefaults(cfg *Config) {
 	if cfg.Agent.Language == "" {
 		cfg.Agent.Language = "en"
 	}
-	if cfg.Agent.Language == "" {
-		cfg.Agent.Language = "en"
-	}
 	if cfg.Branches.Main == "" {
 		cfg.Branches.Main = "main"
 	}
