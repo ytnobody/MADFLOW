@@ -508,8 +508,12 @@ func TestHandleTeamCreateRejectsClosedIssue(t *testing.T) {
 func TestHandleTeamCreateResetsStaleAssignment(t *testing.T) {
 	dir := t.TempDir()
 	cfg := testConfig(dir)
-	os.MkdirAll(filepath.Join(dir, "issues"), 0755)
-	os.WriteFile(filepath.Join(dir, "chatlog.txt"), nil, 0644)
+	if err := os.MkdirAll(filepath.Join(dir, "issues"), 0755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "chatlog.txt"), nil, 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
 
 	orc := New(cfg, dir, t.TempDir())
 	factory := newMockTeamFactory(t)
@@ -1488,6 +1492,14 @@ feature_prefix = "feature/issue-"
 	if err := os.WriteFile(cfgPath, []byte(initialTOML), 0644); err != nil {
 		t.Fatalf("write initial config: %v", err)
 	}
+	// Backdate the initial file so the watcher's lastModTime is unambiguously in
+	// the past regardless of filesystem timestamp resolution or goroutine scheduling.
+	// This eliminates the race where the watcher goroutine starts after the updated
+	// file has already been written and thus never sees a change.
+	past := time.Now().Add(-5 * time.Second)
+	if err := os.Chtimes(cfgPath, past, past); err != nil {
+		t.Fatalf("chtimes initial config: %v", err)
+	}
 
 	cfg := testConfig(dir)
 	cfg.Agent.MaxTeams = 2
@@ -1523,15 +1535,16 @@ main = "main"
 develop = "develop"
 feature_prefix = "feature/issue-"
 `
-	// Give the watcher a moment to record the initial mod time before we change the file.
+	// Give the watcher one poll cycle (500ms) to start and record the backdated
+	// mod time, then overwrite the file with a current timestamp.
 	time.Sleep(600 * time.Millisecond)
 
 	if err := os.WriteFile(cfgPath, []byte(updatedTOML), 0644); err != nil {
 		t.Fatalf("write updated config: %v", err)
 	}
 
-	// Poll for the change to propagate (watcher polls every 500ms; allow up to 3s).
-	deadline := time.Now().Add(3 * time.Second)
+	// Poll for the change to propagate (watcher polls every 500ms; allow up to 5s).
+	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		if orc.teams.Cap() == 5 {
 			break
