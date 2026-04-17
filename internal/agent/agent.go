@@ -53,37 +53,12 @@ func NewAgent(cfg AgentConfig) *Agent {
 	if cfg.Process != nil {
 		proc = cfg.Process
 	} else {
-		switch {
-		case cfg.Model == "test":
-			proc = &noopProcess{}
-		case strings.HasPrefix(cfg.Model, "gemini-"):
-			proc = NewGeminiAPIProcess(GeminiAPIOptions{
-				SystemPrompt: cfg.SystemPrompt,
-				Model:        cfg.Model,
-				WorkDir:      cfg.WorkDir,
-				BashTimeout:  cfg.BashTimeout,
-			})
-		case strings.HasPrefix(cfg.Model, "anthropic/"):
-			proc = NewAnthropicAPIProcess(AnthropicAPIOptions{
-				SystemPrompt: cfg.SystemPrompt,
-				Model:        cfg.Model,
-				WorkDir:      cfg.WorkDir,
-				BashTimeout:  cfg.BashTimeout,
-			})
-		case strings.HasPrefix(cfg.Model, "copilot/"):
-			proc = NewCopilotCLIProcess(CopilotCLIOptions{
-				SystemPrompt: cfg.SystemPrompt,
-				Model:        cfg.Model,
-				WorkDir:      cfg.WorkDir,
-				BashTimeout:  cfg.BashTimeout,
-			})
-		default:
-			proc = NewClaudeStreamProcess(ClaudeOptions{
-				SystemPrompt: cfg.SystemPrompt,
-				Model:        cfg.Model,
-				WorkDir:      cfg.WorkDir,
-			})
+		backend, modelID, err := ParseModel(cfg.Model)
+		if err != nil {
+			log.Printf("[agent] model parse error (%q): %v, defaulting to ClaudeCLI", cfg.Model, err)
+			backend, modelID = BackendClaudeCLI, cfg.Model
 		}
+		proc = newProcessForBackend(backend, modelID, cfg)
 	}
 
 	lang := cfg.Language
