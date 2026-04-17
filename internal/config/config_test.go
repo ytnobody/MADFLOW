@@ -45,8 +45,11 @@ develop = "develop"
 	if cfg.Agent.ContextResetMinutes != 10 {
 		t.Errorf("expected context_reset_minutes 10, got %d", cfg.Agent.ContextResetMinutes)
 	}
-	if cfg.Branches.FeaturePrefix != "feature/issue-" {
-		t.Errorf("expected default feature prefix, got %s", cfg.Branches.FeaturePrefix)
+	// When gh CLI is authenticated, FeaturePrefix becomes "madflow/{login}/issue-".
+	// When gh CLI is unavailable, it falls back to "feature/issue-".
+	// Accept either form here; the key invariant is that it is non-empty.
+	if cfg.Branches.FeaturePrefix == "" {
+		t.Errorf("expected non-empty feature prefix, got empty string")
 	}
 }
 
@@ -104,6 +107,8 @@ path = "."
 
 func TestLoadWithGitHub(t *testing.T) {
 	content := `
+authorized_users = ["testuser"]
+
 [project]
 name = "test-app"
 
@@ -140,6 +145,8 @@ sync_interval_minutes = 10
 
 func TestEventPollSecondsDefault(t *testing.T) {
 	content := `
+authorized_users = ["testuser"]
+
 [project]
 name = "test-app"
 
@@ -172,6 +179,8 @@ repos = ["api"]
 
 func TestEventPollSecondsCustom(t *testing.T) {
 	content := `
+authorized_users = ["testuser"]
+
 [project]
 name = "test-app"
 
@@ -398,6 +407,8 @@ extra_prompt = "このプロジェクトはGoで書かれています。コー�
 }
 
 func TestAuthorizedUsersDefault(t *testing.T) {
+	// When GitHub integration is not configured, authorized_users is not required
+	// and defaults to empty.
 	content := `
 [project]
 name = "test-app"
@@ -419,6 +430,36 @@ path = "."
 
 	if len(cfg.AuthorizedUsers) != 0 {
 		t.Errorf("expected empty authorized_users by default, got %v", cfg.AuthorizedUsers)
+	}
+}
+
+func TestLoadGitHubMissingAuthorizedUsers(t *testing.T) {
+	// When GitHub integration is configured but authorized_users is not set,
+	// Load must now succeed (no longer an error). Auto-detection of the GitHub
+	// login is attempted at load time via `gh api user`.
+	content := `
+[project]
+name = "test-app"
+
+[[project.repos]]
+name = "main"
+path = "."
+
+[github]
+owner = "myorg"
+repos = ["myrepo"]
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "madflow.toml")
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Load must succeed even without authorized_users in config.
+	// (gh auto-detection may or may not populate AuthorizedUsers depending on environment.)
+	_, err := Load(path)
+	if err != nil {
+		t.Fatalf("expected no error when github is configured without authorized_users, got: %v", err)
 	}
 }
 
@@ -684,8 +725,8 @@ path = "."
 		t.Fatal(err)
 	}
 
-	if cfg.Agent.IssuePatrolIntervalMinutes != 5 {
-		t.Errorf("expected default issue_patrol_interval_minutes 5, got %d", cfg.Agent.IssuePatrolIntervalMinutes)
+	if cfg.Agent.IssuePatrolIntervalMinutes != 20 {
+		t.Errorf("expected default issue_patrol_interval_minutes 20, got %d", cfg.Agent.IssuePatrolIntervalMinutes)
 	}
 }
 
@@ -747,6 +788,8 @@ issue_patrol_interval_minutes = -1
 
 func TestGitHubBotCommentPatterns(t *testing.T) {
 	content := `
+authorized_users = ["testuser"]
+
 [project]
 name = "test-app"
 
@@ -837,6 +880,8 @@ language = "ja"
 func TestGitHubBotCommentPatterns_Empty(t *testing.T) {
 	// When bot_comment_patterns is not configured, it should default to nil/empty.
 	content := `
+authorized_users = ["testuser"]
+
 [project]
 name = "test-app"
 

@@ -12,6 +12,7 @@ import (
 
 	"github.com/ytnobody/madflow/internal/chatlog"
 	"github.com/ytnobody/madflow/internal/config"
+	"github.com/ytnobody/madflow/internal/git"
 	"github.com/ytnobody/madflow/internal/orchestrator"
 	"github.com/ytnobody/madflow/internal/project"
 	"github.com/ytnobody/madflow/prompts"
@@ -161,11 +162,42 @@ feature_prefix = "feature/issue-"
 	return nil
 }
 
+// cleanupLegacyResources handles old-format branches and worktrees found in each
+// configured repository. Legacy branches (feature/issue-{number}) are automatically
+// force-deleted; legacy worktrees still emit a [WARN] message asking for manual removal.
+// Startup continues regardless of the outcome (non-fatal).
+func cleanupLegacyResources(repos []config.RepoConfig) {
+	for _, r := range repos {
+		repo := git.NewRepo(r.Path)
+
+		// Check for legacy worktrees: .madflow/worktrees/issue-{number}/
+		madflowDir := filepath.Join(r.Path, ".madflow")
+		for _, wt := range repo.DetectLegacyWorktrees(madflowDir) {
+			fmt.Fprintf(os.Stderr, "[WARN] Legacy worktree detected: %s\n", wt)
+			fmt.Fprintf(os.Stderr, "       Please migrate manually or remove before continuing.\n")
+		}
+
+		// Delete legacy branches: feature/issue-{number}
+		deleted, err := repo.DeleteLegacyBranches()
+		for _, branch := range deleted {
+			fmt.Fprintf(os.Stderr, "[INFO] Legacy branch deleted: %s\n", branch)
+		}
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[WARN] Failed to delete legacy branch: %v\n", err)
+		}
+	}
+}
+
 func cmdStart() error {
 	configPath, cfg, proj, err := loadProjectConfig()
 	if err != nil {
 		return err
 	}
+
+	// Clean up legacy-format resources (old branch/worktree naming convention).
+	// Legacy branches are auto-deleted; legacy worktrees emit a warning.
+	// Startup continues regardless (non-fatal).
+	cleanupLegacyResources(cfg.Project.Repos)
 
 	// Determine prompts directory
 	promptDir := findPromptsDir(cfg.PromptsDir)

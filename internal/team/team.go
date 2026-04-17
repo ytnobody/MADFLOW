@@ -45,7 +45,7 @@ func announceStart(team *Team) {
 
 // appendLine はチャットログファイルに1行追記する。
 func appendLine(path, line string) {
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
 	if err != nil {
 		log.Printf("[team] announce: open %s: %v", path, err)
 		return
@@ -277,6 +277,35 @@ func (m *Manager) Count() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return len(m.teams) + m.pendingCount
+}
+
+// Full returns true if the manager has reached the maximum number of teams
+// (active + pending >= maxTeams). When Full() is true and AssignIdle() also
+// fails, no new team can be created until an existing team is disbanded.
+func (m *Manager) Full() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.teams)+m.pendingCount >= m.maxTeams
+}
+
+// Cap returns the configured maximum number of concurrent teams.
+func (m *Manager) Cap() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.maxTeams
+}
+
+// SetMaxTeams updates the maximum number of concurrent teams.
+// This is called by the orchestrator's config hot-reload watcher to propagate
+// max_teams changes from madflow.toml without restarting the process.
+// If n <= 0, the value is reset to DefaultMaxTeams.
+func (m *Manager) SetMaxTeams(n int) {
+	if n <= 0 {
+		n = DefaultMaxTeams
+	}
+	m.mu.Lock()
+	m.maxTeams = n
+	m.mu.Unlock()
 }
 
 // TeamInfo is a read-only snapshot of a team's state.

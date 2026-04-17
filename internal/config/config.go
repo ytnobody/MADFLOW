@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
+	"strings"
 
 	"github.com/BurntSushi/toml"
 )
@@ -15,9 +17,23 @@ type Config struct {
 	GitHub     *GitHubConfig `toml:"github,omitempty"`
 	PromptsDir string        `toml:"prompts_dir,omitempty"`
 	// AuthorizedUsers is a list of GitHub user logins that are allowed to create
-	// issues, PRs, and comments that MADFLOW will process. When empty (the default),
-	// all users are trusted. When non-empty, only listed users are trusted.
+	// issues, PRs, and comments that MADFLOW will process.
+	//
+	// Deprecated: This field no longer needs to be set manually. When [github]
+	// integration is enabled and this field is empty, MADFLOW automatically
+	// detects the authenticated GitHub CLI user via `gh api user --jq '.login'`
+	// at startup and uses that login as the sole authorized user.
+	//
+	// If explicitly set, the specified values take priority over auto-detection.
+	// Leaving it empty with GitHub integration active and `gh` not authenticated
+	// will cause MADFLOW to deny all incoming GitHub events.
 	AuthorizedUsers []string `toml:"authorized_users,omitempty"`
+	// GhLogin is the GitHub login name of the authenticated user, auto-detected
+	// at startup via `gh api user --jq '.login'`. It is a runtime-only field
+	// (not read from TOML) and is used to namespace branch names and worktree
+	// paths per user (e.g. "madflow/{gh_login}/issue-{id}").
+	// Empty if the GitHub CLI is unavailable or not authenticated.
+	GhLogin string `toml:"-"`
 }
 
 type ProjectConfig struct {
@@ -58,16 +74,24 @@ type AgentConfig struct {
 	// to run before being killed. This prevents agents from hanging indefinitely
 	// on commands that never finish. Defaults to 5 minutes.
 	BashTimeoutMinutes int `toml:"bash_timeout_minutes"`
-	// IssuePatrolIntervalMinutes specifies how often the superintendent is prompted
-	// to check for new issues and take action. Without this periodic trigger, the
-	// superintendent only reacts to chatlog messages and may stop patrolling for
-	// issues during long idle periods.
-	// 0 triggers the default of 5 minutes. Set to -1 to disable.
+	// IssuePatrolIntervalMinutes specifies how often the orchestrator sends a
+	// periodic issue-patrol reminder to the superintendent. The reminder is
+	// suppressed when the issue state (set of open/in-progress issues) has not
+	// changed since the last reminder, preventing chatlog bloat during idle periods.
+	// Sending "PATROL_COMPLETE" to the orchestrator resets the timer so the next
+	// reminder is issued N minutes after patrol completion rather than after the
+	// last scheduled tick.
+	// 0 triggers the default of 20 minutes. Set to -1 to disable.
 	IssuePatrolIntervalMinutes int `toml:"issue_patrol_interval_minutes"`
 	// WorktreeCleanupIntervalMinutes specifies how often to check for and remove
 	// orphaned git worktrees (those not associated with any active team).
 	// 0 (default) disables periodic worktree cleanup.
 	WorktreeCleanupIntervalMinutes int `toml:"worktree_cleanup_interval_minutes"`
+	// MergedWorktreeCleanupIntervalMinutes specifies how often to scan worktrees
+	// under .worktrees/{ghLogin}/ and remove those whose associated GitHub PRs have
+	// been merged or closed. The removal includes the worktree, local branch, and
+	// remote branch. 0 (default) disables this cleanup.
+	MergedWorktreeCleanupIntervalMinutes int `toml:"merged_worktree_cleanup_interval_minutes"`
 	// ExtraPrompt is appended to the system prompt of every agent.
 	// Use this to inject project-specific instructions that apply to all agents.
 	ExtraPrompt string `toml:"extra_prompt"`
@@ -134,7 +158,9 @@ func Load(path string) (*Config, error) {
 	}
 
 	setDefaults(&cfg)
+	applyGhLogin(&cfg)
 	warnDefaults(&cfg)
+	autoPopulateAuthorizedUsers(&cfg)
 
 	if err := validate(&cfg); err != nil {
 		return nil, fmt.Errorf("validate config: %w", err)
@@ -175,7 +201,7 @@ func setDefaults(cfg *Config) {
 		cfg.Agent.BashTimeoutMinutes = 5
 	}
 	if cfg.Agent.IssuePatrolIntervalMinutes == 0 {
-		cfg.Agent.IssuePatrolIntervalMinutes = 5
+		cfg.Agent.IssuePatrolIntervalMinutes = 20
 	}
 	if cfg.Agent.Language == "" {
 		cfg.Agent.Language = "en"
@@ -186,9 +212,8 @@ func setDefaults(cfg *Config) {
 	if cfg.Branches.Develop == "" {
 		cfg.Branches.Develop = "develop"
 	}
-	if cfg.Branches.FeaturePrefix == "" {
-		cfg.Branches.FeaturePrefix = "feature/issue-"
-	}
+	// FeaturePrefix default is applied after GhLogin is resolved in applyGhLogin.
+	// Leave it empty here so applyGhLogin can detect whether the user set it explicitly.
 	if cfg.GitHub != nil && cfg.GitHub.SyncIntervalMinutes == 0 {
 		cfg.GitHub.SyncIntervalMinutes = 15
 	}
@@ -227,4 +252,47 @@ func validate(cfg *Config) error {
 		}
 	}
 	return nil
+}
+
+// resolveGitHubLogin calls the GitHub CLI to get the currently authenticated
+// user's login name. Returns an empty string if the CLI is unavailable or the
+// user is not authenticated.
+func resolveGitHubLogin() string {
+	cmd := exec.Command("gh", "api", "user", "--jq", ".login")
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// applyGhLogin resolves the GitHub login and applies it to cfg.GhLogin and,
+// when FeaturePrefix was not explicitly set in the config file, sets the
+// namespaced default: "madflow/{gh_login}/issue-".
+// Falls back to "feature/issue-" when the GitHub CLI is unavailable.
+func applyGhLogin(cfg *Config) {
+	cfg.GhLogin = resolveGitHubLogin()
+	if cfg.Branches.FeaturePrefix == "" {
+		if cfg.GhLogin != "" {
+			cfg.Branches.FeaturePrefix = "madflow/" + cfg.GhLogin + "/issue-"
+		} else {
+			cfg.Branches.FeaturePrefix = "feature/issue-"
+		}
+	}
+}
+
+// autoPopulateAuthorizedUsers uses the already-resolved cfg.GhLogin to populate
+// cfg.AuthorizedUsers when GitHub integration is enabled but no authorized
+// users are configured. A warning is logged when detection fails.
+func autoPopulateAuthorizedUsers(cfg *Config) {
+	if cfg.GitHub == nil || len(cfg.AuthorizedUsers) > 0 {
+		// GitHub integration disabled, or already explicitly configured.
+		return
+	}
+	if cfg.GhLogin == "" {
+		log.Printf("[config] WARNING: github integration is enabled but authorized_users is not set and `gh api user` returned no login; all GitHub events will be denied. Set authorized_users in madflow.toml or ensure `gh` is authenticated.")
+		return
+	}
+	log.Printf("[config] auto-detected GitHub login %q; using as authorized_users", cfg.GhLogin)
+	cfg.AuthorizedUsers = []string{cfg.GhLogin}
 }

@@ -155,3 +155,41 @@ func TestRoleColors_DoesNotContainDeprecatedRoles(t *testing.T) {
 		}
 	}
 }
+
+func TestCmdInit_DoesNotIncludeAuthorizedUsers(t *testing.T) {
+	// authorized_users is now deprecated and should NOT appear in the generated
+	// madflow.toml. Auto-detection happens at startup via config.Load().
+	tmpDir := t.TempDir()
+
+	origDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get cwd: %v", err)
+	}
+	defer os.Chdir(origDir) //nolint:errcheck
+
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("failed to chdir: %v", err)
+	}
+
+	origArgs := os.Args
+	os.Args = []string{"madflow", "init", "--name", "testproject", "--repo", tmpDir}
+	defer func() { os.Args = origArgs }()
+
+	if err := cmdInit(); err != nil {
+		t.Fatalf("cmdInit() error: %v", err)
+	}
+
+	configPath := filepath.Join(tmpDir, "madflow.toml")
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("failed to read generated madflow.toml: %v", err)
+	}
+
+	content := string(data)
+
+	// authorized_users must NOT appear in the generated config; auto-detection
+	// happens at startup via config.Load().
+	if strings.Contains(content, "authorized_users") {
+		t.Errorf("generated madflow.toml must not contain deprecated 'authorized_users' field; got:\n%s", content)
+	}
+}

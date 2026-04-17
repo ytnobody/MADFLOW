@@ -123,7 +123,8 @@ func TestProcessIssueCommentEvent(t *testing.T) {
 		gotComment = c
 	}
 
-	w := NewEventWatcher(store, "owner", []string{"repo"}, time.Minute, cb)
+	w := NewEventWatcher(store, "owner", []string{"repo"}, time.Minute, cb).
+		WithAuthorizedUsers([]string{"alice"})
 
 	payload := ghEventPayloadComment{
 		Action: "created",
@@ -514,7 +515,8 @@ func TestProcessIssueCommentEvent_BotComment(t *testing.T) {
 		gotComment = c
 	}
 
-	w := NewEventWatcher(store, "owner", []string{"repo"}, time.Minute, cb)
+	w := NewEventWatcher(store, "owner", []string{"repo"}, time.Minute, cb).
+		WithAuthorizedUsers([]string{"my-app[bot]"})
 
 	payload := ghEventPayloadComment{
 		Action: "created",
@@ -554,7 +556,8 @@ func TestProcessIssueCommentEvent_BotLoginSuffix(t *testing.T) {
 		gotComment = c
 	}
 
-	w := NewEventWatcher(store, "owner", []string{"repo"}, time.Minute, cb)
+	w := NewEventWatcher(store, "owner", []string{"repo"}, time.Minute, cb).
+		WithAuthorizedUsers([]string{"github-actions[bot]"})
 
 	payload := ghEventPayloadComment{
 		Action: "created",
@@ -593,7 +596,8 @@ func TestProcessIssueCommentEvent_HumanComment(t *testing.T) {
 		gotComment = c
 	}
 
-	w := NewEventWatcher(store, "owner", []string{"repo"}, time.Minute, cb)
+	w := NewEventWatcher(store, "owner", []string{"repo"}, time.Minute, cb).
+		WithAuthorizedUsers([]string{"alice"})
 
 	payload := ghEventPayloadComment{
 		Action: "created",
@@ -641,7 +645,8 @@ func TestProcessIssueCommentEvent_BotPatternDetection(t *testing.T) {
 	}
 
 	w := NewEventWatcher(store, "owner", []string{"repo"}, time.Minute, cb).
-		WithBotCommentPatterns(patterns)
+		WithBotCommentPatterns(patterns).
+		WithAuthorizedUsers([]string{"ytnobody"})
 
 	payload := ghEventPayloadComment{
 		Action: "created",
@@ -683,7 +688,8 @@ func TestEventWatcher_WithBotCommentPatterns_HumanComment(t *testing.T) {
 
 	patterns, _ := CompileBotPatterns([]string{`^\*\*\[`})
 	w := NewEventWatcher(store, "owner", []string{"repo"}, time.Minute, cb).
-		WithBotCommentPatterns(patterns)
+		WithBotCommentPatterns(patterns).
+		WithAuthorizedUsers([]string{"ytnobody"})
 
 	payload := ghEventPayloadComment{
 		Action: "created",

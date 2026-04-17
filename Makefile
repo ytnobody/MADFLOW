@@ -29,11 +29,18 @@ install: build
 test:
 	go test ./...
 
-# lint runs gofmt and go vet.
+# lint runs gofmt, go vet, and TODO comment check.
 .PHONY: lint
 lint:
 	gofmt -l ./... | grep . && exit 1 || true
 	go vet ./...
+	@TODOS=$$(grep -rn "// TODO\|/\* TODO" --include="*.go" . 2>/dev/null); \
+	if [ -n "$$TODOS" ]; then \
+		echo "TODO comments found in Go source files:"; \
+		echo "$$TODOS"; \
+		echo "Please remove or implement all TODO items before merging."; \
+		exit 1; \
+	fi
 
 # clean removes the built binary.
 .PHONY: clean
@@ -73,7 +80,7 @@ help:
 	@echo "  make build    - Build the madflow binary"
 	@echo "  make install  - Build and install binary to INSTALL_DIR (default: ~/bin)"
 	@echo "  make test     - Run all tests"
-	@echo "  make lint     - Run gofmt and go vet"
+	@echo "  make lint     - Run gofmt, go vet, and TODO comment check"
 	@echo "  make clean    - Remove the built binary"
 	@echo "  make rebuild  - Build, install, and stop running process (for restart by supervisor)"
 	@echo "  make restart  - Stop the running madflow process"

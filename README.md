@@ -102,6 +102,33 @@ repos = ["my-app"]
 sync_interval_minutes = 5
 ```
 
+#### `authorized_users` — Required when GitHub integration is enabled
+
+When the `[github]` section is present, you **must** also set `authorized_users` at the top level of `madflow.toml`. This is a list of GitHub login names whose issues, pull requests, and comments MADFLOW is allowed to process.
+
+```toml
+# List of GitHub logins that MADFLOW will accept events from.
+# Required when [github] is present. Must contain at least one entry.
+authorized_users = ["myusername", "trusted-collaborator"]
+
+[github]
+owner = "myorg"
+repos = ["my-app"]
+sync_interval_minutes = 5
+```
+
+If `authorized_users` is empty (or omitted) while GitHub integration is enabled, **MADFLOW will refuse to start** and print an error:
+
+```
+authorized_users is required when github integration is enabled; set authorized_users to a list of GitHub logins allowed to interact with MADFLOW
+```
+
+**Why is this required?**
+
+Without an explicit allowlist, any GitHub user could open an issue or post a comment on a public repository and have MADFLOW process it. This creates a prompt-injection attack surface: a malicious actor could craft an issue body that causes the LLM to execute arbitrary commands. By requiring `authorized_users`, only explicitly trusted users can drive MADFLOW's agents.
+
+> **Tip:** Add every team member and bot account that will interact with MADFLOW (e.g., opening issues or commenting) to the `authorized_users` list.
+
 ## Command Reference
 
 | Command | Description |
@@ -185,10 +212,15 @@ git worktree add -b feature/issue-local-002 ../madflow-worktree/local-002 develo
 
 ### Development Cycle
 
+MADFLOW follows a **documentation-driven development workflow**:
+
 1. **Create worktree**: Use the command above to create a worktree for each issue.
-2. **Implementation**: Move to the created worktree directory and implement, then commit.
-3. **Create Pull Request**: Use GitHub CLI (`gh pr create`) to create a Pull Request.
-4. **Remove worktree**: Once the Pull Request is merged, remove the no-longer-needed worktree.
+2. **Architecture**: Design the solution and identify affected components.
+3. **Documentation**: Write or update specification documentation in `docs/specs/` to describe the intended behavior.
+4. **Tests**: Write or update test code that conforms to the specification documentation (test-first).
+5. **Implementation**: Write or update implementation code to make the tests pass.
+6. **Create Pull Request**: Use GitHub CLI (`gh pr create`) to create a Pull Request.
+7. **Remove worktree**: Once the Pull Request is merged, remove the no-longer-needed worktree.
 
 ```bash
 # Run from the main working directory

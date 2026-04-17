@@ -1,0 +1,130 @@
+name: Nightly Build
+
+on:
+  schedule:
+    # JST 0:00 = UTC 15:00
+    - cron: "0 15 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  nightly:
+    name: Nightly Build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout develop branch
+        uses: actions/checkout@v4
+        with:
+          ref: develop
+          fetch-depth: 0
+
+      - name: Check if nightly build is needed
+        id: check
+        run: |
+          DEVELOP_SHA=$(git rev-parse HEAD)
+          echo "develop_sha=${DEVELOP_SHA}" >> "$GITHUB_OUTPUT"
+
+          # Check if nightly tag exists
+          if git ls-remote --tags origin refs/tags/nightly | grep -q refs/tags/nightly; then
+            NIGHTLY_SHA=$(git ls-remote --tags origin refs/tags/nightly | awk '{print $1}')
+            # Resolve the tag to a commit SHA (handles annotated tags)
+            NIGHTLY_COMMIT=$(git rev-list -n 1 "${NIGHTLY_SHA}" 2>/dev/null || echo "${NIGHTLY_SHA}")
+            echo "nightly_sha=${NIGHTLY_COMMIT}" >> "$GITHUB_OUTPUT"
+
+            if [ "${DEVELOP_SHA}" = "${NIGHTLY_COMMIT}" ]; then
+              echo "No new commits since last nightly build. Skipping."
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "New commits detected. Proceeding with nightly build."
+              echo "skip=false" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "nightly tag does not exist. Proceeding with first nightly build."
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Go
+        if: steps.check.outputs.skip != 'true'
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build binaries
+        if: steps.check.outputs.skip != 'true'
+        run: |
+          DATE=$(date -u +%Y%m%d)
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          VERSION="nightly-${DATE}-${SHORT_SHA}"
+          LDFLAGS="-X main.version=${VERSION}"
+
+          mkdir -p dist
+
+          GOOS=linux   GOARCH=amd64 go build -ldflags "${LDFLAGS}" -o dist/madflow-linux-amd64   ./cmd/madflow
+          GOOS=linux   GOARCH=arm64 go build -ldflags "${LDFLAGS}" -o dist/madflow-linux-arm64   ./cmd/madflow
+          GOOS=darwin  GOARCH=amd64 go build -ldflags "${LDFLAGS}" -o dist/madflow-darwin-amd64  ./cmd/madflow
+          GOOS=darwin  GOARCH=arm64 go build -ldflags "${LDFLAGS}" -o dist/madflow-darwin-arm64  ./cmd/madflow
+          GOOS=windows GOARCH=amd64 go build -ldflags "${LDFLAGS}" -o dist/madflow-windows-amd64.exe ./cmd/madflow
+
+          echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
+
+      - name: Generate SHA256 checksums
+        if: steps.check.outputs.skip != 'true'
+        run: |
+          cd dist
+          for f in madflow-linux-amd64 madflow-linux-arm64 madflow-darwin-amd64 madflow-darwin-arm64 madflow-windows-amd64.exe; do
+            sha256sum "$f" | awk '{print $1}' > "${f}.sha256"
+          done
+
+      - name: Update nightly tag
+        if: steps.check.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Force-push the nightly tag to the current HEAD of develop
+          git tag -f nightly HEAD
+          git push origin nightly --force
+
+      - name: Create or update nightly GitHub Release
+        if: steps.check.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          DATE=$(date -u +%Y%m%d)
+          SHORT_SHA=$(git rev-parse --short HEAD)
+
+          RELEASE_NOTES="## Nightly Build
+
+          **Date**: ${DATE}
+          **Commit**: ${SHORT_SHA}
+          **Branch**: develop
+
+          This is an automated nightly build from the \`develop\` branch.
+          It may be unstable. For stable releases, see the [releases page](https://github.com/${{ github.repository }}/releases)."
+
+          # Delete existing nightly release if it exists, then recreate
+          if gh release view nightly -R ${{ github.repository }} > /dev/null 2>&1; then
+            gh release delete nightly -R ${{ github.repository }} --yes
+          fi
+
+          gh release create nightly -R ${{ github.repository }} \
+            --title "Nightly Build (${DATE}-${SHORT_SHA})" \
+            --notes "${RELEASE_NOTES}" \
+            --prerelease \
+            --target develop \
+            dist/madflow-linux-amd64 \
+            dist/madflow-linux-arm64 \
+            dist/madflow-darwin-amd64 \
+            dist/madflow-darwin-arm64 \
+            dist/madflow-windows-amd64.exe \
+            dist/madflow-linux-amd64.sha256 \
+            dist/madflow-linux-arm64.sha256 \
+            dist/madflow-darwin-amd64.sha256 \
+            dist/madflow-darwin-arm64.sha256 \
+            dist/madflow-windows-amd64.exe.sha256

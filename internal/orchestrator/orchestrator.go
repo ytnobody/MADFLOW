@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -18,6 +19,7 @@ import (
 	"github.com/ytnobody/madflow/internal/git"
 	"github.com/ytnobody/madflow/internal/github"
 	"github.com/ytnobody/madflow/internal/issue"
+	"github.com/ytnobody/madflow/internal/lessons"
 	"github.com/ytnobody/madflow/internal/team"
 )
 
@@ -29,13 +31,18 @@ type Orchestrator struct {
 	dataDir    string
 	promptDir  string
 
-	store        *issue.Store
-	chatLog      *chatlog.ChatLog
-	teams        *team.Manager
-	repos        map[string]*git.Repo // name -> repo
-	dormancy     *agent.Dormancy
-	throttle     *agent.Throttle
-	idleDetector *github.IdleDetector // shared idle state for GitHub polling
+	store          *issue.Store
+	chatLog        *chatlog.ChatLog
+	teams          *team.Manager
+	repos          map[string]*git.Repo // name -> repo
+	dormancy       *agent.Dormancy
+	throttle       *agent.Throttle
+	idleDetector   *github.IdleDetector // shared idle state for GitHub polling
+	lessonsManager *lessons.Manager     // manages failure lessons for superintendent
+
+	// patrolResetCh receives a signal when the superintendent reports PATROL_COMPLETE,
+	// allowing runIssuePatrol to reset the interval timer immediately.
+	patrolResetCh chan struct{}
 
 	residentAgents []*agent.Agent
 	mu             sync.Mutex
@@ -61,16 +68,26 @@ func New(cfg *config.Config, dataDir, promptDir string) *Orchestrator {
 
 	probeInterval := time.Duration(cfg.Agent.DormancyProbeMinutes) * time.Minute
 
+	featurePrefix := cfg.Branches.FeaturePrefix
+	if featurePrefix == "" {
+		featurePrefix = "feature/issue-"
+	}
+
 	orc := &Orchestrator{
-		cfg:          cfg,
-		dataDir:      dataDir,
-		promptDir:    promptDir,
-		store:        issue.NewStore(issuesDir),
-		chatLog:      chatlog.New(chatLogPath),
-		repos:        repos,
-		dormancy:     agent.NewDormancy(probeInterval),
-		throttle:     agent.NewThrottle(cfg.Agent.GeminiRPM),
-		idleDetector: idleDetector,
+		cfg:           cfg,
+		dataDir:       dataDir,
+		promptDir:     promptDir,
+		store:         issue.NewStore(issuesDir),
+		chatLog:       chatlog.New(chatLogPath),
+		repos:         repos,
+		dormancy:      agent.NewDormancy(probeInterval),
+		throttle:      agent.NewThrottle(cfg.Agent.GeminiRPM),
+		idleDetector:  idleDetector,
+		patrolResetCh: make(chan struct{}, 1),
+		lessonsManager: &lessons.Manager{
+			DataDir:       dataDir,
+			FeaturePrefix: featurePrefix,
+		},
 	}
 
 	orc.teams = team.NewManager(orc, cfg.Agent.MaxTeams)
@@ -97,13 +114,13 @@ func (o *Orchestrator) Config() *config.Config {
 func (o *Orchestrator) Run(ctx context.Context) error {
 	// Ensure data directories exist
 	for _, sub := range []string{"issues", "memos"} {
-		os.MkdirAll(filepath.Join(o.dataDir, sub), 0755)
+		os.MkdirAll(filepath.Join(o.dataDir, sub), 0700)
 	}
 
 	// Truncate chatlog to start with a clean slate. Stale messages from
 	// previous runs confuse the superintendent (e.g. referencing engineers
 	// like engineer-4 that no longer exist, causing phantom TEAM_CREATE).
-	os.WriteFile(o.chatLog.Path(), nil, 0644)
+	os.WriteFile(o.chatLog.Path(), nil, 0600)
 
 	log.Println("[orchestrator] starting")
 
@@ -211,6 +228,13 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 			defer wg.Done()
 			o.runBranchCleanup(ctx)
 		}()
+	}
+
+	// Start merged worktree cleanup goroutine if configured
+	if o.cfg.Agent.MergedWorktreeCleanupIntervalMinutes > 0 {
+		wg.Go(func() {
+			o.runMergedWorktreeCleanup(ctx)
+		})
 	}
 
 	// Start main branch check goroutine
@@ -352,6 +376,7 @@ func (o *Orchestrator) startResidentAgents(ctx context.Context, wg *sync.WaitGro
 			DevelopBranch: o.cfg.Branches.Develop,
 			MainBranch:    o.cfg.Branches.Main,
 			FeaturePrefix: o.cfg.Branches.FeaturePrefix,
+			GhLogin:       o.cfg.GhLogin,
 		}
 
 		systemPrompt, err := agent.LoadPrompt(o.promptDir, r.role, vars)
@@ -540,8 +565,22 @@ func (o *Orchestrator) handleCommand(ctx context.Context, msg chatlog.Message) {
 		o.handleRelease(body)
 	case strings.HasPrefix(body, "WAKE_GITHUB"):
 		o.handleWakeGitHub()
+	case strings.HasPrefix(body, "PATROL_COMPLETE"):
+		o.handlePatrolComplete()
 	default:
 		log.Printf("[orchestrator] unknown command from %s: %s", msg.Sender, body)
+	}
+}
+
+// handlePatrolComplete handles the PATROL_COMPLETE command from the superintendent.
+// It signals runIssuePatrol to reset the interval timer, so that the next reminder
+// is issued N minutes after patrol completion rather than after the last scheduled tick.
+func (o *Orchestrator) handlePatrolComplete() {
+	log.Println("[orchestrator] PATROL_COMPLETE received: resetting patrol timer")
+	// Non-blocking send: if the channel already has a pending signal, we don't need to add another.
+	select {
+	case o.patrolResetCh <- struct{}{}:
+	default:
 	}
 }
 
@@ -557,6 +596,21 @@ func (o *Orchestrator) handleWakeGitHub() {
 	log.Println("[orchestrator] WAKE_GITHUB: GitHub polling resumed")
 }
 
+// issueIDRe matches the valid portion of an issue ID.
+// Issue IDs consist of ASCII alphanumeric characters and hyphens only
+// (e.g. "gh-121", "local-001"). Any trailing characters outside this set
+// (e.g. Japanese text appended to retry messages like "gh-121（2回目）") are
+// stripped by normalizeIssueID before the ID is used for store lookups.
+var issueIDRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]*`)
+
+// normalizeIssueID extracts the valid issue ID prefix from s.
+// It strips any trailing characters that do not match the issue ID character
+// set (ASCII alphanumeric + hyphen). Returns an empty string when s contains
+// no valid issue ID characters at all.
+func normalizeIssueID(s string) string {
+	return issueIDRe.FindString(s)
+}
+
 // handleTeamCreate creates a new team for an issue.
 // Expected format: TEAM_CREATE issue-id
 //
@@ -569,10 +623,21 @@ func (o *Orchestrator) handleTeamCreate(ctx context.Context, body string) {
 		log.Printf("[orchestrator] TEAM_CREATE missing issue ID")
 		return
 	}
-	issueID := parts[1]
 
-	// Validate that the issue exists in the store to reject malformed IDs
-	// (e.g. "issueID（2回目）extra text" from retried TEAM_CREATE messages).
+	// Normalize the issue ID: strip any non-ID characters that the superintendent
+	// may append when retrying (e.g. "gh-121（2回目の要求）。チームアサインをお願いします。").
+	// Issue IDs consist solely of ASCII alphanumeric characters and hyphens.
+	issueID := normalizeIssueID(parts[1])
+	if issueID == "" {
+		log.Printf("[orchestrator] TEAM_CREATE: could not extract valid issue ID from %q", parts[1])
+		o.appendOrLog("superintendent", "orchestrator",
+			fmt.Sprintf("TEAM_CREATE は拒否されました: 有効なイシューIDを抽出できませんでした (%q)", parts[1]))
+		return
+	}
+	if issueID != parts[1] {
+		log.Printf("[orchestrator] TEAM_CREATE: normalized issue ID %q -> %q (stripped extra text)", parts[1], issueID)
+	}
+
 	existingIss, err := o.store.Get(issueID)
 	if err != nil {
 		log.Printf("[orchestrator] TEAM_CREATE rejected: issue %q not found: %v", issueID, err)
@@ -634,7 +699,20 @@ func (o *Orchestrator) handleTeamCreate(ctx context.Context, body string) {
 		return
 	}
 
-	// No idle team available; create a new one.
+	// No idle team available.
+	// Check if we are already at the maximum team capacity.  If so, we cannot
+	// create a new team and must wait until an existing team is disbanded.
+	// Reject early (before marking in_progress) so the issue stays open and
+	// the superintendent can retry after a team slot becomes available.
+	if o.teams.Full() {
+		log.Printf("[orchestrator] TEAM_CREATE %s: rejected — at max_teams capacity (%d)", issueID, o.teams.Cap())
+		o.appendOrLog("superintendent", "orchestrator",
+			fmt.Sprintf("TEAM_CREATE %s は保留されました: チームが上限 (max_teams=%d) に達しています。既存チームが解放されるまで待機してください。",
+				issueID, o.teams.Cap()))
+		return
+	}
+
+	// Capacity is available — create a new team.
 	// Mark issue as in_progress immediately to prevent the superintendent
 	// from sending duplicate TEAM_CREATE commands while the team is being created.
 	existingIss.Status = issue.StatusInProgress
@@ -745,6 +823,7 @@ func (o *Orchestrator) initialGitHubSync() {
 	botPatterns := o.compileBotPatterns()
 	syncer := github.NewSyncer(o.store, gh.Owner, gh.Repos, 0).
 		WithAuthorizedUsers(o.cfg.AuthorizedUsers).
+		WithGhLogin(o.ghLogin()).
 		WithBotCommentPatterns(botPatterns).
 		WithSkipComments(true)
 	if err := syncer.SyncOnce(); err != nil {
@@ -821,10 +900,18 @@ func (o *Orchestrator) handlePRMerged(issueID string) {
 	}
 
 	// Close the GitHub issue via gh CLI (only for GitHub-synced issues with a URL)
+	// Also score the issue and generate a lesson for the Superintendent.
 	if iss.URL != "" {
 		owner, repo, number, err := github.ParseID(issueID)
 		if err == nil {
 			o.closeGitHubIssue(owner, repo, number)
+			// Score instruction quality and generate a lesson asynchronously so
+			// that the gh CLI calls don't block the merge handler.
+			go func() {
+				if err := o.lessonsManager.ProcessMergedIssue(issueID, owner, repo, number); err != nil {
+					log.Printf("[orchestrator] lessons: ProcessMergedIssue(%s) failed: %v", issueID, err)
+				}
+			}()
 		} else {
 			log.Printf("[orchestrator] PR merged: cannot parse issue ID %s for gh close: %v", issueID, err)
 		}
@@ -916,10 +1003,16 @@ func (o *Orchestrator) runGitHubSync(ctx context.Context) {
 	syncer := github.NewSyncer(o.store, gh.Owner, gh.Repos, interval).
 		WithIdleDetector(o.idleDetector, idleInterval).
 		WithAuthorizedUsers(o.cfg.AuthorizedUsers).
+		WithGhLogin(o.ghLogin()).
 		WithBotCommentPatterns(botPatterns)
 	if err := syncer.Run(ctx); err != nil && ctx.Err() == nil {
 		log.Printf("[orchestrator] github sync stopped: %v", err)
 	}
+}
+
+// ghLogin returns the GitHub login to use for assignee-based issue filtering.
+func (o *Orchestrator) ghLogin() string {
+	return o.cfg.GhLogin
 }
 
 // CreateTeamAgents implements team.TeamFactory.
@@ -956,6 +1049,7 @@ func (o *Orchestrator) CreateTeamAgents(teamNum int, issueID string) (engineer *
 			FeaturePrefix: o.cfg.Branches.FeaturePrefix,
 			TeamNum:       teamNumStr,
 			RepoPath:      o.firstRepoPath(),
+			GhLogin:       o.cfg.GhLogin,
 		}
 
 		systemPrompt, err := agent.LoadPrompt(o.promptDir, r.role, vars)
@@ -1092,29 +1186,119 @@ const issuePatrolPrompt = `定期イシュー巡回の時間です。
 
 1. イシューディレクトリを確認し、status="open" または status="in_progress" かつ assigned_team=0 のイシューがないか確認する
 2. 該当イシューがあれば、チーム編成を要求する（TEAM_CREATE）
+   - オーケストレーターが「チームが上限に達しています」と応答した場合は、チームが解放されるまで待機し、次の巡回で再試行してください
+   - TEAM_CREATE が保留された場合はイシューのステータスが open のまま維持されます（in_progress にはなりません）
 3. 進行中のチーム（assigned_team > 0）の状況をチャットログから確認する
 4. resolved 状態のイシューがあればクローズ手続きを行う
 
 特に未割り当てのイシューがないか注意してください。`
 
+// issueStateFingerprint computes a stable string representing the current set of
+// open and in-progress issues. This is used by runIssuePatrol to detect whether
+// the issue state has changed since the last patrol reminder.
+func (o *Orchestrator) issueStateFingerprint() string {
+	all, err := o.store.List(issue.StatusFilter{})
+	if err != nil {
+		return ""
+	}
+	var ids []string
+	for _, iss := range all {
+		if iss.Status == issue.StatusOpen || iss.Status == issue.StatusInProgress {
+			ids = append(ids, iss.ID)
+		}
+	}
+	sort.Strings(ids)
+	return strings.Join(ids, ",")
+}
+
 // runIssuePatrol periodically prompts the superintendent to check for new issues.
 // This prevents the superintendent from becoming idle during long periods without
 // chatlog messages, which was reported as GitHub Issue #155.
+//
+// The reminder is suppressed when the issue state (set of open/in-progress issues)
+// has not changed since the last reminder, preventing chatlog bloat during idle periods.
+// The patrol timer is also reset whenever the superintendent sends a message,
+// so reminders are deferred when the superintendent is already active.
+// When the superintendent sends PATROL_COMPLETE, the interval timer is reset so
+// the next reminder fires N minutes after patrol completion.
 func (o *Orchestrator) runIssuePatrol(ctx context.Context) {
 	interval := time.Duration(o.cfg.Agent.IssuePatrolIntervalMinutes) * time.Minute
 	log.Printf("[issue-patrol] started (interval: %v)", interval)
 
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
+	// Record chatlog size at startup to detect subsequent activity.
+	var lastSize int64
+	if info, err := os.Stat(o.chatLog.Path()); err == nil {
+		lastSize = info.Size()
+	}
+
+	// Watch all chatlog messages so we can detect superintendent activity and
+	// reset the patrol timer (Proposal 3).
+	allMsgCh := o.chatLog.WatchAll(ctx)
+
+	timer := time.NewTimer(interval)
+	defer timer.Stop()
+
+	// Track the issue state at the time of the last sent reminder to detect changes.
+	lastSentFingerprint := ""
 
 	for {
 		select {
 		case <-ctx.Done():
 			log.Println("[issue-patrol] stopped")
 			return
-		case <-ticker.C:
+
+		case <-o.patrolResetCh:
+			// Superintendent reported PATROL_COMPLETE: reset the timer so the next
+			// reminder fires N minutes after patrol completion rather than after the
+			// last scheduled tick.
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			timer.Reset(interval)
+			log.Println("[issue-patrol] timer reset after PATROL_COMPLETE")
+
+		case msg, ok := <-allMsgCh:
+			if !ok {
+				return
+			}
+			// Whenever the superintendent sends a message it is actively working;
+			// reset the patrol timer so we don't interrupt it with a reminder.
+			if msg.Sender == "superintendent" {
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+				timer.Reset(interval)
+				log.Printf("[issue-patrol] timer reset: superintendent is active")
+			}
+
+		case <-timer.C:
+			// Skip the reminder if the issue state hasn't changed and chatlog
+			// hasn't grown since the last patrol — no new activity to patrol.
+			current := o.issueStateFingerprint()
+			info, err := os.Stat(o.chatLog.Path())
+			if err == nil {
+				currentSize := info.Size()
+				if currentSize <= lastSize && current == lastSentFingerprint {
+					log.Println("[issue-patrol] no activity since last patrol, skipping reminder")
+					timer.Reset(interval)
+					break
+				}
+				lastSize = currentSize
+			}
+
 			log.Println("[issue-patrol] sending issue patrol request to superintendent")
-			o.appendOrLog("superintendent", "orchestrator", issuePatrolPrompt)
+			// Prepend any accumulated lessons so the Superintendent can reference
+			// past failure patterns when writing new issue instructions.
+			patrolMsg := o.lessonsManager.InjectLessons() + issuePatrolPrompt
+			o.appendOrLog("superintendent", "orchestrator", patrolMsg)
+			lastSentFingerprint = current
+			timer.Reset(interval)
 		}
 	}
 }
@@ -1167,16 +1351,72 @@ func (o *Orchestrator) runWorktreeCleanup(ctx context.Context) {
 			log.Println("[worktree-cleanup] stopped")
 			return
 		case <-ticker.C:
-			// Build set of active team worktree directory names.
-			activeTeamDirs := make(map[string]bool)
+			// Build set of active worktree relative paths.
+			// Legacy style: "team-N"; namespaced style: "{ghLogin}/issue-{id}".
+			activePaths := make(map[string]bool)
 			for _, info := range o.teams.List() {
-				activeTeamDirs[fmt.Sprintf("team-%d", info.ID)] = true
+				activePaths[fmt.Sprintf("team-%d", info.ID)] = true
 			}
 
+			o.cfgMu.RLock()
+			ghLogin := o.cfg.GhLogin
+			o.cfgMu.RUnlock()
+
 			for name, repo := range o.repos {
-				removed := repo.CleanOrphanedWorktrees(activeTeamDirs)
+				removed := repo.CleanOrphanedWorktrees(ghLogin, activePaths)
 				if len(removed) > 0 {
 					log.Printf("[worktree-cleanup] %s: removed %d orphaned worktree(s): %v", name, len(removed), removed)
+				}
+			}
+		}
+	}
+}
+
+// runMergedWorktreeCleanup periodically removes worktrees whose associated
+// GitHub PRs have been merged or closed. It scans .worktrees/{ghLogin}/ for
+// each configured repo, checks PR state via the gh CLI, and removes the
+// worktree, local branch, and remote branch for merged/closed PRs.
+//
+// Remote branch deletion failures are non-fatal: they are logged and the
+// cleanup will be retried on the next interval.
+//
+// This goroutine does not block the main polling loop.
+func (o *Orchestrator) runMergedWorktreeCleanup(ctx context.Context) {
+	o.cfgMu.RLock()
+	interval := time.Duration(o.cfg.Agent.MergedWorktreeCleanupIntervalMinutes) * time.Minute
+	o.cfgMu.RUnlock()
+
+	log.Printf("[merged-worktree-cleanup] started (interval: %v)", interval)
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			log.Println("[merged-worktree-cleanup] stopped")
+			return
+		case <-ticker.C:
+			o.cfgMu.RLock()
+			gh := o.cfg.GitHub
+			ghLogin := o.cfg.GhLogin
+			o.cfgMu.RUnlock()
+
+			if gh == nil || ghLogin == "" {
+				// GitHub integration not configured or login not resolved.
+				continue
+			}
+
+			for _, repoName := range gh.Repos {
+				for name, repo := range o.repos {
+					removed, err := repo.CleanMergedPRWorktrees(gh.Owner, repoName, ghLogin)
+					if err != nil {
+						log.Printf("[merged-worktree-cleanup] %s: error scanning worktrees: %v", name, err)
+						continue
+					}
+					if len(removed) > 0 {
+						log.Printf("[merged-worktree-cleanup] %s: removed %d merged/closed worktree(s): %v", name, len(removed), removed)
+					}
 				}
 			}
 		}
@@ -1205,6 +1445,9 @@ func (o *Orchestrator) runConfigWatcher(ctx context.Context) {
 			o.cfgMu.Lock()
 			o.cfg = newCfg
 			o.cfgMu.Unlock()
+			// Propagate max_teams changes to the team manager so that
+			// hot-reload updates take effect without restarting the process.
+			o.teams.SetMaxTeams(newCfg.Agent.MaxTeams)
 			log.Println("[config-watcher] active config updated")
 		}
 	}

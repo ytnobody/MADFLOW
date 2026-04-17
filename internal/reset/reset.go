@@ -24,7 +24,7 @@ func SaveMemo(memosDir string, memo WorkMemo) (string, error) {
 
 // SaveMemoWithLang writes a work memo to the memos directory with localized headers.
 func SaveMemoWithLang(memosDir string, memo WorkMemo, lang string) (string, error) {
-	if err := os.MkdirAll(memosDir, 0755); err != nil {
+	if err := os.MkdirAll(memosDir, 0700); err != nil {
 		return "", fmt.Errorf("create memos dir: %w", err)
 	}
 
@@ -84,7 +84,7 @@ Date: %s
 		)
 	}
 
-	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
 		return "", fmt.Errorf("write memo: %w", err)
 	}
 	return path, nil

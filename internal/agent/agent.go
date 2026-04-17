@@ -54,8 +54,24 @@ func NewAgent(cfg AgentConfig) *Agent {
 		proc = cfg.Process
 	} else {
 		switch {
+		case cfg.Model == "test":
+			proc = &noopProcess{}
 		case strings.HasPrefix(cfg.Model, "gemini-"):
 			proc = NewGeminiAPIProcess(GeminiAPIOptions{
+				SystemPrompt: cfg.SystemPrompt,
+				Model:        cfg.Model,
+				WorkDir:      cfg.WorkDir,
+				BashTimeout:  cfg.BashTimeout,
+			})
+		case strings.HasPrefix(cfg.Model, "anthropic/"):
+			proc = NewAnthropicAPIProcess(AnthropicAPIOptions{
+				SystemPrompt: cfg.SystemPrompt,
+				Model:        cfg.Model,
+				WorkDir:      cfg.WorkDir,
+				BashTimeout:  cfg.BashTimeout,
+			})
+		case strings.HasPrefix(cfg.Model, "copilot/"):
+			proc = NewCopilotCLIProcess(CopilotCLIOptions{
 				SystemPrompt: cfg.SystemPrompt,
 				Model:        cfg.Model,
 				WorkDir:      cfg.WorkDir,
@@ -179,7 +195,7 @@ func buildMessagePrompt(msgs []chatlog.Message, lang string) string {
 // and writes them to the chatlog file. This handles the case where the AI
 // model returns chatlog messages as text output instead of using bash echo.
 func (a *Agent) rescueChatLogMessages(response string) {
-	f, err := os.OpenFile(a.ChatLog.Path(), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	f, err := os.OpenFile(a.ChatLog.Path(), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
 	if err != nil {
 		return
 	}
