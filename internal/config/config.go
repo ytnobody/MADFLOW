@@ -146,27 +146,64 @@ type GitHubConfig struct {
 	BotCommentPatterns []string `toml:"bot_comment_patterns,omitempty"`
 }
 
+// RawConfig holds config fields exactly as parsed from TOML, without defaults or validation.
+// Use ParseConfig to convert a RawConfig into a validated Config.
+type RawConfig struct {
+	Project         ProjectConfig `toml:"project"`
+	Agent           AgentConfig   `toml:"agent"`
+	Branches        BranchConfig  `toml:"branches"`
+	GitHub          *GitHubConfig `toml:"github,omitempty"`
+	PromptsDir      string        `toml:"prompts_dir,omitempty"`
+	AuthorizedUsers []string      `toml:"authorized_users,omitempty"`
+}
+
+// ParseConfig parses TOML bytes into a validated Config.
+// This is a pure function: it performs no I/O and no filesystem access.
+// All defaults are applied and structural validation is enforced.
+// Runtime fields such as GhLogin are left empty; call Load to populate those.
+func ParseConfig(data []byte) (*Config, error) {
+	var raw RawConfig
+	if err := toml.Unmarshal(data, &raw); err != nil {
+		return nil, fmt.Errorf("parse config: %w", err)
+	}
+
+	cfg := &Config{
+		Project:         raw.Project,
+		Agent:           raw.Agent,
+		Branches:        raw.Branches,
+		GitHub:          raw.GitHub,
+		PromptsDir:      raw.PromptsDir,
+		AuthorizedUsers: raw.AuthorizedUsers,
+	}
+
+	setDefaults(cfg)
+
+	if err := validate(cfg); err != nil {
+		return nil, fmt.Errorf("validate config: %w", err)
+	}
+
+	return cfg, nil
+}
+
+// Load reads the config file at path, parses and validates it via ParseConfig,
+// then applies I/O side effects (gh CLI login detection, authorized user auto-detection).
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read config: %w", err)
 	}
 
-	var cfg Config
-	if err := toml.Unmarshal(data, &cfg); err != nil {
-		return nil, fmt.Errorf("parse config: %w", err)
+	cfg, err := ParseConfig(data)
+	if err != nil {
+		return nil, err
 	}
 
-	setDefaults(&cfg)
-	applyGhLogin(&cfg)
-	warnDefaults(&cfg)
-	autoPopulateAuthorizedUsers(&cfg)
+	// I/O stage: resolve runtime fields that depend on external processes.
+	applyGhLogin(cfg)
+	warnDefaults(cfg)
+	autoPopulateAuthorizedUsers(cfg)
 
-	if err := validate(&cfg); err != nil {
-		return nil, fmt.Errorf("validate config: %w", err)
-	}
-
-	return &cfg, nil
+	return cfg, nil
 }
 
 func setDefaults(cfg *Config) {

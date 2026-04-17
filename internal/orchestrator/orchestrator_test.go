@@ -123,7 +123,7 @@ func TestHandleTeamCreateMissingID(t *testing.T) {
 	orc := New(cfg, dir, t.TempDir())
 
 	// TEAM_CREATE without issue ID should not panic
-	orc.handleTeamCreate(t.Context(), "TEAM_CREATE")
+	orc.handleTeamCreate(t.Context(), ParseCommand("TEAM_CREATE"))
 }
 
 func TestHandleTeamDisbandMissingID(t *testing.T) {
@@ -134,7 +134,7 @@ func TestHandleTeamDisbandMissingID(t *testing.T) {
 	orc := New(cfg, dir, t.TempDir())
 
 	// TEAM_DISBAND without issue ID should not panic
-	orc.handleTeamDisband("TEAM_DISBAND")
+	orc.handleTeamDisband(ParseCommand("TEAM_DISBAND"))
 }
 
 func TestChatLogPath(t *testing.T) {
@@ -297,6 +297,8 @@ func TestStartAllTeamsCreatesMaxTeamsUnconditionally(t *testing.T) {
 
 	orc := New(cfg, dir, t.TempDir())
 	orc.teams = team.NewManager(newMockTeamFactory(t), 3)
+	// Ensure all goroutines spawned by startAllTeams finish before TempDir cleanup.
+	t.Cleanup(orc.Wait)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -319,6 +321,8 @@ func TestStartAllTeamsAssignsIssues(t *testing.T) {
 
 	orc := New(cfg, dir, t.TempDir())
 	orc.teams = team.NewManager(newMockTeamFactory(t), 4)
+	// Ensure all goroutines spawned by startAllTeams finish before TempDir cleanup.
+	t.Cleanup(orc.Wait)
 
 	// Create: 1 open, 1 in_progress, 1 resolved, 1 closed
 	statuses := []issue.Status{issue.StatusOpen, issue.StatusInProgress, issue.StatusResolved, issue.StatusClosed}
@@ -369,6 +373,8 @@ func TestStartAllTeamsSkipsPendingApproval(t *testing.T) {
 
 	orc := New(cfg, dir, t.TempDir())
 	orc.teams = team.NewManager(newMockTeamFactory(t), 3)
+	// Ensure all goroutines spawned by startAllTeams finish before TempDir cleanup.
+	t.Cleanup(orc.Wait)
 
 	// Create 1 regular open issue and 1 pending-approval issue.
 	regular, err := orc.Store().Create("Regular Issue", "body")
@@ -473,7 +479,7 @@ func TestHandleTeamCreateRejectsClosedIssue(t *testing.T) {
 	defer cancel()
 
 	teamsBefore := orc.Teams().Count()
-	orc.handleTeamCreate(ctx, fmt.Sprintf("TEAM_CREATE %s", iss.ID))
+	orc.handleTeamCreate(ctx, ParseCommand(fmt.Sprintf("TEAM_CREATE %s", iss.ID)))
 
 	// No new team should be created.
 	if orc.Teams().Count() != teamsBefore {
@@ -515,7 +521,7 @@ func TestHandleTeamCreateRejectsAlreadyAssigned(t *testing.T) {
 	defer cancel()
 
 	teamsBefore := orc.Teams().Count()
-	orc.handleTeamCreate(ctx, fmt.Sprintf("TEAM_CREATE %s", iss.ID))
+	orc.handleTeamCreate(ctx, ParseCommand(fmt.Sprintf("TEAM_CREATE %s", iss.ID)))
 
 	// No new team should be created.
 	if orc.Teams().Count() != teamsBefore {
@@ -562,7 +568,7 @@ func TestHandleTeamCreateRejectsActiveTeam(t *testing.T) {
 	}
 
 	teamsBefore := orc.Teams().Count()
-	orc.handleTeamCreate(ctx, fmt.Sprintf("TEAM_CREATE %s", iss.ID))
+	orc.handleTeamCreate(ctx, ParseCommand(fmt.Sprintf("TEAM_CREATE %s", iss.ID)))
 
 	// No new team should be created.
 	if orc.Teams().Count() != teamsBefore {
@@ -593,6 +599,8 @@ func TestStartAllTeamsResetsStaleAssignment(t *testing.T) {
 
 	orc := New(cfg, dir, t.TempDir())
 	orc.teams = team.NewManager(newMockTeamFactory(t), 2)
+	// Ensure all goroutines spawned by startAllTeams finish before TempDir cleanup.
+	t.Cleanup(orc.Wait)
 
 	// Create an in_progress issue with a stale team assignment.
 	iss, _ := orc.Store().Create("Stale Issue", "body")
@@ -936,7 +944,7 @@ func TestHandleTeamCreateUsesIdleTeam(t *testing.T) {
 	iss, _ := orc.Store().Create("New Issue for Idle Team", "body")
 
 	// Call TEAM_CREATE — should reuse an idle team instead of failing.
-	orc.handleTeamCreate(ctx, fmt.Sprintf("TEAM_CREATE %s", iss.ID))
+	orc.handleTeamCreate(ctx, ParseCommand(fmt.Sprintf("TEAM_CREATE %s", iss.ID)))
 
 	// Team count must not increase (no new team created).
 	if orc.Teams().Count() != 2 {
@@ -1004,7 +1012,7 @@ func TestHandleTeamCreateCreatesNewTeamWhenNoIdle(t *testing.T) {
 	iss, _ := orc.Store().Create("New Issue No Idle", "body")
 
 	// Call TEAM_CREATE — all existing teams are busy, so it must try to create a new one.
-	orc.handleTeamCreate(ctx, fmt.Sprintf("TEAM_CREATE %s", iss.ID))
+	orc.handleTeamCreate(ctx, ParseCommand(fmt.Sprintf("TEAM_CREATE %s", iss.ID)))
 
 	// Wait for the async goroutine to complete before inspecting state.
 	orc.Wait()
@@ -1123,6 +1131,10 @@ func TestRunGracefulShutdownDuringStartup(t *testing.T) {
 	// Replace the team factory with the mock so no real Claude Code processes
 	// are spawned during startAllTeams.
 	orc.teams = team.NewManager(newMockTeamFactory(t), 2)
+	// Ensure all goroutines spawned by startAllTeams (tracked via o.wg) finish
+	// before TempDir cleanup.  t.Cleanup runs in LIFO order, so registering
+	// Wait() after the t.TempDir() calls above guarantees it executes first.
+	t.Cleanup(orc.Wait)
 
 	// Cancel the context before Run is called so that the context is already
 	// done by the time waitForAgentsReady would be reached.
@@ -1356,7 +1368,7 @@ func TestHandleTeamCreateMalformedIssueID(t *testing.T) {
 	// Simulate the superintendent sending TEAM_CREATE with appended Japanese text,
 	// mimicking the exact pattern observed in the gh-121 incident.
 	malformed := "TEAM_CREATE gh-99（2回目の要求）。チームアサインをお願いします。"
-	orc.handleTeamCreate(ctx, malformed)
+	orc.handleTeamCreate(ctx, ParseCommand(malformed))
 
 	// The issue should have been transitioned to in_progress (assigned to a team),
 	// meaning the malformed ID was normalized and the lookup succeeded.
@@ -1416,7 +1428,7 @@ func TestHandleTeamCreateRejectsWhenAtMaxCapacityAllBusy(t *testing.T) {
 	iss, _ := orc.Store().Create("New Issue Cannot Assign", "body")
 
 	// Call TEAM_CREATE — all slots are full with busy teams; no idle team exists.
-	orc.handleTeamCreate(ctx, fmt.Sprintf("TEAM_CREATE %s", iss.ID))
+	orc.handleTeamCreate(ctx, ParseCommand(fmt.Sprintf("TEAM_CREATE %s", iss.ID)))
 
 	// Team count must NOT have increased.
 	if orc.Teams().Count() != 2 {

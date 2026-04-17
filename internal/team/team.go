@@ -288,6 +288,20 @@ func (m *Manager) Full() bool {
 	return len(m.teams)+m.pendingCount >= m.maxTeams
 }
 
+// HasIdle returns true if at least one idle standby team (IssueID == "") exists.
+// An idle team can be reused for a new issue via AssignIdle instead of creating
+// a fresh team. This method is safe to call concurrently.
+func (m *Manager) HasIdle() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, t := range m.teams {
+		if t.IssueID == "" {
+			return true
+		}
+	}
+	return false
+}
+
 // Cap returns the configured maximum number of concurrent teams.
 func (m *Manager) Cap() int {
 	m.mu.Lock()

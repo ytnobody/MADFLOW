@@ -78,7 +78,7 @@ path = "."
 context_reset_minutes = 8
 
 [agent.models]
-superintendent = "claude-opus-4-6"
+superintendent = "claude-opus-4-7"
 engineer = "claude-sonnet-4-6"
 # Gemini models are also supported:
 # superintendent = "gemini-2.0-flash-exp"
@@ -153,6 +153,8 @@ You can switch the models in use with the `madflow use <preset>` command.
 | `hybrid-cheap` | claude-sonnet-4-6 | gemini-2.5-flash | Hybrid low-cost version |
 | `claude-api-standard` | anthropic/claude-sonnet-4-6 | anthropic/claude-haiku-4-5 | **Anthropic API key method** |
 | `claude-api-cheap` | anthropic/claude-haiku-4-5 | anthropic/claude-haiku-4-5 | **Anthropic API key method - cheapest** |
+| `claude-opus` | claude-opus-4-7 | claude-sonnet-4-6 | Claude CLI with Opus 4.7 (1M context, high-complexity tasks) |
+| `claude-api-opus` | anthropic/claude-opus-4-7 | anthropic/claude-sonnet-4-6 | **Anthropic API key method - Opus 4.7** |
 
 ### How to Use the Anthropic API Key Method
 

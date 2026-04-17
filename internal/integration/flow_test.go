@@ -87,6 +87,9 @@ func TestIssueToTeamCreateFlow(t *testing.T) {
 	}
 
 	orc := orchestrator.New(cfg, dir, promptDir)
+	// Ensure goroutines spawned by executeCreateTeam (tracked via orc.Wait) finish
+	// before TempDir cleanup to avoid "directory not empty" races.
+	t.Cleanup(orc.Wait)
 
 	// Step 1: Create an issue
 	store := orc.Store()
@@ -229,6 +232,9 @@ func TestMultipleIssuesAndTeams(t *testing.T) {
 	}
 
 	orc := orchestrator.New(cfg, dir, promptDir)
+	// Ensure goroutines spawned by executeCreateTeam (tracked via orc.Wait) finish
+	// before TempDir cleanup to avoid "directory not empty" races.
+	t.Cleanup(orc.Wait)
 	store := orc.Store()
 	ctx := t.Context()
 
