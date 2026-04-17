@@ -984,6 +984,8 @@ func TestHandleTeamCreateCreatesNewTeamWhenNoIdle(t *testing.T) {
 
 	orc := New(cfg, dir, t.TempDir())
 	orc.teams = team.NewManager(newMockTeamFactory(t), 3)
+	// Ensure the async team-creation goroutine finishes before TempDir cleanup.
+	t.Cleanup(orc.Wait)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -1004,8 +1006,8 @@ func TestHandleTeamCreateCreatesNewTeamWhenNoIdle(t *testing.T) {
 	// Call TEAM_CREATE — all existing teams are busy, so it must try to create a new one.
 	orc.handleTeamCreate(ctx, fmt.Sprintf("TEAM_CREATE %s", iss.ID))
 
-	// Give the async goroutine a moment to start.
-	time.Sleep(200 * time.Millisecond)
+	// Wait for the async goroutine to complete before inspecting state.
+	orc.Wait()
 
 	// Team count should increase to 3 (new team created for the new issue).
 	if orc.Teams().Count() < 3 {
@@ -1331,6 +1333,17 @@ func TestHandleTeamCreateMalformedIssueID(t *testing.T) {
 	os.MkdirAll(filepath.Join(dir, "issues"), 0755)
 
 	orc := New(cfg, dir, t.TempDir())
+	// Use a mock team factory so handleTeamCreate's background goroutine
+	// completes quickly without trying to load real prompt files or spawn
+	// external processes.  This was the root cause of the flaky TempDir
+	// cleanup failure: the real CreateTeamAgents could race with directory
+	// removal.
+	orc.teams = team.NewManager(newMockTeamFactory(t), 3)
+	// Ensure all goroutines spawned by handleTeamCreate finish before the test's
+	// TempDir is removed.  t.Cleanup runs in LIFO order, so registering Wait()
+	// here (after the t.TempDir() calls above) guarantees it runs before the
+	// directory cleanup functions.
+	t.Cleanup(orc.Wait)
 
 	// Create an open issue.
 	iss := &issue.Issue{ID: "gh-99", Title: "regression test issue", Status: issue.StatusOpen}
@@ -1338,7 +1351,7 @@ func TestHandleTeamCreateMalformedIssueID(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// Simulate the superintendent sending TEAM_CREATE with appended Japanese text,
 	// mimicking the exact pattern observed in the gh-121 incident.
