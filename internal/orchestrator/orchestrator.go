@@ -96,6 +96,8 @@ func New(cfg *config.Config, dataDir, promptDir string) *Orchestrator {
 	}
 
 	orc.teams = team.NewManager(orc, cfg.Agent.MaxTeams)
+	// Wire teams.toml persistence so that team state survives process restarts.
+	orc.teams.SetPersistPath(filepath.Join(dataDir, "teams.toml"))
 	return orc
 }
 
@@ -385,6 +387,7 @@ func (o *Orchestrator) startResidentAgents(ctx context.Context, wg *sync.WaitGro
 			MainBranch:    o.cfg.Branches.Main,
 			FeaturePrefix: o.cfg.Branches.FeaturePrefix,
 			GhLogin:       o.cfg.GhLogin,
+			TeamsFilePath: filepath.Join(o.dataDir, "teams.toml"),
 		}
 
 		systemPrompt, err := agent.LoadPrompt(o.promptDir, r.role, vars)
@@ -653,6 +656,19 @@ func (o *Orchestrator) handleTeamCreate(ctx context.Context, cmd Command) {
 		o.appendOrLog("superintendent", "orchestrator",
 			fmt.Sprintf("TEAM_CREATE %s は拒否されました: イシューが見つかりません", issueID))
 		return
+	}
+
+	// RC-1 fix: if the issue carries a stale AssignedTeam value (team no longer
+	// present in the manager — e.g. after a process restart or the previous
+	// engineer became unresponsive), clear it so DecideTeamAssignment does not
+	// mistakenly reject a legitimate re-assignment request.
+	if existingIss.AssignedTeam > 0 && !o.teams.HasIssue(issueID) {
+		log.Printf("[orchestrator] TEAM_CREATE %s: resetting stale assigned_team=%d (team not found in manager)",
+			issueID, existingIss.AssignedTeam)
+		existingIss.AssignedTeam = 0
+		if updErr := o.store.Update(existingIss); updErr != nil {
+			log.Printf("[orchestrator] TEAM_CREATE: failed to persist stale-assignment reset for %s: %v", issueID, updErr)
+		}
 	}
 
 	// Determine the correct action using the pure decision function.
