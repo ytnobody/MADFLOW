@@ -342,7 +342,7 @@ func (m *Manager) ProposePR(fc FailureCase) error {
 		return fmt.Errorf("RepoDir is required for ProposePR")
 	}
 	if m.Owner == "" || m.Repo == "" {
-		return fmt.Errorf("Owner and Repo are required for ProposePR")
+		return fmt.Errorf("owner and repo are required for ProposePR")
 	}
 
 	draft, err := m.GenerateTestDraft(fc)
@@ -451,7 +451,7 @@ func callAnthropicSimple(apiKey, prompt string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("anthropic API call: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
