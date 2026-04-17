@@ -33,14 +33,61 @@ func IsBotLogin(login string) bool {
 	return strings.HasSuffix(login, "[bot]")
 }
 
-type Status string
+// Status represents the lifecycle state of an Issue.
+// It is an iota-based sum type that prevents invalid status values from being
+// constructed. TOML serialization uses the human-readable string form ("open",
+// "in_progress", "resolved", "closed") via the encoding.TextMarshaler and
+// encoding.TextUnmarshaler interfaces.
+type Status int
 
 const (
-	StatusOpen       Status = "open"
-	StatusInProgress Status = "in_progress"
-	StatusResolved   Status = "resolved"
-	StatusClosed     Status = "closed"
+	StatusOpen       Status = iota // "open"
+	StatusInProgress               // "in_progress"
+	StatusResolved                 // "resolved"
+	StatusClosed                   // "closed"
 )
+
+// statusStrings maps each Status value to its canonical string representation.
+var statusStrings = [...]string{
+	StatusOpen:       "open",
+	StatusInProgress: "in_progress",
+	StatusResolved:   "resolved",
+	StatusClosed:     "closed",
+}
+
+// String returns the human-readable string representation of the Status.
+// It implements the fmt.Stringer interface.
+func (s Status) String() string {
+	if int(s) < len(statusStrings) {
+		return statusStrings[s]
+	}
+	return fmt.Sprintf("Status(%d)", int(s))
+}
+
+// IsTerminal reports whether s is a terminal (non-recoverable) status.
+// StatusResolved and StatusClosed are terminal; StatusOpen and StatusInProgress are not.
+func (s Status) IsTerminal() bool {
+	return s == StatusResolved || s == StatusClosed
+}
+
+// MarshalText implements encoding.TextMarshaler.
+// The TOML encoder calls this to serialize Status as a string.
+func (s Status) MarshalText() ([]byte, error) {
+	return []byte(s.String()), nil
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+// The TOML decoder calls this to parse a string status value into Status.
+func (s *Status) UnmarshalText(b []byte) error {
+	text := string(b)
+	for i, str := range statusStrings {
+		if str == text {
+			*s = Status(i)
+			return nil
+		}
+	}
+	return fmt.Errorf("unknown issue status: %q", text)
+}
 
 type Issue struct {
 	ID           string `toml:"id"`
@@ -59,6 +106,81 @@ type Issue struct {
 	Comments        []Comment `toml:"comments,omitempty"`
 }
 
+// NewIssue creates a new Issue with the given ID, title, and body.
+// The returned Issue has Status=StatusOpen and AssignedTeam=0.
+// Use this smart constructor to ensure a consistent initial state.
+func NewIssue(id, title, body string) *Issue {
+	return &Issue{
+		ID:           id,
+		Title:        title,
+		Body:         body,
+		Status:       StatusOpen,
+		AssignedTeam: 0,
+	}
+}
+
+// TransitionToInProgress returns a new Issue copy with Status=StatusInProgress
+// and AssignedTeam set to teamID. Returns an error if iss is in a terminal state.
+// This is a pure function: iss is not mutated.
+func TransitionToInProgress(iss Issue, teamID int) (Issue, error) {
+	if iss.Status.IsTerminal() {
+		return iss, fmt.Errorf("cannot transition issue %s from terminal status %s to in_progress", iss.ID, iss.Status)
+	}
+	result := iss
+	result.Status = StatusInProgress
+	result.AssignedTeam = teamID
+	return result, nil
+}
+
+// TransitionToOpen returns a new Issue copy with Status=StatusOpen and
+// AssignedTeam=0. Only valid from StatusInProgress; returns an error otherwise.
+// This is a pure function: iss is not mutated.
+func TransitionToOpen(iss Issue) (Issue, error) {
+	if iss.Status != StatusInProgress {
+		return iss, fmt.Errorf("cannot transition issue %s from status %s to open (must be in_progress)", iss.ID, iss.Status)
+	}
+	result := iss
+	result.Status = StatusOpen
+	result.AssignedTeam = 0
+	return result, nil
+}
+
+// TransitionToResolved returns a new Issue copy with Status=StatusResolved.
+// Only valid from StatusInProgress; returns an error otherwise.
+// This is a pure function: iss is not mutated.
+func TransitionToResolved(iss Issue) (Issue, error) {
+	if iss.Status != StatusInProgress {
+		return iss, fmt.Errorf("cannot transition issue %s from status %s to resolved (must be in_progress)", iss.ID, iss.Status)
+	}
+	result := iss
+	result.Status = StatusResolved
+	return result, nil
+}
+
+// TransitionToClosed returns a new Issue copy with Status=StatusClosed.
+// This transition is always valid regardless of the current status.
+// This is a pure function: iss is not mutated.
+func TransitionToClosed(iss Issue) (Issue, error) {
+	result := iss
+	result.Status = StatusClosed
+	return result, nil
+}
+
+// MergeComments returns a new comment slice with c appended if c's ID is not
+// already present. Returns (newSlice, true) when c was added, or (original, false)
+// when c is a duplicate. The original slice is never modified (pure function).
+func MergeComments(comments []Comment, c Comment) ([]Comment, bool) {
+	for _, existing := range comments {
+		if existing.ID == c.ID {
+			return comments, false
+		}
+	}
+	result := make([]Comment, len(comments)+1)
+	copy(result, comments)
+	result[len(comments)] = c
+	return result, true
+}
+
 // HasComment checks whether a comment with the given ID already exists.
 func (iss *Issue) HasComment(id int64) bool {
 	for _, c := range iss.Comments {
@@ -71,6 +193,7 @@ func (iss *Issue) HasComment(id int64) bool {
 
 // AddComment appends a comment if it doesn't already exist (dedup by ID).
 // Returns true if the comment was added.
+// Prefer the pure function MergeComments when immutability is desired.
 func (iss *Issue) AddComment(c Comment) bool {
 	if iss.HasComment(c.ID) {
 		return false
