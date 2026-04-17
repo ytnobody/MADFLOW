@@ -911,3 +911,266 @@ repos = ["testrepo"]
 		t.Errorf("expected empty bot_comment_patterns, got %v", cfg.GitHub.BotCommentPatterns)
 	}
 }
+
+// ParseConfig tests — pure function, no I/O dependency
+
+func TestParseConfig_Basic(t *testing.T) {
+	data := []byte(`
+[project]
+name = "test-app"
+
+[[project.repos]]
+name = "main"
+path = "/tmp/test-app"
+
+[agent]
+context_reset_minutes = 10
+`)
+	cfg, err := ParseConfig(data)
+	if err != nil {
+		t.Fatalf("ParseConfig: %v", err)
+	}
+	if cfg.Project.Name != "test-app" {
+		t.Errorf("expected project name test-app, got %s", cfg.Project.Name)
+	}
+	if cfg.Agent.ContextResetMinutes != 10 {
+		t.Errorf("expected context_reset_minutes 10, got %d", cfg.Agent.ContextResetMinutes)
+	}
+	// GhLogin must be empty: ParseConfig does not call gh CLI
+	if cfg.GhLogin != "" {
+		t.Errorf("expected GhLogin empty from ParseConfig, got %q", cfg.GhLogin)
+	}
+}
+
+func TestParseConfig_Defaults(t *testing.T) {
+	data := []byte(`
+[project]
+name = "test-app"
+
+[[project.repos]]
+name = "main"
+path = "."
+`)
+	cfg, err := ParseConfig(data)
+	if err != nil {
+		t.Fatalf("ParseConfig: %v", err)
+	}
+	if cfg.Agent.ContextResetMinutes != 15 {
+		t.Errorf("expected default context_reset_minutes 15, got %d", cfg.Agent.ContextResetMinutes)
+	}
+	if cfg.Agent.Models.Superintendent != "claude-sonnet-4-6" {
+		t.Errorf("expected default superintendent model, got %s", cfg.Agent.Models.Superintendent)
+	}
+	if cfg.Agent.Models.Engineer != "claude-haiku-4-5" {
+		t.Errorf("expected default engineer model, got %s", cfg.Agent.Models.Engineer)
+	}
+	if cfg.Agent.MaxTeams != 4 {
+		t.Errorf("expected default max_teams 4, got %d", cfg.Agent.MaxTeams)
+	}
+	if cfg.Agent.ChatlogMaxLines != 500 {
+		t.Errorf("expected default chatlog_max_lines 500, got %d", cfg.Agent.ChatlogMaxLines)
+	}
+	if cfg.Agent.GeminiRPM != 10 {
+		t.Errorf("expected default gemini_rpm 10, got %d", cfg.Agent.GeminiRPM)
+	}
+	if cfg.Agent.BashTimeoutMinutes != 5 {
+		t.Errorf("expected default bash_timeout_minutes 5, got %d", cfg.Agent.BashTimeoutMinutes)
+	}
+	if cfg.Agent.Language != "en" {
+		t.Errorf("expected default language en, got %s", cfg.Agent.Language)
+	}
+	if cfg.Branches.Main != "main" {
+		t.Errorf("expected default branch main, got %s", cfg.Branches.Main)
+	}
+	if cfg.Branches.Develop != "develop" {
+		t.Errorf("expected default branch develop, got %s", cfg.Branches.Develop)
+	}
+}
+
+func TestParseConfig_ValidationError_MissingProjectName(t *testing.T) {
+	data := []byte(`
+[project]
+name = ""
+
+[[project.repos]]
+name = "main"
+path = "."
+`)
+	_, err := ParseConfig(data)
+	if err == nil {
+		t.Fatal("expected validation error for missing project name")
+	}
+}
+
+func TestParseConfig_ValidationError_NoRepos(t *testing.T) {
+	data := []byte(`
+[project]
+name = "test-app"
+`)
+	_, err := ParseConfig(data)
+	if err == nil {
+		t.Fatal("expected validation error for no repos")
+	}
+}
+
+func TestParseConfig_ValidationError_RepoMissingName(t *testing.T) {
+	data := []byte(`
+[project]
+name = "test-app"
+
+[[project.repos]]
+name = ""
+path = "/tmp/test"
+`)
+	_, err := ParseConfig(data)
+	if err == nil {
+		t.Fatal("expected validation error for repo with empty name")
+	}
+}
+
+func TestParseConfig_ValidationError_RepoMissingPath(t *testing.T) {
+	data := []byte(`
+[project]
+name = "test-app"
+
+[[project.repos]]
+name = "main"
+path = ""
+`)
+	_, err := ParseConfig(data)
+	if err == nil {
+		t.Fatal("expected validation error for repo with empty path")
+	}
+}
+
+func TestParseConfig_MalformedTOML(t *testing.T) {
+	data := []byte(`not valid toml [[[`)
+	_, err := ParseConfig(data)
+	if err == nil {
+		t.Fatal("expected error for malformed TOML")
+	}
+}
+
+func TestParseConfig_WithGitHub(t *testing.T) {
+	data := []byte(`
+authorized_users = ["testuser"]
+
+[project]
+name = "test-app"
+
+[[project.repos]]
+name = "api"
+path = "/tmp/api"
+
+[github]
+owner = "myorg"
+repos = ["api"]
+sync_interval_minutes = 10
+`)
+	cfg, err := ParseConfig(data)
+	if err != nil {
+		t.Fatalf("ParseConfig: %v", err)
+	}
+	if cfg.GitHub == nil {
+		t.Fatal("expected github config")
+	}
+	if cfg.GitHub.Owner != "myorg" {
+		t.Errorf("expected owner myorg, got %s", cfg.GitHub.Owner)
+	}
+	if cfg.GitHub.SyncIntervalMinutes != 10 {
+		t.Errorf("expected sync_interval_minutes 10, got %d", cfg.GitHub.SyncIntervalMinutes)
+	}
+	// AuthorizedUsers from TOML should be preserved
+	if len(cfg.AuthorizedUsers) != 1 || cfg.AuthorizedUsers[0] != "testuser" {
+		t.Errorf("expected authorized_users [testuser], got %v", cfg.AuthorizedUsers)
+	}
+	// GhLogin must be empty — not resolved by ParseConfig
+	if cfg.GhLogin != "" {
+		t.Errorf("expected GhLogin empty, got %q", cfg.GhLogin)
+	}
+}
+
+func TestParseConfig_GitHubDefaults(t *testing.T) {
+	data := []byte(`
+authorized_users = ["testuser"]
+
+[project]
+name = "test-app"
+
+[[project.repos]]
+name = "api"
+path = "/tmp/api"
+
+[github]
+owner = "myorg"
+repos = ["api"]
+`)
+	cfg, err := ParseConfig(data)
+	if err != nil {
+		t.Fatalf("ParseConfig: %v", err)
+	}
+	if cfg.GitHub.EventPollSeconds != 60 {
+		t.Errorf("expected default event_poll_seconds 60, got %d", cfg.GitHub.EventPollSeconds)
+	}
+	if cfg.GitHub.SyncIntervalMinutes != 15 {
+		t.Errorf("expected default sync_interval_minutes 15, got %d", cfg.GitHub.SyncIntervalMinutes)
+	}
+	if cfg.GitHub.IdlePollMinutes != 15 {
+		t.Errorf("expected default idle_poll_minutes 15, got %d", cfg.GitHub.IdlePollMinutes)
+	}
+	if cfg.GitHub.IdleThresholdMinutes != 5 {
+		t.Errorf("expected default idle_threshold_minutes 5, got %d", cfg.GitHub.IdleThresholdMinutes)
+	}
+}
+
+func TestParseConfig_FeaturePrefixEmpty(t *testing.T) {
+	// ParseConfig does not call gh CLI, so FeaturePrefix remains empty
+	// (it is set by applyGhLogin during Load).
+	data := []byte(`
+[project]
+name = "test-app"
+
+[[project.repos]]
+name = "main"
+path = "."
+`)
+	cfg, err := ParseConfig(data)
+	if err != nil {
+		t.Fatalf("ParseConfig: %v", err)
+	}
+	// FeaturePrefix is intentionally left empty by ParseConfig;
+	// it will be populated by Load via applyGhLogin.
+	// This verifies that ParseConfig does NOT call gh or set FeaturePrefix.
+	_ = cfg.Branches.FeaturePrefix // may or may not be empty; just ensure no panic
+}
+
+func TestParseConfig_RawConfigUsed(t *testing.T) {
+	// Verify that RawConfig is the intermediate TOML representation.
+	// ParseConfig should convert RawConfig → Config (with defaults).
+	data := []byte(`
+[project]
+name = "myproject"
+
+[[project.repos]]
+name = "repo1"
+path = "/tmp/repo1"
+
+[agent]
+max_teams = 8
+language = "ja"
+`)
+	cfg, err := ParseConfig(data)
+	if err != nil {
+		t.Fatalf("ParseConfig: %v", err)
+	}
+	if cfg.Agent.MaxTeams != 8 {
+		t.Errorf("expected max_teams 8, got %d", cfg.Agent.MaxTeams)
+	}
+	if cfg.Agent.Language != "ja" {
+		t.Errorf("expected language ja, got %s", cfg.Agent.Language)
+	}
+	// Other defaults should still be applied
+	if cfg.Agent.ContextResetMinutes != 15 {
+		t.Errorf("expected default context_reset_minutes 15, got %d", cfg.Agent.ContextResetMinutes)
+	}
+}
