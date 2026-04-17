@@ -6,7 +6,7 @@ import (
 )
 
 func TestPresets_AllDefined(t *testing.T) {
-	expectedPresets := []string{"claude", "gemini", "claude-cheap", "gemini-cheap", "hybrid", "hybrid-cheap", "claude-api-standard", "claude-api-cheap"}
+	expectedPresets := []string{"claude", "gemini", "claude-cheap", "gemini-cheap", "hybrid", "hybrid-cheap", "claude-api-standard", "claude-api-cheap", "claude-opus", "claude-api-opus"}
 	for _, name := range expectedPresets {
 		if _, ok := presets[name]; !ok {
 			t.Errorf("preset %q is not defined", name)
@@ -28,6 +28,8 @@ func TestPresets_Models(t *testing.T) {
 		{"hybrid-cheap", "claude-sonnet-4-6", "gemini-2.5-flash"},
 		{"claude-api-standard", "anthropic/claude-sonnet-4-6", "anthropic/claude-haiku-4-5"},
 		{"claude-api-cheap", "anthropic/claude-haiku-4-5", "anthropic/claude-haiku-4-5"},
+		{"claude-opus", "claude-opus-4-7", "claude-sonnet-4-6"},
+		{"claude-api-opus", "anthropic/claude-opus-4-7", "anthropic/claude-sonnet-4-6"},
 	}
 
 	for _, tt := range tests {
@@ -106,6 +108,32 @@ main = "main"
 			t.Errorf("engineer not updated: %s", result)
 		}
 	})
+
+	t.Run("switch to claude-opus preset", func(t *testing.T) {
+		result, err := updateModelsSection(input, "claude-opus-4-7", "claude-sonnet-4-6")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !strings.Contains(result, `superintendent = "claude-opus-4-7"`) {
+			t.Errorf("superintendent not updated: %s", result)
+		}
+		if !strings.Contains(result, `engineer = "claude-sonnet-4-6"`) {
+			t.Errorf("engineer not updated: %s", result)
+		}
+	})
+
+	t.Run("switch to claude-api-opus preset", func(t *testing.T) {
+		result, err := updateModelsSection(input, "anthropic/claude-opus-4-7", "anthropic/claude-sonnet-4-6")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !strings.Contains(result, `superintendent = "anthropic/claude-opus-4-7"`) {
+			t.Errorf("superintendent not updated: %s", result)
+		}
+		if !strings.Contains(result, `engineer = "anthropic/claude-sonnet-4-6"`) {
+			t.Errorf("engineer not updated: %s", result)
+		}
+	})
 }
 
 func TestUpdateModelsSection_MissingKeys(t *testing.T) {
@@ -130,7 +158,7 @@ superintendent = "claude-sonnet-4-6"
 
 func TestFormatPresets(t *testing.T) {
 	out := formatPresets()
-	expectedPresets := []string{"claude", "gemini", "claude-cheap", "gemini-cheap", "hybrid", "hybrid-cheap", "claude-api-standard", "claude-api-cheap"}
+	expectedPresets := []string{"claude", "gemini", "claude-cheap", "gemini-cheap", "hybrid", "hybrid-cheap", "claude-api-standard", "claude-api-cheap", "claude-opus", "claude-api-opus"}
 	for _, name := range expectedPresets {
 		if !strings.Contains(out, name) {
 			t.Errorf("formatPresets output missing preset %q", name)
