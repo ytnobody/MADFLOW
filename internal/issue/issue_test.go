@@ -5,6 +5,284 @@ import (
 	"time"
 )
 
+// --- Status sum type tests ---
+
+func TestStatus_String(t *testing.T) {
+	tests := []struct {
+		status Status
+		want   string
+	}{
+		{StatusOpen, "open"},
+		{StatusInProgress, "in_progress"},
+		{StatusResolved, "resolved"},
+		{StatusClosed, "closed"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.want, func(t *testing.T) {
+			if got := tt.status.String(); got != tt.want {
+				t.Errorf("Status.String() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestStatus_IsTerminal(t *testing.T) {
+	tests := []struct {
+		status Status
+		want   bool
+	}{
+		{StatusOpen, false},
+		{StatusInProgress, false},
+		{StatusResolved, true},
+		{StatusClosed, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.status.String(), func(t *testing.T) {
+			if got := tt.status.IsTerminal(); got != tt.want {
+				t.Errorf("Status.IsTerminal() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestStatus_MarshalUnmarshalText(t *testing.T) {
+	tests := []struct {
+		status Status
+		text   string
+	}{
+		{StatusOpen, "open"},
+		{StatusInProgress, "in_progress"},
+		{StatusResolved, "resolved"},
+		{StatusClosed, "closed"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.text, func(t *testing.T) {
+			b, err := tt.status.MarshalText()
+			if err != nil {
+				t.Fatalf("MarshalText() error: %v", err)
+			}
+			if string(b) != tt.text {
+				t.Errorf("MarshalText() = %q, want %q", string(b), tt.text)
+			}
+
+			var s Status
+			if err := s.UnmarshalText([]byte(tt.text)); err != nil {
+				t.Fatalf("UnmarshalText(%q) error: %v", tt.text, err)
+			}
+			if s != tt.status {
+				t.Errorf("UnmarshalText(%q) = %v, want %v", tt.text, s, tt.status)
+			}
+		})
+	}
+}
+
+func TestStatus_UnmarshalText_Unknown(t *testing.T) {
+	var s Status
+	err := s.UnmarshalText([]byte("unknown_status"))
+	if err == nil {
+		t.Error("expected error for unknown status, got nil")
+	}
+}
+
+func TestStatus_TOMLRoundtrip(t *testing.T) {
+	// Verify that Status survives TOML encode/decode as a human-readable string.
+	dir := t.TempDir()
+	store := NewStore(dir)
+
+	iss, err := store.Create("TOML roundtrip test", "body")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	iss.Status = StatusInProgress
+	if err := store.Update(iss); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := store.Get(iss.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got.Status != StatusInProgress {
+		t.Errorf("expected StatusInProgress after TOML roundtrip, got %v", got.Status)
+	}
+}
+
+// --- NewIssue smart constructor tests ---
+
+func TestNewIssue(t *testing.T) {
+	iss := NewIssue("test-001", "Test Title", "Test body")
+	if iss.ID != "test-001" {
+		t.Errorf("expected ID test-001, got %s", iss.ID)
+	}
+	if iss.Title != "Test Title" {
+		t.Errorf("expected title Test Title, got %s", iss.Title)
+	}
+	if iss.Body != "Test body" {
+		t.Errorf("expected body Test body, got %s", iss.Body)
+	}
+	if iss.Status != StatusOpen {
+		t.Errorf("expected status open, got %v", iss.Status)
+	}
+	if iss.AssignedTeam != 0 {
+		t.Errorf("expected AssignedTeam 0, got %d", iss.AssignedTeam)
+	}
+}
+
+// --- State transition function tests ---
+
+func TestTransitionToInProgress(t *testing.T) {
+	iss := NewIssue("test-001", "Title", "body")
+
+	result, err := TransitionToInProgress(*iss, 42)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Status != StatusInProgress {
+		t.Errorf("expected StatusInProgress, got %v", result.Status)
+	}
+	if result.AssignedTeam != 42 {
+		t.Errorf("expected AssignedTeam 42, got %d", result.AssignedTeam)
+	}
+	// Original should be unchanged (pure function).
+	if iss.Status != StatusOpen {
+		t.Error("original issue should be unchanged")
+	}
+}
+
+func TestTransitionToInProgress_FromTerminal(t *testing.T) {
+	for _, s := range []Status{StatusResolved, StatusClosed} {
+		iss := Issue{ID: "test-001", Status: s}
+		_, err := TransitionToInProgress(iss, 1)
+		if err == nil {
+			t.Errorf("expected error transitioning from terminal status %v", s)
+		}
+	}
+}
+
+func TestTransitionToOpen(t *testing.T) {
+	iss := Issue{ID: "test-001", Status: StatusInProgress, AssignedTeam: 5}
+	result, err := TransitionToOpen(iss)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Status != StatusOpen {
+		t.Errorf("expected StatusOpen, got %v", result.Status)
+	}
+	if result.AssignedTeam != 0 {
+		t.Errorf("expected AssignedTeam 0, got %d", result.AssignedTeam)
+	}
+	// Original should be unchanged.
+	if iss.Status != StatusInProgress {
+		t.Error("original issue should be unchanged")
+	}
+}
+
+func TestTransitionToOpen_InvalidState(t *testing.T) {
+	for _, s := range []Status{StatusOpen, StatusResolved, StatusClosed} {
+		iss := Issue{ID: "test-001", Status: s}
+		_, err := TransitionToOpen(iss)
+		if err == nil {
+			t.Errorf("expected error transitioning to open from status %v", s)
+		}
+	}
+}
+
+func TestTransitionToResolved(t *testing.T) {
+	iss := Issue{ID: "test-001", Status: StatusInProgress, AssignedTeam: 3}
+	result, err := TransitionToResolved(iss)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Status != StatusResolved {
+		t.Errorf("expected StatusResolved, got %v", result.Status)
+	}
+	// Original should be unchanged.
+	if iss.Status != StatusInProgress {
+		t.Error("original issue should be unchanged")
+	}
+}
+
+func TestTransitionToResolved_InvalidState(t *testing.T) {
+	for _, s := range []Status{StatusOpen, StatusResolved, StatusClosed} {
+		iss := Issue{ID: "test-001", Status: s}
+		_, err := TransitionToResolved(iss)
+		if err == nil {
+			t.Errorf("expected error resolving from status %v", s)
+		}
+	}
+}
+
+func TestTransitionToClosed(t *testing.T) {
+	for _, s := range []Status{StatusOpen, StatusInProgress, StatusResolved, StatusClosed} {
+		iss := Issue{ID: "test-001", Status: s}
+		result, err := TransitionToClosed(iss)
+		if err != nil {
+			t.Errorf("unexpected error closing from status %v: %v", s, err)
+			continue
+		}
+		if result.Status != StatusClosed {
+			t.Errorf("expected StatusClosed, got %v", result.Status)
+		}
+	}
+}
+
+// --- MergeComments pure function tests ---
+
+func TestMergeComments_NewComment(t *testing.T) {
+	existing := []Comment{{ID: 1, Author: "alice", Body: "hello"}}
+	c := Comment{ID: 2, Author: "bob", Body: "world"}
+
+	result, added := MergeComments(existing, c)
+	if !added {
+		t.Error("expected comment to be added")
+	}
+	if len(result) != 2 {
+		t.Errorf("expected 2 comments, got %d", len(result))
+	}
+	// Original slice should be unchanged.
+	if len(existing) != 1 {
+		t.Error("original slice should be unchanged")
+	}
+}
+
+func TestMergeComments_DuplicateComment(t *testing.T) {
+	c := Comment{ID: 1, Author: "alice", Body: "hello"}
+	existing := []Comment{c}
+
+	result, added := MergeComments(existing, c)
+	if added {
+		t.Error("expected duplicate comment NOT to be added")
+	}
+	if len(result) != 1 {
+		t.Errorf("expected 1 comment, got %d", len(result))
+	}
+}
+
+func TestMergeComments_EmptySlice(t *testing.T) {
+	c := Comment{ID: 1, Author: "alice", Body: "hello"}
+	result, added := MergeComments(nil, c)
+	if !added {
+		t.Error("expected comment to be added to empty slice")
+	}
+	if len(result) != 1 {
+		t.Errorf("expected 1 comment, got %d", len(result))
+	}
+}
+
+func TestMergeComments_Immutability(t *testing.T) {
+	// Verify that MergeComments does not modify the original slice.
+	original := []Comment{{ID: 1, Author: "alice", Body: "a"}}
+	originalLen := len(original)
+
+	result, _ := MergeComments(original, Comment{ID: 2, Author: "bob", Body: "b"})
+	if len(original) != originalLen {
+		t.Error("MergeComments must not modify the original slice")
+	}
+	_ = result
+}
+
 func TestCreateAndGet(t *testing.T) {
 	dir := t.TempDir()
 	store := NewStore(dir)
