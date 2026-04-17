@@ -559,21 +559,20 @@ func (o *Orchestrator) watchCommands(ctx context.Context) {
 
 // handleCommand processes orchestrator commands from the chatlog.
 func (o *Orchestrator) handleCommand(ctx context.Context, msg chatlog.Message) {
-	body := strings.TrimSpace(msg.Body)
-
-	switch {
-	case strings.HasPrefix(body, "TEAM_CREATE"):
-		o.handleTeamCreate(ctx, body)
-	case strings.HasPrefix(body, "TEAM_DISBAND"):
-		o.handleTeamDisband(body)
-	case strings.HasPrefix(body, "RELEASE"):
-		o.handleRelease(body)
-	case strings.HasPrefix(body, "WAKE_GITHUB"):
+	cmd := ParseCommand(msg.Body)
+	switch cmd.Type {
+	case CommandTeamCreate:
+		o.handleTeamCreate(ctx, cmd)
+	case CommandTeamDisband:
+		o.handleTeamDisband(cmd)
+	case CommandRelease:
+		o.handleRelease(cmd)
+	case CommandWakeGitHub:
 		o.handleWakeGitHub()
-	case strings.HasPrefix(body, "PATROL_COMPLETE"):
+	case CommandPatrolComplete:
 		o.handlePatrolComplete()
 	default:
-		log.Printf("[orchestrator] unknown command from %s: %s", msg.Sender, body)
+		log.Printf("[orchestrator] unknown command from %s: %s", msg.Sender, strings.TrimSpace(msg.Body))
 	}
 }
 
@@ -622,9 +621,8 @@ func normalizeIssueID(s string) string {
 // The expensive Create call is run in a goroutine so the watchCommands loop
 // is not blocked while waiting for the LLM to respond (which can take 10+ min).
 // Pre-validation checks are synchronous and fast.
-func (o *Orchestrator) handleTeamCreate(ctx context.Context, body string) {
-	parts := strings.Fields(body)
-	if len(parts) < 2 {
+func (o *Orchestrator) handleTeamCreate(ctx context.Context, cmd Command) {
+	if len(cmd.Args) == 0 {
 		log.Printf("[orchestrator] TEAM_CREATE missing issue ID")
 		return
 	}
@@ -632,15 +630,16 @@ func (o *Orchestrator) handleTeamCreate(ctx context.Context, body string) {
 	// Normalize the issue ID: strip any non-ID characters that the superintendent
 	// may append when retrying (e.g. "gh-121（2回目の要求）。チームアサインをお願いします。").
 	// Issue IDs consist solely of ASCII alphanumeric characters and hyphens.
-	issueID := normalizeIssueID(parts[1])
+	rawID := cmd.Args[0]
+	issueID := normalizeIssueID(rawID)
 	if issueID == "" {
-		log.Printf("[orchestrator] TEAM_CREATE: could not extract valid issue ID from %q", parts[1])
+		log.Printf("[orchestrator] TEAM_CREATE: could not extract valid issue ID from %q", rawID)
 		o.appendOrLog("superintendent", "orchestrator",
-			fmt.Sprintf("TEAM_CREATE は拒否されました: 有効なイシューIDを抽出できませんでした (%q)", parts[1]))
+			fmt.Sprintf("TEAM_CREATE は拒否されました: 有効なイシューIDを抽出できませんでした (%q)", rawID))
 		return
 	}
-	if issueID != parts[1] {
-		log.Printf("[orchestrator] TEAM_CREATE: normalized issue ID %q -> %q (stripped extra text)", parts[1], issueID)
+	if issueID != rawID {
+		log.Printf("[orchestrator] TEAM_CREATE: normalized issue ID %q -> %q (stripped extra text)", rawID, issueID)
 	}
 
 	existingIss, err := o.store.Get(issueID)
@@ -651,73 +650,72 @@ func (o *Orchestrator) handleTeamCreate(ctx context.Context, body string) {
 		return
 	}
 
-	// Reject team creation for issues that are already closed or resolved.
-	if existingIss.Status == issue.StatusClosed || existingIss.Status == issue.StatusResolved {
-		log.Printf("[orchestrator] TEAM_CREATE rejected: issue %s is %s", issueID, existingIss.Status)
+	// Determine the correct action using the pure decision function.
+	// This separates the decision logic from the effectful I/O operations below.
+	decision := DecideTeamAssignment(
+		*existingIss,
+		o.teams.HasIssue(issueID),
+		o.teams.HasIdle(),
+		o.teams.Full(),
+	)
+
+	switch decision.Decision {
+	case AssignDecisionReject:
+		log.Printf("[orchestrator] TEAM_CREATE rejected: issue %s: %s", issueID, decision.Reason)
 		o.appendOrLog("superintendent", "orchestrator",
-			fmt.Sprintf("TEAM_CREATE %s は拒否されました: イシューのステータスが %s です", issueID, existingIss.Status))
+			fmt.Sprintf("TEAM_CREATE %s は拒否されました: %s", issueID, decision.Reason))
 		return
-	}
 
-	// Reject if issue is already assigned to a team.
-	if existingIss.AssignedTeam > 0 {
-		log.Printf("[orchestrator] TEAM_CREATE rejected: issue %s already assigned to team %d", issueID, existingIss.AssignedTeam)
-		o.appendOrLog("superintendent", "orchestrator",
-			fmt.Sprintf("TEAM_CREATE %s は拒否されました: 既にチーム %d にアサイン済みです", issueID, existingIss.AssignedTeam))
+	case AssignDecisionReuseIdle:
+		o.executeReuseIdle(issueID, existingIss)
 		return
-	}
 
-	// Reject if an active or pending team is already working on this issue
-	// (covers both the race window where AssignedTeam is not yet updated
-	// and the window where Create() is still in progress).
-	if o.teams.HasIssue(issueID) {
-		log.Printf("[orchestrator] TEAM_CREATE rejected: active/pending team already exists for issue %s", issueID)
-		o.appendOrLog("superintendent", "orchestrator",
-			fmt.Sprintf("TEAM_CREATE %s は拒否されました: 既にアクティブまたは作成中のチームが存在します", issueID))
-		return
-	}
-
-	issueTitle := existingIss.Title
-
-	// Before creating a new team, try to reuse an existing idle standby team.
-	// When all maxTeams slots are occupied by standby teams (IssueID == ""),
-	// calling Create() would fail with "maximum teams reached". Instead, we
-	// assign the issue directly to one of the idle teams and notify its engineer.
-	if idleTeam, ok := o.teams.AssignIdle(issueID, issueTitle); ok {
-		log.Printf("[orchestrator] TEAM_CREATE %s: reusing idle team %d", issueID, idleTeam.ID)
-
-		// Update the issue to reflect the new assignment.
-		existingIss.AssignedTeam = idleTeam.ID
-		existingIss.Status = issue.StatusInProgress
-		if updErr := o.store.Update(existingIss); updErr != nil {
-			log.Printf("[orchestrator] TEAM_CREATE: failed to update issue %s assignment: %v", issueID, updErr)
-		}
-
-		// Notify the idle team's engineer about the new assignment via chatlog.
-		engineerID := idleTeam.Engineer.ID.String()
-		o.appendOrLog(engineerID, "superintendent",
-			fmt.Sprintf("イシュー %s の実装をお願いします。あなたにアサインしました。", issueID))
-
-		// Notify superintendent that the assignment was completed.
-		o.appendOrLog("superintendent", "orchestrator",
-			fmt.Sprintf("TEAM_CREATE %s: アイドルチーム %d (%s) にアサインしました", issueID, idleTeam.ID, engineerID))
-		return
-	}
-
-	// No idle team available.
-	// Check if we are already at the maximum team capacity.  If so, we cannot
-	// create a new team and must wait until an existing team is disbanded.
-	// Reject early (before marking in_progress) so the issue stays open and
-	// the superintendent can retry after a team slot becomes available.
-	if o.teams.Full() {
-		log.Printf("[orchestrator] TEAM_CREATE %s: rejected — at max_teams capacity (%d)", issueID, o.teams.Cap())
+	case AssignDecisionDefer:
+		log.Printf("[orchestrator] TEAM_CREATE %s: deferred — at max_teams capacity (%d)", issueID, o.teams.Cap())
 		o.appendOrLog("superintendent", "orchestrator",
 			fmt.Sprintf("TEAM_CREATE %s は保留されました: チームが上限 (max_teams=%d) に達しています。既存チームが解放されるまで待機してください。",
 				issueID, o.teams.Cap()))
 		return
+
+	case AssignDecisionCreate:
+		o.executeCreateTeam(ctx, issueID, existingIss)
+	}
+}
+
+// executeReuseIdle assigns an idle standby team to the given issue.
+// This is the effectful part of the ReuseIdle decision.
+func (o *Orchestrator) executeReuseIdle(issueID string, existingIss *issue.Issue) {
+	idleTeam, ok := o.teams.AssignIdle(issueID, existingIss.Title)
+	if !ok {
+		// Race condition: idle team disappeared between DecideTeamAssignment and now.
+		// Log and return; the superintendent can retry.
+		log.Printf("[orchestrator] TEAM_CREATE %s: idle team disappeared, retrying is safe", issueID)
+		return
+	}
+	log.Printf("[orchestrator] TEAM_CREATE %s: reusing idle team %d", issueID, idleTeam.ID)
+
+	// Update the issue to reflect the new assignment.
+	existingIss.AssignedTeam = idleTeam.ID
+	existingIss.Status = issue.StatusInProgress
+	if updErr := o.store.Update(existingIss); updErr != nil {
+		log.Printf("[orchestrator] TEAM_CREATE: failed to update issue %s assignment: %v", issueID, updErr)
 	}
 
-	// Capacity is available — create a new team.
+	// Notify the idle team's engineer about the new assignment via chatlog.
+	engineerID := idleTeam.Engineer.ID.String()
+	o.appendOrLog(engineerID, "superintendent",
+		fmt.Sprintf("イシュー %s の実装をお願いします。あなたにアサインしました。", issueID))
+
+	// Notify superintendent that the assignment was completed.
+	o.appendOrLog("superintendent", "orchestrator",
+		fmt.Sprintf("TEAM_CREATE %s: アイドルチーム %d (%s) にアサインしました", issueID, idleTeam.ID, engineerID))
+}
+
+// executeCreateTeam creates a new team for the given issue asynchronously.
+// This is the effectful part of the Create decision.
+func (o *Orchestrator) executeCreateTeam(ctx context.Context, issueID string, existingIss *issue.Issue) {
+	issueTitle := existingIss.Title
+
 	// Mark issue as in_progress immediately to prevent the superintendent
 	// from sending duplicate TEAM_CREATE commands while the team is being created.
 	existingIss.Status = issue.StatusInProgress
@@ -786,13 +784,12 @@ func (o *Orchestrator) Wait() {
 
 // handleTeamDisband disbands the team for an issue and cleans up its worktrees.
 // Expected format: TEAM_DISBAND issue-id
-func (o *Orchestrator) handleTeamDisband(body string) {
-	parts := strings.Fields(body)
-	if len(parts) < 2 {
+func (o *Orchestrator) handleTeamDisband(cmd Command) {
+	if len(cmd.Args) == 0 {
 		log.Printf("[orchestrator] TEAM_DISBAND missing issue ID")
 		return
 	}
-	issueID := parts[1]
+	issueID := cmd.Args[0]
 
 	teamNum, err := o.teams.DisbandByIssue(issueID)
 	if err != nil {
@@ -806,7 +803,7 @@ func (o *Orchestrator) handleTeamDisband(body string) {
 
 // handleRelease triggers a develop -> main merge.
 // Expected format: RELEASE
-func (o *Orchestrator) handleRelease(_ string) {
+func (o *Orchestrator) handleRelease(_ Command) {
 	log.Println("[orchestrator] release requested")
 	for name, repo := range o.repos {
 		if err := repo.Checkout(o.cfg.Branches.Main); err != nil {
