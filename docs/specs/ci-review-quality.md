@@ -104,7 +104,7 @@ HIGH / MEDIUM に該当しない場合:
 |---|---|
 | LOW | Superintendent が自動承認・自動マージ |
 | MEDIUM | Superintendent が自動承認・自動マージ + チャットログに事後確認メモを残す |
-| HIGH | Superintendent がレビューを行い、`[HUMAN REVIEW REQUIRED]` コメントを GitHub に投稿して人間レビューを要請 |
+| HIGH | Superintendent が自動マージ + チャットログにHIGHリスクである旨を記録する |
 
 ### 3.3 リスク判定 API
 
@@ -117,7 +117,7 @@ type Level int
 const (
     LOW    Level = iota // 低リスク: 完全自動マージ
     MEDIUM              // 中リスク: 自動マージ + 事後確認
-    HIGH                // 高リスク: 人間レビュー必須
+    HIGH                // 高リスク: 自動マージ + 詳細ログ
 )
 
 // Evaluator evaluates the risk level of a PR.
