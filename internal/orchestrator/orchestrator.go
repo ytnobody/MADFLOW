@@ -185,6 +185,9 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	if ctx.Err() != nil {
 		log.Println("[orchestrator] shutting down (cancelled during startup)")
 		wg.Wait()
+		// Also wait for the goroutines spawned by startAllTeams (tracked via o.wg)
+		// so they finish any file I/O before the caller cleans up temp directories.
+		o.wg.Wait()
 		log.Println("[orchestrator] stopped")
 		return nil
 	}
@@ -496,7 +499,9 @@ func (o *Orchestrator) startAllTeams(ctx context.Context) {
 			issueTitle = assignable[idx].Title
 		}
 
+		o.wg.Add(1)
 		go func() {
+			defer o.wg.Done()
 			t, err := o.teams.Create(ctx, issueID, issueTitle)
 			if err != nil {
 				if ctx.Err() == nil {

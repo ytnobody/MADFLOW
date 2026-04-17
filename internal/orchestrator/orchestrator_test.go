@@ -297,6 +297,8 @@ func TestStartAllTeamsCreatesMaxTeamsUnconditionally(t *testing.T) {
 
 	orc := New(cfg, dir, t.TempDir())
 	orc.teams = team.NewManager(newMockTeamFactory(t), 3)
+	// Ensure all goroutines spawned by startAllTeams finish before TempDir cleanup.
+	t.Cleanup(orc.Wait)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -319,6 +321,8 @@ func TestStartAllTeamsAssignsIssues(t *testing.T) {
 
 	orc := New(cfg, dir, t.TempDir())
 	orc.teams = team.NewManager(newMockTeamFactory(t), 4)
+	// Ensure all goroutines spawned by startAllTeams finish before TempDir cleanup.
+	t.Cleanup(orc.Wait)
 
 	// Create: 1 open, 1 in_progress, 1 resolved, 1 closed
 	statuses := []issue.Status{issue.StatusOpen, issue.StatusInProgress, issue.StatusResolved, issue.StatusClosed}
@@ -369,6 +373,8 @@ func TestStartAllTeamsSkipsPendingApproval(t *testing.T) {
 
 	orc := New(cfg, dir, t.TempDir())
 	orc.teams = team.NewManager(newMockTeamFactory(t), 3)
+	// Ensure all goroutines spawned by startAllTeams finish before TempDir cleanup.
+	t.Cleanup(orc.Wait)
 
 	// Create 1 regular open issue and 1 pending-approval issue.
 	regular, err := orc.Store().Create("Regular Issue", "body")
@@ -593,6 +599,8 @@ func TestStartAllTeamsResetsStaleAssignment(t *testing.T) {
 
 	orc := New(cfg, dir, t.TempDir())
 	orc.teams = team.NewManager(newMockTeamFactory(t), 2)
+	// Ensure all goroutines spawned by startAllTeams finish before TempDir cleanup.
+	t.Cleanup(orc.Wait)
 
 	// Create an in_progress issue with a stale team assignment.
 	iss, _ := orc.Store().Create("Stale Issue", "body")
@@ -1123,6 +1131,10 @@ func TestRunGracefulShutdownDuringStartup(t *testing.T) {
 	// Replace the team factory with the mock so no real Claude Code processes
 	// are spawned during startAllTeams.
 	orc.teams = team.NewManager(newMockTeamFactory(t), 2)
+	// Ensure all goroutines spawned by startAllTeams (tracked via o.wg) finish
+	// before TempDir cleanup.  t.Cleanup runs in LIFO order, so registering
+	// Wait() after the t.TempDir() calls above guarantees it executes first.
+	t.Cleanup(orc.Wait)
 
 	// Cancel the context before Run is called so that the context is already
 	// done by the time waitForAgentsReady would be reached.
