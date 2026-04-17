@@ -1351,8 +1351,7 @@ func TestHandleTeamCreateMalformedIssueID(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	// Simulate the superintendent sending TEAM_CREATE with appended Japanese text,
 	// mimicking the exact pattern observed in the gh-121 incident.
