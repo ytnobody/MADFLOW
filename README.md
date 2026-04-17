@@ -78,7 +78,7 @@ path = "."
 context_reset_minutes = 8
 
 [agent.models]
-superintendent = "claude-opus-4-6"
+superintendent = "claude-opus-4-7"
 engineer = "claude-sonnet-4-6"
 # Gemini models are also supported:
 # superintendent = "gemini-2.0-flash-exp"
@@ -146,12 +146,14 @@ You can switch the models in use with the `madflow use <preset>` command.
 | Preset | superintendent | engineer | Notes |
 |--------|---------------|----------|-------|
 | `claude` | claude-sonnet-4-6 | claude-sonnet-4-6 | Claude CLI (requires Pro/Max) |
+| `claude-opus` | claude-opus-4-7 | claude-sonnet-4-6 | Claude CLI with Opus 4.7 superintendent |
 | `claude-cheap` | claude-sonnet-4-6 | claude-haiku-4-5 | Claude CLI cost-reduced version |
 | `gemini` | gemini-2.5-pro | gemini-2.5-pro | Gemini CLI (requires gemini-cli) |
 | `gemini-cheap` | gemini-2.5-flash | gemini-2.5-flash | Gemini fast & low-cost version |
 | `hybrid` | claude-sonnet-4-6 | gemini-2.5-pro | Hybrid configuration |
 | `hybrid-cheap` | claude-sonnet-4-6 | gemini-2.5-flash | Hybrid low-cost version |
 | `claude-api-standard` | anthropic/claude-sonnet-4-6 | anthropic/claude-haiku-4-5 | **Anthropic API key method** |
+| `claude-api-opus` | anthropic/claude-opus-4-7 | anthropic/claude-sonnet-4-6 | **Anthropic API - Opus 4.7 superintendent** |
 | `claude-api-cheap` | anthropic/claude-haiku-4-5 | anthropic/claude-haiku-4-5 | **Anthropic API key method - cheapest** |
 
 ### How to Use the Anthropic API Key Method

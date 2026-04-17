@@ -135,7 +135,7 @@ context_reset_minutes = 8
 
 # 使用するモデル
 [agent.models]
-superintendent = "claude-opus-4-6"
+superintendent = "claude-opus-4-7"
 engineer = "claude-sonnet-4-6"
 
 # ブランチ設定

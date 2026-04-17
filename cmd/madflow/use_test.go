@@ -6,7 +6,7 @@ import (
 )
 
 func TestPresets_AllDefined(t *testing.T) {
-	expectedPresets := []string{"claude", "gemini", "claude-cheap", "gemini-cheap", "hybrid", "hybrid-cheap", "claude-api-standard", "claude-api-cheap"}
+	expectedPresets := []string{"claude", "claude-opus", "gemini", "claude-cheap", "gemini-cheap", "hybrid", "hybrid-cheap", "claude-api-standard", "claude-api-opus", "claude-api-cheap"}
 	for _, name := range expectedPresets {
 		if _, ok := presets[name]; !ok {
 			t.Errorf("preset %q is not defined", name)
@@ -28,6 +28,8 @@ func TestPresets_Models(t *testing.T) {
 		{"hybrid-cheap", "claude-sonnet-4-6", "gemini-2.5-flash"},
 		{"claude-api-standard", "anthropic/claude-sonnet-4-6", "anthropic/claude-haiku-4-5"},
 		{"claude-api-cheap", "anthropic/claude-haiku-4-5", "anthropic/claude-haiku-4-5"},
+		{"claude-opus", "claude-opus-4-7", "claude-sonnet-4-6"},
+		{"claude-api-opus", "anthropic/claude-opus-4-7", "anthropic/claude-sonnet-4-6"},
 	}
 
 	for _, tt := range tests {
@@ -54,7 +56,7 @@ name = "test"
 context_reset_minutes = 8
 
 [agent.models]
-superintendent = "claude-opus-4-6"
+superintendent = "claude-opus-4-7"
 engineer = "claude-sonnet-4-6"
 
 [branches]
@@ -130,7 +132,7 @@ superintendent = "claude-sonnet-4-6"
 
 func TestFormatPresets(t *testing.T) {
 	out := formatPresets()
-	expectedPresets := []string{"claude", "gemini", "claude-cheap", "gemini-cheap", "hybrid", "hybrid-cheap", "claude-api-standard", "claude-api-cheap"}
+	expectedPresets := []string{"claude", "claude-opus", "gemini", "claude-cheap", "gemini-cheap", "hybrid", "hybrid-cheap", "claude-api-standard", "claude-api-opus", "claude-api-cheap"}
 	for _, name := range expectedPresets {
 		if !strings.Contains(out, name) {
 			t.Errorf("formatPresets output missing preset %q", name)
