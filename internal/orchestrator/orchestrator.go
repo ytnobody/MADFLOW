@@ -46,6 +46,11 @@ type Orchestrator struct {
 
 	residentAgents []*agent.Agent
 	mu             sync.Mutex
+
+	// wg tracks in-flight goroutines spawned by handleTeamCreate so tests (and
+	// graceful shutdown) can wait for all async work to complete before tearing
+	// down the working directory.
+	wg sync.WaitGroup
 }
 
 // New creates a new Orchestrator.
@@ -736,7 +741,9 @@ func (o *Orchestrator) handleTeamCreate(ctx context.Context, body string) {
 
 	// Run the expensive Create call in a goroutine to avoid blocking
 	// the watchCommands loop (Create can take 10+ minutes waiting for LLM).
+	o.wg.Add(1)
 	go func() {
+		defer o.wg.Done()
 		t, err := o.teams.Create(createCtx, issueID, issueTitle)
 		if err != nil {
 			log.Printf("[orchestrator] TEAM_CREATE failed for %s: %v", issueID, err)
@@ -768,6 +775,13 @@ func (o *Orchestrator) handleTeamCreate(ctx context.Context, body string) {
 		o.appendOrLog("superintendent", "orchestrator",
 			fmt.Sprintf("TEAM_CREATE %s: チーム %d を作成しました", issueID, t.ID))
 	}()
+}
+
+// Wait blocks until all in-flight asynchronous goroutines (e.g. team creation)
+// have completed.  It is primarily used in tests to ensure that background work
+// finishes before the test's TempDir is removed.
+func (o *Orchestrator) Wait() {
+	o.wg.Wait()
 }
 
 // handleTeamDisband disbands the team for an issue and cleans up its worktrees.
