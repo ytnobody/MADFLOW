@@ -23,6 +23,10 @@ type PromptVars struct {
 	// Substituted as {{GH_LOGIN}} in templates. Used to construct the namespaced
 	// worktree path: {RepoPath}/.worktrees/{GhLogin}/issue-<issueID>.
 	GhLogin string
+	// TeamsFilePath is the absolute path to the teams.toml state file.
+	// Substituted as {{TEAMS_FILE}} in templates so the superintendent can
+	// inspect active teams with `cat {{TEAMS_FILE}}`.
+	TeamsFilePath string
 }
 
 // promptFileNames maps roles to their prompt template filenames.
@@ -70,6 +74,7 @@ func substituteVars(content string, vars PromptVars) string {
 		"{{TEAM_NUM}}":       vars.TeamNum,
 		"{{REPO_PATH}}":      vars.RepoPath,
 		"{{GH_LOGIN}}":       vars.GhLogin,
+		"{{TEAMS_FILE}}":     vars.TeamsFilePath,
 	}
 
 	for placeholder, value := range replacements {

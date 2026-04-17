@@ -75,6 +75,7 @@ type Manager struct {
 	nextID        int
 	maxTeams      int
 	factory       TeamFactory
+	persistPath   string // path to teams.toml; empty means no persistence
 }
 
 // TeamFactory creates agents for a team. Provided by the orchestrator.
@@ -92,6 +93,38 @@ func NewManager(factory TeamFactory, maxTeams int) *Manager {
 		nextID:        1,
 		maxTeams:      maxTeams,
 		factory:       factory,
+	}
+}
+
+// SetPersistPath sets the path to the teams.toml file for state persistence.
+// When set, Manager will read the current next_id from the file on first use
+// and write an updated file on every Create and Disband operation.
+// Call this immediately after NewManager and before the first Create.
+func (m *Manager) SetPersistPath(path string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.persistPath = path
+	// Initialise nextID from the persisted file so that team IDs are
+	// monotonically increasing across process restarts.
+	if path != "" {
+		if tf, err := readTeamsFile(path); err == nil && tf.NextID > m.nextID {
+			m.nextID = tf.NextID
+		}
+	}
+}
+
+// persistLocked writes the current in-memory team state to teams.toml.
+// Must be called with m.mu held.
+func (m *Manager) persistLocked() {
+	if m.persistPath == "" {
+		return
+	}
+	tf := teamsFile{NextID: m.nextID}
+	for _, t := range m.teams {
+		tf.Teams = append(tf.Teams, teamRecord{ID: t.ID, IssueID: t.IssueID})
+	}
+	if err := writeTeamsFile(m.persistPath, tf); err != nil {
+		log.Printf("[team] persist: write teams.toml: %v", err)
 	}
 }
 
@@ -139,11 +172,12 @@ func (m *Manager) Create(ctx context.Context, issueID, issueTitle string) (*Team
 		cancel:     cancel,
 	}
 
-	// Move from pending to active.
+	// Move from pending to active, then persist the updated state.
 	m.mu.Lock()
 	m.teams[teamNum] = team
 	m.pendingCount--
 	delete(m.pendingIssues, issueID)
+	m.persistLocked()
 	m.mu.Unlock()
 
 	// Start the engineer agent with restart on unexpected exit.
@@ -193,6 +227,7 @@ func (m *Manager) Disband(teamNum int) error {
 		return fmt.Errorf("team %d not found", teamNum)
 	}
 	delete(m.teams, teamNum)
+	m.persistLocked()
 	m.mu.Unlock()
 
 	team.cancel()

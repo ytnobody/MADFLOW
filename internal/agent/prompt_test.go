@@ -139,3 +139,23 @@ func TestSubstituteVarsRepoPath(t *testing.T) {
 		t.Error("expected /home/user/myproject in result")
 	}
 }
+
+// TestSubstituteVarsTeamsFile verifies that {{TEAMS_FILE}} is substituted so
+// the superintendent can inspect active teams with `cat {{TEAMS_FILE}}`.
+// This is the RC-2 fix for the local-001 incident where {{TEAMS_FILE}} was
+// undefined and the superintendent could not verify team state.
+func TestSubstituteVarsTeamsFile(t *testing.T) {
+	content := "teams=cat {{TEAMS_FILE}}"
+	vars := PromptVars{
+		TeamsFilePath: "/data/teams.toml",
+	}
+
+	result := substituteVars(content, vars)
+
+	if strings.Contains(result, "{{TEAMS_FILE}}") {
+		t.Error("TEAMS_FILE placeholder was not replaced")
+	}
+	if !strings.Contains(result, "/data/teams.toml") {
+		t.Errorf("expected /data/teams.toml in result, got: %s", result)
+	}
+}

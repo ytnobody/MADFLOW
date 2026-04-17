@@ -501,45 +501,47 @@ func TestHandleTeamCreateRejectsClosedIssue(t *testing.T) {
 	}
 }
 
-func TestHandleTeamCreateRejectsAlreadyAssigned(t *testing.T) {
+// TestHandleTeamCreateResetsStaleAssignment verifies RC-1 fix:
+// when an issue has AssignedTeam > 0 but the team is no longer present in the
+// manager (e.g. after a process restart or an unresponsive engineer), the stale
+// assignment is automatically cleared and a new team is created.
+func TestHandleTeamCreateResetsStaleAssignment(t *testing.T) {
 	dir := t.TempDir()
 	cfg := testConfig(dir)
-	os.MkdirAll(filepath.Join(dir, "issues"), 0755)
-	chatlogPath := filepath.Join(dir, "chatlog.txt")
-	os.WriteFile(chatlogPath, nil, 0644)
+	if err := os.MkdirAll(filepath.Join(dir, "issues"), 0755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "chatlog.txt"), nil, 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
 
 	orc := New(cfg, dir, t.TempDir())
-	orc.teams = team.NewManager(newMockTeamFactory(t), 3)
+	factory := newMockTeamFactory(t)
+	orc.teams = team.NewManager(factory, 3)
+	// Ensure all goroutines spawned by handleTeamCreate finish before TempDir cleanup.
+	t.Cleanup(orc.Wait)
 
-	// Create an issue already assigned to a team.
-	iss, _ := orc.Store().Create("Assigned Issue", "body")
+	// Create an issue with a stale assigned_team value (team not in manager).
+	iss, _ := orc.Store().Create("Stale Assignment Issue", "body")
 	iss.Status = issue.StatusInProgress
-	iss.AssignedTeam = 5
+	iss.AssignedTeam = 5 // phantom team — not present in manager
 	orc.Store().Update(iss)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	teamsBefore := orc.Teams().Count()
 	orc.handleTeamCreate(ctx, ParseCommand(fmt.Sprintf("TEAM_CREATE %s", iss.ID)))
 
-	// No new team should be created.
-	if orc.Teams().Count() != teamsBefore {
-		t.Errorf("expected no new team for already-assigned issue, but team count changed from %d to %d", teamsBefore, orc.Teams().Count())
-	}
+	// A new team should have been created (async — wait up to 2s).
+	waitForTeamCount(t, orc, 1, 2*time.Second)
 
-	// Chatlog should contain a rejection message about already assigned.
-	cl := chatlog.New(chatlogPath)
-	msgs, _ := cl.Poll("superintendent")
-	found := false
-	for _, m := range msgs {
-		if contains(m.Body, "拒否されました") && contains(m.Body, "アサイン済み") {
-			found = true
-			break
-		}
+	// The stale AssignedTeam should have been reset in the store.
+	updated, err := orc.Store().Get(iss.ID)
+	if err != nil {
+		t.Fatalf("store.Get: %v", err)
 	}
-	if !found {
-		t.Error("expected rejection message in chatlog for already-assigned issue TEAM_CREATE")
+	if updated.AssignedTeam == 5 {
+		t.Errorf("AssignedTeam should have been reset from stale value 5, but is still 5")
 	}
 }
 
@@ -1490,6 +1492,14 @@ feature_prefix = "feature/issue-"
 	if err := os.WriteFile(cfgPath, []byte(initialTOML), 0644); err != nil {
 		t.Fatalf("write initial config: %v", err)
 	}
+	// Backdate the initial file so the watcher's lastModTime is unambiguously in
+	// the past regardless of filesystem timestamp resolution or goroutine scheduling.
+	// This eliminates the race where the watcher goroutine starts after the updated
+	// file has already been written and thus never sees a change.
+	past := time.Now().Add(-5 * time.Second)
+	if err := os.Chtimes(cfgPath, past, past); err != nil {
+		t.Fatalf("chtimes initial config: %v", err)
+	}
 
 	cfg := testConfig(dir)
 	cfg.Agent.MaxTeams = 2
@@ -1525,15 +1535,16 @@ main = "main"
 develop = "develop"
 feature_prefix = "feature/issue-"
 `
-	// Give the watcher a moment to record the initial mod time before we change the file.
+	// Give the watcher one poll cycle (500ms) to start and record the backdated
+	// mod time, then overwrite the file with a current timestamp.
 	time.Sleep(600 * time.Millisecond)
 
 	if err := os.WriteFile(cfgPath, []byte(updatedTOML), 0644); err != nil {
 		t.Fatalf("write updated config: %v", err)
 	}
 
-	// Poll for the change to propagate (watcher polls every 500ms; allow up to 3s).
-	deadline := time.Now().Add(3 * time.Second)
+	// Poll for the change to propagate (watcher polls every 500ms; allow up to 5s).
+	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		if orc.teams.Cap() == 5 {
 			break
