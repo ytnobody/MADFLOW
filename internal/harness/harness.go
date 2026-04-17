@@ -284,7 +284,7 @@ func templateTestDraft(fc FailureCase) string {
 	sb.WriteString("import \"testing\"\n\n")
 	fmt.Fprintf(&sb, "// TestHarness_%s is an auto-generated reproduction test stub\n", fc.ID)
 	fmt.Fprintf(&sb, "// for failure case %s (issue: %s, score: %d).\n", fc.ID, fc.IssueID, fc.Score)
-	sb.WriteString("// TODO: fill in the actual reproduction steps based on the failure case.\n")
+	sb.WriteString("// NOTE: fill in the actual reproduction steps based on the failure case.\n")
 	fmt.Fprintf(&sb, "func TestHarness_%s(t *testing.T) {\n", fc.ID)
 	sb.WriteString("\tt.Skip(\"auto-generated stub — fill in reproduction steps\")\n")
 	sb.WriteString("}\n")
@@ -321,7 +321,7 @@ func buildTestDraftPrompt(fc FailureCase) string {
 - Write a single Go test function named TestHarness_%s
 - Package: package harness_test
 - Include appropriate imports
-- Add a TODO comment explaining what needs to be filled in
+- Add a NOTE comment explaining what needs to be filled in
 - The test should document the failure scenario even if it calls t.Skip()
 - Output only valid Go code, no markdown fences
 
