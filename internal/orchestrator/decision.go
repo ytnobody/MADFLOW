@@ -56,16 +56,27 @@ type TeamAssignResult struct {
 //
 // Decision priority (highest to lowest):
 //  1. Terminal status or already-assigned → Reject
-//  2. Active/pending team exists → Reject
-//  3. Idle team available → ReuseIdle
-//  4. At capacity → Defer
-//  5. Otherwise → Create
+//  2. in_progress status → Reject
+//  3. Active/pending team exists → Reject
+//  4. Idle team available → ReuseIdle
+//  5. At capacity → Defer
+//  6. Otherwise → Create
 func DecideTeamAssignment(iss issue.Issue, hasActiveTeam bool, hasIdleTeam bool, atCapacity bool) TeamAssignResult {
 	// Reject terminal issues.
 	if iss.Status.IsTerminal() {
 		return TeamAssignResult{
 			Decision: AssignDecisionReject,
 			Reason:   fmt.Sprintf("issue status is %s", iss.Status),
+		}
+	}
+
+	// Reject in_progress issues to prevent duplicate team creation.
+	// in_progress means someone is already working on it. To re-assign,
+	// the status must first be reset to "open".
+	if iss.Status == issue.StatusInProgress {
+		return TeamAssignResult{
+			Decision: AssignDecisionReject,
+			Reason:   "イシューのステータスが in_progress です。再アサインする場合はステータスを open に変更してください",
 		}
 	}
 

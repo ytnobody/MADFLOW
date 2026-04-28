@@ -75,7 +75,7 @@ func TestDecideTeamAssignment(t *testing.T) {
 			name:         "in_progress issue with idle team reuses idle",
 			iss:          inProgressIssue,
 			hasIdleTeam:  true,
-			wantDecision: AssignDecisionReuseIdle,
+			wantDecision: AssignDecisionReject,
 		},
 		{
 			name:         "open issue at capacity is deferred",
@@ -91,7 +91,7 @@ func TestDecideTeamAssignment(t *testing.T) {
 		{
 			name:         "in_progress issue with no assignment creates new team",
 			iss:          inProgressIssue,
-			wantDecision: AssignDecisionCreate,
+			wantDecision: AssignDecisionReject,
 		},
 		{
 			name:          "active team check takes priority over idle team",
@@ -106,6 +106,13 @@ func TestDecideTeamAssignment(t *testing.T) {
 			hasIdleTeam:  true,
 			atCapacity:   true,
 			wantDecision: AssignDecisionReuseIdle,
+		},
+		{
+			name:          "in_progress issue is rejected regardless of active team",
+			iss:           inProgressIssue,
+			hasActiveTeam: true,
+			hasIdleTeam:   true,
+			wantDecision:  AssignDecisionReject,
 		},
 	}
 

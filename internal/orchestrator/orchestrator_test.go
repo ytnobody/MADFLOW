@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -504,22 +505,23 @@ func TestHandleTeamCreateRejectsClosedIssue(t *testing.T) {
 // TestHandleTeamCreateResetsStaleAssignment verifies RC-1 fix:
 // when an issue has AssignedTeam > 0 but the team is no longer present in the
 // manager (e.g. after a process restart or an unresponsive engineer), the stale
-// assignment is automatically cleared and a new team is created.
+// assignment is automatically cleared. After clearing, because the issue remains
+// in_progress status with no active team, TEAM_CREATE is rejected — the operator
+// must reset the issue to "open" before reassigning.
 func TestHandleTeamCreateResetsStaleAssignment(t *testing.T) {
 	dir := t.TempDir()
 	cfg := testConfig(dir)
 	if err := os.MkdirAll(filepath.Join(dir, "issues"), 0755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "chatlog.txt"), nil, 0644); err != nil {
+	chatlogPath := filepath.Join(dir, "chatlog.txt")
+	if err := os.WriteFile(chatlogPath, nil, 0644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
 	orc := New(cfg, dir, t.TempDir())
 	factory := newMockTeamFactory(t)
 	orc.teams = team.NewManager(factory, 3)
-	// Ensure all goroutines spawned by handleTeamCreate finish before TempDir cleanup.
-	t.Cleanup(orc.Wait)
 
 	// Create an issue with a stale assigned_team value (team not in manager).
 	iss, _ := orc.Store().Create("Stale Assignment Issue", "body")
@@ -532,9 +534,6 @@ func TestHandleTeamCreateResetsStaleAssignment(t *testing.T) {
 
 	orc.handleTeamCreate(ctx, ParseCommand(fmt.Sprintf("TEAM_CREATE %s", iss.ID)))
 
-	// A new team should have been created (async — wait up to 2s).
-	waitForTeamCount(t, orc, 1, 2*time.Second)
-
 	// The stale AssignedTeam should have been reset in the store.
 	updated, err := orc.Store().Get(iss.ID)
 	if err != nil {
@@ -542,6 +541,26 @@ func TestHandleTeamCreateResetsStaleAssignment(t *testing.T) {
 	}
 	if updated.AssignedTeam == 5 {
 		t.Errorf("AssignedTeam should have been reset from stale value 5, but is still 5")
+	}
+
+	// No new team should have been created — TEAM_CREATE is rejected because
+	// the issue is in_progress (operator must reset status to open first).
+	if orc.Teams().Count() != 0 {
+		t.Errorf("expected no team created for in_progress stale-assignment issue, got %d teams", orc.Teams().Count())
+	}
+
+	// Chatlog should contain a rejection message.
+	cl := chatlog.New(chatlogPath)
+	msgs, _ := cl.Poll("superintendent")
+	found := false
+	for _, m := range msgs {
+		if contains(m.Body, "拒否されました") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected rejection message in chatlog for in_progress stale-assignment TEAM_CREATE")
 	}
 }
 
@@ -555,10 +574,11 @@ func TestHandleTeamCreateRejectsActiveTeam(t *testing.T) {
 	orc := New(cfg, dir, t.TempDir())
 	orc.teams = team.NewManager(newMockTeamFactory(t), 3)
 
-	// Create an issue with AssignedTeam=0 but an active team already exists.
+	// Create an open issue. The active-team check must fire before status is changed
+	// to in_progress, so we start with an open issue, create a team for it, then
+	// manually set AssignedTeam=0 to simulate the race window where the team exists
+	// in the manager but the issue's AssignedTeam field hasn't been updated yet.
 	iss, _ := orc.Store().Create("Active Team Issue", "body")
-	iss.Status = issue.StatusInProgress
-	orc.Store().Update(iss)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -568,6 +588,12 @@ func TestHandleTeamCreateRejectsActiveTeam(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create team: %v", err)
 	}
+
+	// Reset AssignedTeam to 0 in the store to simulate the race window where the
+	// team exists in the manager but the issue hasn't been updated yet.
+	iss.AssignedTeam = 0
+	iss.Status = issue.StatusOpen
+	orc.Store().Update(iss)
 
 	teamsBefore := orc.Teams().Count()
 	orc.handleTeamCreate(ctx, ParseCommand(fmt.Sprintf("TEAM_CREATE %s", iss.ID)))
@@ -1462,6 +1488,202 @@ func TestHandleTeamCreateRejectsWhenAtMaxCapacityAllBusy(t *testing.T) {
 	}
 	if !found {
 		t.Error("expected chatlog to contain capacity-limit message for superintendent")
+	}
+}
+
+// initTestGitRepo creates a temporary git repo with an initial commit on branch "main".
+// It configures user.email and user.name so commits work without global git config.
+func initTestGitRepo(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	runGit := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v failed: %v\noutput: %s", args, err, out)
+		}
+	}
+	runGit("init", "-b", "main")
+	runGit("config", "user.email", "test@test.com")
+	runGit("config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("# test\n"), 0644); err != nil {
+		t.Fatalf("write README: %v", err)
+	}
+	runGit("add", ".")
+	runGit("commit", "-m", "initial commit")
+	return dir
+}
+
+// TestHandleTeamCreateRejectsInProgressNoTeam verifies that a TEAM_CREATE for an
+// in_progress issue with AssignedTeam=0 and no active team is rejected. This covers
+// the scenario where a previous team was disbanded without resetting the issue status.
+func TestHandleTeamCreateRejectsInProgressNoTeam(t *testing.T) {
+	dir := t.TempDir()
+	cfg := testConfig(dir)
+	os.MkdirAll(filepath.Join(dir, "issues"), 0755)
+	chatlogPath := filepath.Join(dir, "chatlog.txt")
+	os.WriteFile(chatlogPath, nil, 0644)
+
+	orc := New(cfg, dir, t.TempDir())
+	orc.teams = team.NewManager(newMockTeamFactory(t), 3)
+
+	// Create an in_progress issue with no team assigned (simulates post-disband state).
+	iss, _ := orc.Store().Create("Orphaned In-Progress Issue", "body")
+	iss.Status = issue.StatusInProgress
+	iss.AssignedTeam = 0
+	orc.Store().Update(iss)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	teamsBefore := orc.Teams().Count()
+	orc.handleTeamCreate(ctx, Command{Type: CommandTeamCreate, Args: []string{iss.ID}})
+
+	// No new team should be created.
+	if orc.Teams().Count() != teamsBefore {
+		t.Errorf("expected no new team for in_progress issue without active team, but team count changed from %d to %d",
+			teamsBefore, orc.Teams().Count())
+	}
+
+	// Issue status must remain in_progress (not been modified).
+	got, err := orc.Store().Get(iss.ID)
+	if err != nil {
+		t.Fatalf("store.Get: %v", err)
+	}
+	if got.Status != issue.StatusInProgress {
+		t.Errorf("expected issue status to remain in_progress, got %s", got.Status)
+	}
+
+	// Chatlog should contain a rejection message.
+	cl := chatlog.New(chatlogPath)
+	msgs, _ := cl.Poll("superintendent")
+	found := false
+	for _, m := range msgs {
+		if contains(m.Body, "拒否されました") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected rejection message in chatlog for in_progress issue TEAM_CREATE")
+	}
+}
+
+// TestHandleTeamCreateRejectsExistingBranch verifies that TEAM_CREATE is rejected
+// when a feature branch for the issue already exists in the git repository.
+func TestHandleTeamCreateRejectsExistingBranch(t *testing.T) {
+	repoDir := initTestGitRepo(t)
+
+	dir := t.TempDir()
+	cfg := testConfig(dir)
+	// Point the orchestrator's repo at our test git repo.
+	cfg.Project.Repos = []config.RepoConfig{{Name: "main", Path: repoDir}}
+	cfg.Branches.FeaturePrefix = "feature/issue-"
+
+	os.MkdirAll(filepath.Join(dir, "issues"), 0755)
+	chatlogPath := filepath.Join(dir, "chatlog.txt")
+	os.WriteFile(chatlogPath, nil, 0644)
+
+	orc := New(cfg, dir, t.TempDir())
+	orc.teams = team.NewManager(newMockTeamFactory(t), 3)
+
+	// Create an open issue.
+	iss, _ := orc.Store().Create("Branch Exists Issue", "body")
+
+	// Create the feature branch in the git repo to simulate a previous engineer's work.
+	branchName := "feature/issue-" + iss.ID
+	runGitInDir := func(dir string, args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v in %s failed: %v\noutput: %s", args, dir, err, out)
+		}
+	}
+	runGitInDir(repoDir, "branch", branchName)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	teamsBefore := orc.Teams().Count()
+	orc.handleTeamCreate(ctx, Command{Type: CommandTeamCreate, Args: []string{iss.ID}})
+
+	// No new team should be created.
+	if orc.Teams().Count() != teamsBefore {
+		t.Errorf("expected no new team when branch exists, but team count changed from %d to %d",
+			teamsBefore, orc.Teams().Count())
+	}
+
+	// Chatlog should contain a rejection message mentioning the branch.
+	cl := chatlog.New(chatlogPath)
+	msgs, _ := cl.Poll("superintendent")
+	found := false
+	for _, m := range msgs {
+		if contains(m.Body, "拒否されました") && contains(m.Body, "フィーチャーブランチ") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected rejection message in chatlog about existing feature branch")
+	}
+}
+
+// TestHandleTeamCreateRejectsExistingWorktree verifies that TEAM_CREATE is rejected
+// when a worktree directory for the issue already exists under .worktrees/{ghLogin}/.
+func TestHandleTeamCreateRejectsExistingWorktree(t *testing.T) {
+	repoDir := initTestGitRepo(t)
+
+	dir := t.TempDir()
+	cfg := testConfig(dir)
+	// Point the orchestrator's repo at our test git repo.
+	cfg.Project.Repos = []config.RepoConfig{{Name: "main", Path: repoDir}}
+	cfg.Branches.FeaturePrefix = "feature/issue-"
+	cfg.GhLogin = "testuser"
+
+	os.MkdirAll(filepath.Join(dir, "issues"), 0755)
+	chatlogPath := filepath.Join(dir, "chatlog.txt")
+	os.WriteFile(chatlogPath, nil, 0644)
+
+	orc := New(cfg, dir, t.TempDir())
+	orc.teams = team.NewManager(newMockTeamFactory(t), 3)
+
+	// Create an open issue.
+	iss, _ := orc.Store().Create("Worktree Exists Issue", "body")
+
+	// Create the worktree directory to simulate a previous engineer's work.
+	wtDir := filepath.Join(repoDir, ".worktrees", "testuser", "issue-"+iss.ID)
+	if err := os.MkdirAll(wtDir, 0755); err != nil {
+		t.Fatalf("MkdirAll worktree: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	teamsBefore := orc.Teams().Count()
+	orc.handleTeamCreate(ctx, Command{Type: CommandTeamCreate, Args: []string{iss.ID}})
+
+	// No new team should be created.
+	if orc.Teams().Count() != teamsBefore {
+		t.Errorf("expected no new team when worktree exists, but team count changed from %d to %d",
+			teamsBefore, orc.Teams().Count())
+	}
+
+	// Chatlog should contain a rejection message mentioning the worktree.
+	cl := chatlog.New(chatlogPath)
+	msgs, _ := cl.Poll("superintendent")
+	found := false
+	for _, m := range msgs {
+		if contains(m.Body, "拒否されました") && contains(m.Body, "ワークツリー") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected rejection message in chatlog about existing worktree")
 	}
 }
 
