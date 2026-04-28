@@ -593,7 +593,9 @@ func TestHandleTeamCreateRejectsActiveTeam(t *testing.T) {
 	// team exists in the manager but the issue hasn't been updated yet.
 	iss.AssignedTeam = 0
 	iss.Status = issue.StatusOpen
-	orc.Store().Update(iss)
+	if err := orc.Store().Update(iss); err != nil {
+		t.Fatalf("Store.Update: %v", err)
+	}
 
 	teamsBefore := orc.Teams().Count()
 	orc.handleTeamCreate(ctx, ParseCommand(fmt.Sprintf("TEAM_CREATE %s", iss.ID)))
@@ -1522,9 +1524,13 @@ func initTestGitRepo(t *testing.T) string {
 func TestHandleTeamCreateRejectsInProgressNoTeam(t *testing.T) {
 	dir := t.TempDir()
 	cfg := testConfig(dir)
-	os.MkdirAll(filepath.Join(dir, "issues"), 0755)
+	if err := os.MkdirAll(filepath.Join(dir, "issues"), 0755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
 	chatlogPath := filepath.Join(dir, "chatlog.txt")
-	os.WriteFile(chatlogPath, nil, 0644)
+	if err := os.WriteFile(chatlogPath, nil, 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
 
 	orc := New(cfg, dir, t.TempDir())
 	orc.teams = team.NewManager(newMockTeamFactory(t), 3)
@@ -1533,10 +1539,11 @@ func TestHandleTeamCreateRejectsInProgressNoTeam(t *testing.T) {
 	iss, _ := orc.Store().Create("Orphaned In-Progress Issue", "body")
 	iss.Status = issue.StatusInProgress
 	iss.AssignedTeam = 0
-	orc.Store().Update(iss)
+	if err := orc.Store().Update(iss); err != nil {
+		t.Fatalf("Store.Update: %v", err)
+	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	teamsBefore := orc.Teams().Count()
 	orc.handleTeamCreate(ctx, Command{Type: CommandTeamCreate, Args: []string{iss.ID}})
@@ -1582,9 +1589,13 @@ func TestHandleTeamCreateRejectsExistingBranch(t *testing.T) {
 	cfg.Project.Repos = []config.RepoConfig{{Name: "main", Path: repoDir}}
 	cfg.Branches.FeaturePrefix = "feature/issue-"
 
-	os.MkdirAll(filepath.Join(dir, "issues"), 0755)
+	if err := os.MkdirAll(filepath.Join(dir, "issues"), 0755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
 	chatlogPath := filepath.Join(dir, "chatlog.txt")
-	os.WriteFile(chatlogPath, nil, 0644)
+	if err := os.WriteFile(chatlogPath, nil, 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
 
 	orc := New(cfg, dir, t.TempDir())
 	orc.teams = team.NewManager(newMockTeamFactory(t), 3)
@@ -1605,8 +1616,7 @@ func TestHandleTeamCreateRejectsExistingBranch(t *testing.T) {
 	}
 	runGitInDir(repoDir, "branch", branchName)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	teamsBefore := orc.Teams().Count()
 	orc.handleTeamCreate(ctx, Command{Type: CommandTeamCreate, Args: []string{iss.ID}})
@@ -1644,9 +1654,13 @@ func TestHandleTeamCreateRejectsExistingWorktree(t *testing.T) {
 	cfg.Branches.FeaturePrefix = "feature/issue-"
 	cfg.GhLogin = "testuser"
 
-	os.MkdirAll(filepath.Join(dir, "issues"), 0755)
+	if err := os.MkdirAll(filepath.Join(dir, "issues"), 0755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
 	chatlogPath := filepath.Join(dir, "chatlog.txt")
-	os.WriteFile(chatlogPath, nil, 0644)
+	if err := os.WriteFile(chatlogPath, nil, 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
 
 	orc := New(cfg, dir, t.TempDir())
 	orc.teams = team.NewManager(newMockTeamFactory(t), 3)
@@ -1660,8 +1674,7 @@ func TestHandleTeamCreateRejectsExistingWorktree(t *testing.T) {
 		t.Fatalf("MkdirAll worktree: %v", err)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	teamsBefore := orc.Teams().Count()
 	orc.handleTeamCreate(ctx, Command{Type: CommandTeamCreate, Args: []string{iss.ID}})
