@@ -1094,6 +1094,12 @@ func TestWatchCommandsPicksUpEarlyTeamCreate(t *testing.T) {
 
 	cfg := testConfig(dir)
 	orc := New(cfg, dir, t.TempDir())
+	// Use mock factory so no real claude processes write to TempDir.
+	// Without this, executeCreateTeam spawns a real agent that creates
+	// files in WorkDir (the TempDir), causing t.Cleanup RemoveAll to fail.
+	orc.teams = team.NewManager(newMockTeamFactory(t), 3)
+	// Wait for all handleTeamCreate goroutines to finish before TempDir cleanup.
+	t.Cleanup(orc.Wait)
 
 	// Create an open issue that the superintendent would want to assign.
 	store := orc.Store()
@@ -1789,5 +1795,240 @@ feature_prefix = "feature/issue-"
 
 	if orc.teams.Cap() != 5 {
 		t.Errorf("expected Cap()=5 after config hot-reload, got %d", orc.teams.Cap())
+	}
+}
+
+// TestHandleTeamCreateRejectsRemoteOriginBranch verifies that TEAM_CREATE is rejected
+// when a remote-tracking branch (origin/feature/issue-XXX) already exists in the repo.
+func TestHandleTeamCreateRejectsRemoteOriginBranch(t *testing.T) {
+	repoDir := initTestGitRepo(t)
+
+	dir := t.TempDir()
+	cfg := testConfig(dir)
+	cfg.Project.Repos = []config.RepoConfig{{Name: "main", Path: repoDir}}
+	cfg.Branches.FeaturePrefix = "feature/issue-"
+
+	if err := os.MkdirAll(filepath.Join(dir, "issues"), 0755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	chatlogPath := filepath.Join(dir, "chatlog.txt")
+	if err := os.WriteFile(chatlogPath, nil, 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	orc := New(cfg, dir, t.TempDir())
+	orc.teams = team.NewManager(newMockTeamFactory(t), 3)
+
+	iss, _ := orc.Store().Create("Remote Branch Exists Issue", "body")
+
+	// Create a remote-tracking ref to simulate a previously pushed branch.
+	remoteRef := "refs/remotes/origin/feature/issue-" + iss.ID
+	runGit := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repoDir
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v failed: %v\noutput: %s", args, err, out)
+		}
+	}
+	// Get current HEAD sha to point the remote tracking ref at.
+	headCmd := exec.Command("git", "rev-parse", "HEAD")
+	headCmd.Dir = repoDir
+	headOut, err := headCmd.Output()
+	if err != nil {
+		t.Fatalf("git rev-parse HEAD: %v", err)
+	}
+	runGit("update-ref", remoteRef, strings.TrimSpace(string(headOut)))
+
+	ctx := t.Context()
+	teamsBefore := orc.Teams().Count()
+	orc.handleTeamCreate(ctx, Command{Type: CommandTeamCreate, Args: []string{iss.ID}})
+
+	if orc.Teams().Count() != teamsBefore {
+		t.Errorf("expected no new team when remote branch exists, team count changed from %d to %d",
+			teamsBefore, orc.Teams().Count())
+	}
+
+	cl := chatlog.New(chatlogPath)
+	msgs, _ := cl.Poll("superintendent")
+	found := false
+	for _, m := range msgs {
+		if contains(m.Body, "拒否されました") && contains(m.Body, "リモートブランチ") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected rejection message about existing remote branch in chatlog")
+	}
+}
+
+// TestHandleTeamCreateEmptyFeaturePrefix verifies that TEAM_CREATE falls back to
+// "feature/issue-" when cfg.Branches.FeaturePrefix is empty.
+func TestHandleTeamCreateEmptyFeaturePrefix(t *testing.T) {
+	repoDir := initTestGitRepo(t)
+
+	dir := t.TempDir()
+	cfg := testConfig(dir)
+	cfg.Project.Repos = []config.RepoConfig{{Name: "main", Path: repoDir}}
+	cfg.Branches.FeaturePrefix = "" // intentionally empty — should fall back to "feature/issue-"
+
+	if err := os.MkdirAll(filepath.Join(dir, "issues"), 0755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	chatlogPath := filepath.Join(dir, "chatlog.txt")
+	if err := os.WriteFile(chatlogPath, nil, 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	orc := New(cfg, dir, t.TempDir())
+	orc.teams = team.NewManager(newMockTeamFactory(t), 3)
+	t.Cleanup(orc.Wait)
+
+	iss, _ := orc.Store().Create("Empty Prefix Issue", "body")
+
+	// Create the default-prefix branch to trigger the rejection path.
+	runGit := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repoDir
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v failed: %v\noutput: %s", args, err, out)
+		}
+	}
+	runGit("branch", "feature/issue-"+iss.ID)
+
+	ctx := t.Context()
+	teamsBefore := orc.Teams().Count()
+	orc.handleTeamCreate(ctx, Command{Type: CommandTeamCreate, Args: []string{iss.ID}})
+
+	// Should be rejected because the branch exists (validates the fallback prefix is used).
+	if orc.Teams().Count() != teamsBefore {
+		t.Errorf("expected no new team when branch exists with fallback prefix, count changed %d->%d",
+			teamsBefore, orc.Teams().Count())
+	}
+
+	cl := chatlog.New(chatlogPath)
+	msgs, _ := cl.Poll("superintendent")
+	found := false
+	for _, m := range msgs {
+		if contains(m.Body, "拒否されました") && contains(m.Body, "フィーチャーブランチ") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected rejection message about existing feature branch when using fallback prefix")
+	}
+}
+
+// TestHandleWakeGitHubWithDetector verifies that WAKE_GITHUB wakes the idle detector
+// when one is configured.
+func TestHandleWakeGitHubWithDetector(t *testing.T) {
+	dir := t.TempDir()
+	cfg := testConfig(dir)
+	orc := New(cfg, dir, t.TempDir())
+
+	// Verify that handleWakeGitHub with no idleDetector doesn't panic.
+	orc.idleDetector = nil
+	orc.handleWakeGitHub() // should just log and return
+
+	// Now set a real idle detector and verify Wake() is called.
+	orc.idleDetector = githubPkg.NewIdleDetector()
+	orc.handleWakeGitHub() // should call Wake() on the detector without panic
+}
+
+// TestConfig verifies that the Config() getter returns the active configuration.
+func TestConfig(t *testing.T) {
+	dir := t.TempDir()
+	cfg := testConfig(dir)
+	orc := New(cfg, dir, t.TempDir())
+
+	got := orc.Config()
+	if got == nil {
+		t.Fatal("Config() returned nil")
+	}
+	if got.Project.Name != cfg.Project.Name {
+		t.Errorf("Config().Project.Name = %q, want %q", got.Project.Name, cfg.Project.Name)
+	}
+}
+
+// TestHandleCommandWakeGitHub verifies that WAKE_GITHUB dispatched via HandleCommandForTest
+// reaches handleWakeGitHub without error.
+func TestHandleCommandWakeGitHub(t *testing.T) {
+	dir := t.TempDir()
+	cfg := testConfig(dir)
+	orc := New(cfg, dir, t.TempDir())
+	orc.idleDetector = githubPkg.NewIdleDetector()
+
+	ctx := t.Context()
+	msg := chatlog.Message{Sender: "superintendent", Recipient: "orchestrator", Body: "WAKE_GITHUB"}
+	// Should not panic and should call Wake() on the detector.
+	orc.HandleCommandForTest(ctx, msg)
+}
+
+// TestHandleCommandRelease verifies that RELEASE dispatched via HandleCommandForTest
+// reaches handleRelease without panic (even if the underlying git operations fail
+// because the test dir is not a git repo).
+func TestHandleCommandRelease(t *testing.T) {
+	dir := t.TempDir()
+	cfg := testConfig(dir)
+	orc := New(cfg, dir, t.TempDir())
+
+	ctx := t.Context()
+	msg := chatlog.Message{Sender: "superintendent", Recipient: "orchestrator", Body: "RELEASE"}
+	// handleRelease will attempt git operations on a non-git dir, which will fail gracefully.
+	orc.HandleCommandForTest(ctx, msg)
+}
+
+// TestHandleTeamDisbandNoTeam verifies that TEAM_DISBAND for an issue with no
+// active team logs a warning and does not panic.
+func TestHandleTeamDisbandNoTeam(t *testing.T) {
+	dir := t.TempDir()
+	cfg := testConfig(dir)
+	if err := os.MkdirAll(filepath.Join(dir, "issues"), 0755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	orc := New(cfg, dir, t.TempDir())
+	orc.teams = team.NewManager(newMockTeamFactory(t), 3)
+
+	iss, _ := orc.Store().Create("No Team Issue", "body")
+	// Call TEAM_DISBAND for an issue with no active team — should log and not panic.
+	orc.handleTeamDisband(ParseCommand("TEAM_DISBAND " + iss.ID))
+}
+
+// TestHandleTeamDisbandSuccess verifies that TEAM_DISBAND for an issue with an
+// active team disbands the team and cleans up worktrees.
+func TestHandleTeamDisbandSuccess(t *testing.T) {
+	dir := t.TempDir()
+	cfg := testConfig(dir)
+	if err := os.MkdirAll(filepath.Join(dir, "issues"), 0755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "chatlog.txt"), nil, 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	orc := New(cfg, dir, t.TempDir())
+	orc.teams = team.NewManager(newMockTeamFactory(t), 3)
+	t.Cleanup(orc.Wait)
+
+	iss, _ := orc.Store().Create("Disband Success Issue", "body")
+
+	// Create a team for the issue so DisbandByIssue can find it.
+	ctx := t.Context()
+	if _, err := orc.Teams().Create(ctx, iss.ID, iss.Title); err != nil {
+		t.Fatalf("Teams().Create: %v", err)
+	}
+
+	if orc.Teams().Count() != 1 {
+		t.Fatalf("expected 1 team before disband, got %d", orc.Teams().Count())
+	}
+
+	orc.handleTeamDisband(ParseCommand("TEAM_DISBAND " + iss.ID))
+
+	if orc.Teams().Count() != 0 {
+		t.Errorf("expected 0 teams after disband, got %d", orc.Teams().Count())
 	}
 }
