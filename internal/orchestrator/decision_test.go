@@ -75,7 +75,7 @@ func TestDecideTeamAssignment(t *testing.T) {
 			name:         "in_progress issue with idle team reuses idle",
 			iss:          inProgressIssue,
 			hasIdleTeam:  true,
-			wantDecision: AssignDecisionReuseIdle,
+			wantDecision: AssignDecisionReject,
 		},
 		{
 			name:         "open issue at capacity is deferred",
@@ -91,7 +91,7 @@ func TestDecideTeamAssignment(t *testing.T) {
 		{
 			name:         "in_progress issue with no assignment creates new team",
 			iss:          inProgressIssue,
-			wantDecision: AssignDecisionCreate,
+			wantDecision: AssignDecisionReject,
 		},
 		{
 			name:          "active team check takes priority over idle team",
@@ -106,6 +106,13 @@ func TestDecideTeamAssignment(t *testing.T) {
 			hasIdleTeam:  true,
 			atCapacity:   true,
 			wantDecision: AssignDecisionReuseIdle,
+		},
+		{
+			name:          "in_progress issue is rejected regardless of active team",
+			iss:           inProgressIssue,
+			hasActiveTeam: true,
+			hasIdleTeam:   true,
+			wantDecision:  AssignDecisionReject,
 		},
 	}
 
@@ -132,6 +139,7 @@ func TestTeamAssignDecisionTypeString(t *testing.T) {
 		{AssignDecisionReuseIdle, "ReuseIdle"},
 		{AssignDecisionCreate, "Create"},
 		{AssignDecisionDefer, "Defer"},
+		{TeamAssignDecisionType(99), "TeamAssignDecisionType(99)"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.want, func(t *testing.T) {
@@ -140,5 +148,21 @@ func TestTeamAssignDecisionTypeString(t *testing.T) {
 				t.Errorf("TeamAssignDecisionType(%d).String() = %q, want %q", tt.d, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestDecideTeamAssignment_OpenWithAssignedTeam(t *testing.T) {
+	// Open issue that still has AssignedTeam > 0 (e.g. stale field that RC-1 did not clear).
+	// This covers the AssignedTeam > 0 reject path that is skipped when the issue
+	// is already in_progress (in_progress check fires first in that case).
+	iss := issue.Issue{
+		ID:           "gh-200",
+		Title:        "open but still assigned",
+		Status:       issue.StatusOpen,
+		AssignedTeam: 7,
+	}
+	result := DecideTeamAssignment(iss, false, false, false)
+	if result.Decision != AssignDecisionReject {
+		t.Errorf("expected Reject for open issue with AssignedTeam > 0, got %s", result.Decision)
 	}
 }

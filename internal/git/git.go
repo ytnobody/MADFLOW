@@ -251,6 +251,18 @@ func (r *Repo) RemoveNamespacedWorktree(login, subDir string) error {
 	return nil
 }
 
+// WorktreeExistsForIssue checks if a namespaced engineer worktree for the given
+// issue exists under .worktrees/{ghLogin}/issue-{issueID}.
+// Returns false when ghLogin is empty or the directory does not exist.
+func (r *Repo) WorktreeExistsForIssue(ghLogin, issueID string) bool {
+	if ghLogin == "" {
+		return false
+	}
+	wtPath := filepath.Join(r.path, ".worktrees", ghLogin, "issue-"+issueID)
+	_, err := os.Stat(wtPath)
+	return err == nil
+}
+
 // ValidateSafeName validates that name is safe to use as a branch name component
 // or issue ID in file path operations. It rejects empty strings, strings
 // containing ".." (path traversal), path separators ("/" or "\"), and null bytes.

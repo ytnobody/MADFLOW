@@ -658,6 +658,45 @@ func (o *Orchestrator) handleTeamCreate(ctx context.Context, cmd Command) {
 		return
 	}
 
+	// Check if a feature branch already exists for this issue (local or remote).
+	// This prevents duplicate teams when a previous engineer has already created a branch.
+	featurePrefix := o.cfg.Branches.FeaturePrefix
+	if featurePrefix == "" {
+		featurePrefix = "feature/issue-"
+	}
+	branchName := featurePrefix + issueID
+	for repoName, repo := range o.repos {
+		if repo.BranchExists(branchName) {
+			log.Printf("[orchestrator] TEAM_CREATE rejected: branch %s already exists in repo %s", branchName, repoName)
+			o.appendOrLog("superintendent", "orchestrator",
+				fmt.Sprintf("TEAM_CREATE %s は拒否されました: フィーチャーブランチ %s がリポジトリ %s に既に存在します",
+					issueID, branchName, repoName))
+			return
+		}
+		if repo.BranchExists("origin/" + branchName) {
+			log.Printf("[orchestrator] TEAM_CREATE rejected: remote branch origin/%s already exists in repo %s", branchName, repoName)
+			o.appendOrLog("superintendent", "orchestrator",
+				fmt.Sprintf("TEAM_CREATE %s は拒否されました: リモートブランチ origin/%s がリポジトリ %s に既に存在します",
+					issueID, branchName, repoName))
+			return
+		}
+	}
+
+	// Check if a worktree already exists for this issue.
+	ghLogin := o.cfg.GhLogin
+	if ghLogin != "" {
+		for repoName, repo := range o.repos {
+			if repo.WorktreeExistsForIssue(ghLogin, issueID) {
+				wtPath := filepath.Join(repo.Path(), ".worktrees", ghLogin, "issue-"+issueID)
+				log.Printf("[orchestrator] TEAM_CREATE rejected: worktree %s already exists in repo %s", wtPath, repoName)
+				o.appendOrLog("superintendent", "orchestrator",
+					fmt.Sprintf("TEAM_CREATE %s は拒否されました: ワークツリー %s が既に存在します",
+						issueID, wtPath))
+				return
+			}
+		}
+	}
+
 	// RC-1 fix: if the issue carries a stale AssignedTeam value (team no longer
 	// present in the manager — e.g. after a process restart or the previous
 	// engineer became unresponsive), clear it so DecideTeamAssignment does not
